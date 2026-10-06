@@ -3,8 +3,8 @@ import { Check, RotateCcw, Save } from 'lucide-react'
 import { useData, must } from '../lib/store'
 import { supabase } from '../lib/supabase'
 import { DEFAULT_SETTINGS } from '../lib/settings'
-import type { Settings } from '../lib/types'
-import { MoneyInput, PageHead } from '../components/ui'
+import type { Fund, Settings } from '../lib/types'
+import { MoneyInput, PageHead, Toggle } from '../components/ui'
 
 export default function SettingsPage() {
   const { season, settings: initialSettings, isAdmin, reload } = useData()
@@ -204,6 +204,42 @@ export default function SettingsPage() {
               }
             />
             <small>Default 1 place paid per 5 players entered</small>
+          </div>
+        </div>
+
+        {/* Pots Page Tiles Visibility */}
+        <div className="panel panel-pad stack">
+          <div className="eyebrow">Pots Page Tile Visibility</div>
+          <p className="muted" style={{ fontSize: 12 }}>
+            Choose which pot cards are shown or hidden on the Pots page.
+          </p>
+
+          <div className="stack" style={{ gap: 10, marginTop: 4 }}>
+            {[
+              { key: 'perfect_round' as Fund, label: 'Perfect Round Pot' },
+              { key: 'backup' as Fund, label: 'Backup Pot' },
+              { key: 'perfect5' as Fund, label: 'Perfect 5 Pot' },
+              { key: 'perfect4' as Fund, label: 'Perfect 4 Pot' },
+              { key: 'high_score' as Fund, label: 'High Score Pot' },
+              { key: 'tag_fund' as Fund, label: 'Tag Fund (Season-Wide)' },
+            ].map((item) => {
+              const isVisible = form.potsVisibility?.[item.key] !== false
+              return (
+                <div key={item.key} className="row" style={{ justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: 13, fontWeight: 500 }}>{item.label}</span>
+                  <Toggle
+                    on={isVisible}
+                    label={`Toggle ${item.label}`}
+                    onChange={(val) =>
+                      setForm((s) => ({
+                        ...s,
+                        potsVisibility: { ...s.potsVisibility, [item.key]: val },
+                      }))
+                    }
+                  />
+                </div>
+              )
+            })}
           </div>
         </div>
       </div>

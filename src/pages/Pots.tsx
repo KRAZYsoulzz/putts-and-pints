@@ -70,86 +70,92 @@ export default function Pots() {
       {/* Pots Grid */}
       <div className="grid-cols section">
         {/* Perfect Round Pot Card */}
-        <div className="panel panel-pad stack">
-          <div className="eyebrow" style={{ color: 'var(--orange)' }}>
-            <Sparkles size={14} style={{ verticalAlign: 'middle', marginRight: 4 }} />
-            Perfect Round Pot ({division === 'M' ? "Men's" : "Women's"})
+        {settings.potsVisibility?.perfect_round !== false && (
+          <div className="panel panel-pad stack">
+            <div className="eyebrow" style={{ color: 'var(--orange)' }}>
+              <Sparkles size={14} style={{ verticalAlign: 'middle', marginRight: 4 }} />
+              Perfect Round Pot ({division === 'M' ? "Men's" : "Women's"})
+            </div>
+            <div className="display" style={{ fontSize: 38, color: 'var(--orange)' }}>
+              {money(curBalances.perfect_round)}
+            </div>
+            <div className="bar">
+              <i style={{ width: `${capPct}%` }} />
+            </div>
+            <div className="kv" style={{ border: 0, padding: 0 }}>
+              <span className="faint" style={{ fontSize: 12 }}>Cap: ${settings.perfectRoundCap}</span>
+              <span className="faint" style={{ fontSize: 12 }}>{capPct}% filled</span>
+            </div>
           </div>
-          <div className="display" style={{ fontSize: 38, color: 'var(--orange)' }}>
-            {money(curBalances.perfect_round)}
-          </div>
-          <div className="bar">
-            <i style={{ width: `${capPct}%` }} />
-          </div>
-          <div className="kv" style={{ border: 0, padding: 0 }}>
-            <span className="faint" style={{ fontSize: 12 }}>Cap: ${settings.perfectRoundCap}</span>
-            <span className="faint" style={{ fontSize: 12 }}>{capPct}% filled</span>
-          </div>
-          <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-            $2 of each entry builds this pot. Requires Basket 1 (30 pts) + bonus spot makes.
-          </p>
-        </div>
+        )}
 
         {/* Backup Pot Card */}
-        <div className="panel panel-pad stack">
-          <div className="eyebrow">
-            <ShieldAlert size={14} style={{ verticalAlign: 'middle', marginRight: 4 }} />
-            Backup Pot ({division === 'M' ? "Men's" : "Women's"})
+        {settings.potsVisibility?.backup !== false && (
+          <div className="panel panel-pad stack">
+            <div className="eyebrow">
+              <ShieldAlert size={14} style={{ verticalAlign: 'middle', marginRight: 4 }} />
+              Backup Pot ({division === 'M' ? "Men's" : "Women's"})
+            </div>
+            <div className="display" style={{ fontSize: 38, color: 'var(--teal)' }}>
+              {money(curBalances.backup)}
+            </div>
           </div>
-          <div className="display" style={{ fontSize: 38, color: 'var(--teal)' }}>
-            {money(curBalances.backup)}
-          </div>
-          <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-            Overflow above the ${settings.perfectRoundCap} cap accumulates here and kicks in immediately when the main pot is won.
-          </p>
-        </div>
+        )}
 
         {/* Perfect 5 Pot Card */}
-        <div className="panel panel-pad stack">
-          <div className="eyebrow">Perfect 5 Pot</div>
-          <div className="display" style={{ fontSize: 38 }}>
-            {money(curBalances.perfect5)}
+        {settings.potsVisibility?.perfect5 !== false && (
+          <div className="panel panel-pad stack">
+            <div className="eyebrow">Perfect 5 Pot</div>
+            <div className="display" style={{ fontSize: 38 }}>
+              {money(curBalances.perfect5)}
+            </div>
+            <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+              $10 bonus for hitting all 5 stations on Basket 1. Multiple winners split.
+            </p>
           </div>
-          <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-            $10 bonus for hitting all 5 stations on Basket 1. Multiple winners split.
-          </p>
-        </div>
+        )}
 
         {/* Perfect 4 Pot Card */}
-        <div className="panel panel-pad stack">
-          <div className="eyebrow">Perfect 4 Pot</div>
-          <div className="display" style={{ fontSize: 38 }}>
-            {money(curBalances.perfect4)}
+        {settings.potsVisibility?.perfect4 !== false && (
+          <div className="panel panel-pad stack">
+            <div className="eyebrow">Perfect 4 Pot</div>
+            <div className="display" style={{ fontSize: 38 }}>
+              {money(curBalances.perfect4)}
+            </div>
+            <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+              $10 bonus for hitting all 4 stations on Basket 2. Multiple winners split.
+            </p>
           </div>
-          <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-            $10 bonus for hitting all 4 stations on Basket 2. Multiple winners split.
-          </p>
-        </div>
+        )}
 
         {/* High Score Pot Card */}
-        <div className="panel panel-pad stack">
-          <div className="eyebrow">High Score Pot</div>
-          <div className="display" style={{ fontSize: 38 }}>
-            {money(curBalances.high_score)}
+        {settings.potsVisibility?.high_score !== false && (
+          <div className="panel panel-pad stack">
+            <div className="eyebrow">High Score Pot</div>
+            <div className="display" style={{ fontSize: 38 }}>
+              {money(curBalances.high_score)}
+            </div>
+            <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+              $10 bonus for beating the season high score record (including Final 9).
+            </p>
           </div>
-          <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-            $10 bonus for beating the season high score record (including Final 9).
-          </p>
-        </div>
+        )}
 
         {/* Tag Fund Card */}
-        <div className="panel panel-pad stack">
-          <div className="eyebrow" style={{ color: 'var(--lime)' }}>
-            <Tag size={14} style={{ verticalAlign: 'middle', marginRight: 4 }} />
-            Tag Fund (Season-Wide)
+        {settings.potsVisibility?.tag_fund !== false && (
+          <div className="panel panel-pad stack">
+            <div className="eyebrow" style={{ color: 'var(--lime)' }}>
+              <Tag size={14} style={{ verticalAlign: 'middle', marginRight: 4 }} />
+              Tag Fund (Season-Wide)
+            </div>
+            <div className="display" style={{ fontSize: 38, color: 'var(--lime)' }}>
+              {money(curBalances.tag_fund)}
+            </div>
+            <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+              Funded by $20 tag purchases. Used for physical tags, trophy funds, and bonus subsidies.
+            </p>
           </div>
-          <div className="display" style={{ fontSize: 38, color: 'var(--lime)' }}>
-            {money(curBalances.tag_fund)}
-          </div>
-          <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-            Funded by $20 tag purchases. Used for physical tags, trophy funds, and bonus subsidies.
-          </p>
-        </div>
+        )}
       </div>
 
       {/* Ledger Audit Table */}

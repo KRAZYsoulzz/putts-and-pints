@@ -55,6 +55,7 @@ export interface Settings {
   cutRounding: 'down' | 'up'
   paidEvery: number
   ties: { placement: TieMode; cut: CutTieMode; countback: CountbackKey[] }
+  potsVisibility: Record<Fund, boolean>
 }
 
 export interface Season {
