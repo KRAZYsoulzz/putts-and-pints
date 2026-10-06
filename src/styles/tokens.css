@@ -1,0 +1,37 @@
+/* ==========================================================================
+   Putts & Pints — design tokens
+   Palette lifted from the logo. Orange is reserved for the primary action
+   and the leader; teal marks perfects; lime is a rare accent.
+   ========================================================================== */
+:root {
+  --bg: #0b1220;
+  --surface-1: #0f192b;
+  --surface-2: #142036;
+  --surface-3: #1b2943;
+  --line: rgba(242, 234, 211, 0.07);
+  --line-strong: rgba(242, 234, 211, 0.14);
+
+  --text: #f2ead3;
+  --text-2: #a9a592;
+  --text-3: #6c6c64;
+
+  --orange: #e8742c;
+  --orange-hi: #f2853f;
+  --orange-ink: #1a0e05;
+  --teal: #1fa79a;
+  --teal-dim: rgba(31, 167, 154, 0.14);
+  --lime: #8bc53f;
+  --danger: #e0574b;
+  --danger-dim: rgba(224, 87, 75, 0.12);
+
+  --font-display: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  --font-ui: 'Inter Variable', 'Inter', system-ui, sans-serif;
+
+  --r: 6px;
+  --r-lg: 10px;
+  --sidebar-w: 236px;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --t: 150ms var(--ease);
+
+  color-scheme: dark;
+}
