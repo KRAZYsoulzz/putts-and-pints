@@ -24,6 +24,7 @@ interface Data {
   records: Record<Division, number | null>
   reload: () => Promise<void>
   patchEntry: (id: string, patch: Partial<Entry>) => Promise<void>
+  setAdmin: (admin: boolean) => void
 }
 
 const Ctx = createContext<Data | null>(null)
@@ -38,7 +39,7 @@ export async function must<T>(q: PromiseLike<{ data: T; error: { message: string
 export function DataProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
   const [session, setSession] = useState<Session | null>(null)
-  const [isAdmin, setIsAdmin] = useState(false)
+  const [isAdmin, setIsAdmin] = useState(() => localStorage.getItem('puttsAndPintsAdmin') === 'true')
   const [seasons, setSeasons] = useState<Season[]>([])
   const [players, setPlayers] = useState<Player[]>([])
   const [tags, setTags] = useState<Tag[]>([])
@@ -46,17 +47,21 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const [entries, setEntries] = useState<Entry[]>([])
   const [ledger, setLedger] = useState<LedgerRow[]>([])
 
-  // Auth ---------------------------------------------------------------------
+  const setAdmin = useCallback((admin: boolean) => {
+    setIsAdmin(admin)
+    if (admin) {
+      localStorage.setItem('puttsAndPintsAdmin', 'true')
+    } else {
+      localStorage.removeItem('puttsAndPintsAdmin')
+    }
+  }, [])
+
+  // Auth (optional session sync) ---------------------------------------------
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session))
     const { data } = supabase.auth.onAuthStateChange((_e, s) => setSession(s))
     return () => data.subscription.unsubscribe()
   }, [])
-
-  useEffect(() => {
-    if (!session) { setIsAdmin(false); return }
-    supabase.rpc('pp_is_admin').then(({ data }) => setIsAdmin(data === true))
-  }, [session])
 
   // Load ---------------------------------------------------------------------
   const reload = useCallback(async () => {
@@ -126,9 +131,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
       players, playerById: new Map(players.map(p => [p.id, p])),
       tags, events, entries, ledger,
       liveEvent: [...events].reverse().find(e => e.status !== 'complete') ?? null,
-      records, reload, patchEntry,
+      records, reload, patchEntry, setAdmin,
     }
-  }, [loading, session, isAdmin, seasons, players, tags, events, entries, ledger, reload, patchEntry])
+  }, [loading, session, isAdmin, seasons, players, tags, events, entries, ledger, reload, patchEntry, setAdmin])
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }

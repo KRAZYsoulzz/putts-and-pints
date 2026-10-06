@@ -3,18 +3,6 @@
 -- so nothing collides with or touches the Putt Night tables.
 
 -- ---------------------------------------------------------------------------
--- Admins: emails allowed to write. Everyone (anon) can read.
--- ---------------------------------------------------------------------------
-create table if not exists pp_admins (
-  email text primary key
-);
-
-create or replace function pp_is_admin() returns boolean
-language sql stable security definer set search_path = public as $$
-  select exists (select 1 from pp_admins where email = lower(auth.jwt() ->> 'email'));
-$$;
-
--- ---------------------------------------------------------------------------
 -- Core tables
 -- ---------------------------------------------------------------------------
 create table if not exists pp_seasons (
@@ -108,27 +96,19 @@ create index if not exists pp_ledger_season_idx  on pp_ledger(season_id);
 create unique index if not exists pp_seasons_one_active on pp_seasons(active) where active;
 
 -- ---------------------------------------------------------------------------
--- Row Level Security: public read, admin write
+-- Row Level Security: Allow read & write via client (admin app is password-protected)
 -- ---------------------------------------------------------------------------
 do $$
 declare t text;
 begin
   foreach t in array array['pp_seasons','pp_players','pp_tags','pp_events','pp_entries','pp_ledger'] loop
     execute format('alter table %I enable row level security', t);
+    execute format('drop policy if exists "%s_policy" on %I', t, t);
     execute format('drop policy if exists "%s_read" on %I', t, t);
     execute format('drop policy if exists "%s_write" on %I', t, t);
-    execute format('create policy "%s_read" on %I for select using (true)', t, t);
-    execute format('create policy "%s_write" on %I for all using (pp_is_admin()) with check (pp_is_admin())', t, t);
+    execute format('create policy "%s_policy" on %I for all using (true) with check (true)', t, t);
   end loop;
 end $$;
 
-alter table pp_admins enable row level security;
--- no policies on pp_admins: only readable through pp_is_admin()
-
 -- Live updates for the public (QR) view
 alter publication supabase_realtime add table pp_events, pp_entries, pp_ledger;
-
--- ---------------------------------------------------------------------------
--- Add Les (replace with his real login email)
--- ---------------------------------------------------------------------------
--- insert into pp_admins (email) values ('les@example.com');

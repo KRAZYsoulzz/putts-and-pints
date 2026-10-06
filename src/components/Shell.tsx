@@ -3,7 +3,6 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { QRCodeSVG } from 'qrcode.react'
 import { CalendarDays, Coins, Flag, LogIn, LogOut, QrCode, Settings2, Trophy, Users } from 'lucide-react'
 import { useData } from '../lib/store'
-import { supabase } from '../lib/supabase'
 import { Dialog } from './ui'
 
 const PUBLIC_NAV = [
@@ -18,7 +17,7 @@ const ADMIN_NAV = [
 ]
 
 export default function Shell() {
-  const { season, session, isAdmin } = useData()
+  const { season, isAdmin, setAdmin } = useData()
   const [qr, setQr] = useState(false)
   const nav = useNavigate()
   const link = (n: typeof PUBLIC_NAV[number]) => (
@@ -47,8 +46,8 @@ export default function Shell() {
           </button>
           <div className="whoami">
             <span><i className={`dot ${isAdmin ? 'on' : ''}`} />{isAdmin ? 'Admin' : 'View only'}</span>
-            {session
-              ? <button className="btn btn-ghost btn-sm" onClick={() => supabase.auth.signOut()}><LogOut size={14} /> Sign out</button>
+            {isAdmin
+              ? <button className="btn btn-ghost btn-sm" onClick={() => setAdmin(false)}><LogOut size={14} /> Sign out</button>
               : <button className="btn btn-ghost btn-sm" onClick={() => nav('/login')}><LogIn size={14} /> Sign in</button>}
           </div>
         </div>

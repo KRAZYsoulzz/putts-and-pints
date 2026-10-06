@@ -35,7 +35,6 @@ Built with **React**, **TypeScript**, **Vite**, **Supabase**, and **VitePWA**.
 ## 🚀 Supabase Setup
 
 Putts & Pints shares the existing Supabase project with Putt Night. All tables are strictly isolated with the `pp_` prefix:
-- `pp_admins`
 - `pp_seasons`
 - `pp_players`
 - `pp_tags`
@@ -44,13 +43,12 @@ Putts & Pints shares the existing Supabase project with Putt Night. All tables a
 - `pp_ledger`
 
 ### 1. Apply Database Migration
-Open your Supabase dashboard -> **SQL Editor**, open `supabase/001_schema.sql` and run it.
+Open your Supabase dashboard -> **SQL Editor**, open `supabase/001_schema.sql` and run it. That's it!
 
-### 2. Add Les as an Admin
-Run the following query in the Supabase SQL editor with Les's login email:
-```sql
-insert into pp_admins (email) values ('les@example.com');
-```
+### 2. Director Login
+Les can log in directly on the web app at `/login`:
+- **Username:** `admin` (or `les`)
+- **Password:** `MoneyManLes`
 
 ---
 
