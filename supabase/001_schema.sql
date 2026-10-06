@@ -1,9 +1,9 @@
--- Putts & Pints schema
--- Lives in the same Supabase project as Putt Night. Every object is prefixed `pp_`
--- so nothing collides with or touches the Putt Night tables.
+-- Putts & Pints Database Schema
+-- Safe to run in Supabase SQL editor: all tables are prefixed `pp_`
+-- so nothing touches or modifies existing Putt Night tables.
 
 -- ---------------------------------------------------------------------------
--- Core tables
+-- 1. Create Tables
 -- ---------------------------------------------------------------------------
 create table if not exists pp_seasons (
   id          uuid primary key default gen_random_uuid(),
@@ -21,7 +21,6 @@ create table if not exists pp_players (
   created_at  timestamptz not null default now()
 );
 
--- Tag holders for a season. tag_number is the tag they currently hold.
 create table if not exists pp_tags (
   id          uuid primary key default gen_random_uuid(),
   season_id   uuid not null references pp_seasons(id) on delete cascade,
@@ -62,24 +61,23 @@ create table if not exists pp_entries (
   r2_b2          smallint check (r2_b2 between 0 and 20),
   f_b1           smallint check (f_b1 between 0 and 30),
   f_b2           smallint check (f_b2 between 0 and 20),
-  awards         text[] not null default '{}'      -- manually awarded: perfect_round, perfect5, perfect4, high_score
+  awards         text[] not null default '{}'
                  check (awards <@ array['perfect_round','perfect5','perfect4','high_score']),
   made_final     boolean not null default false,
-  tiebreak       int,                              -- manual playoff order (1 = best)
-  place          int,                              -- written on finalize
-  payout         numeric(10,2) not null default 0, -- written on finalize
-  points         numeric(6,2)  not null default 0, -- written on finalize
+  tiebreak       int,
+  place          int,
+  payout         numeric(10,2) not null default 0,
+  points         numeric(6,2)  not null default 0,
   created_at     timestamptz not null default now(),
   unique (event_id, player_id)
 );
 
--- Every dollar that moves through a pot. Balances = sum(amount).
 create table if not exists pp_ledger (
   id          uuid primary key default gen_random_uuid(),
   season_id   uuid not null references pp_seasons(id) on delete cascade,
   event_id    uuid references pp_events(id) on delete cascade,
   player_id   uuid references pp_players(id) on delete set null,
-  division    text check (division in ('M','W')),       -- null = season-wide (tag fund)
+  division    text check (division in ('M','W')),
   fund        text not null check (fund in ('perfect_round','backup','perfect5','perfect4','high_score','tag_fund')),
   kind        text not null check (kind in ('carryover','entry','overflow','bonus_payout','transfer','adjustment','expense','tag_sale','rollover')),
   amount      numeric(10,2) not null,
@@ -87,28 +85,33 @@ create table if not exists pp_ledger (
   created_at  timestamptz not null default now()
 );
 
+-- ---------------------------------------------------------------------------
+-- 2. Indexes
+-- ---------------------------------------------------------------------------
 create index if not exists pp_events_season_idx  on pp_events(season_id);
 create index if not exists pp_entries_event_idx  on pp_entries(event_id);
 create index if not exists pp_entries_player_idx on pp_entries(player_id);
 create index if not exists pp_ledger_season_idx  on pp_ledger(season_id);
 
--- Only one active season at a time
-create unique index if not exists pp_seasons_one_active on pp_seasons(active) where active;
+-- ---------------------------------------------------------------------------
+-- 3. Row Level Security (Explicitly Enabled)
+-- ---------------------------------------------------------------------------
+alter table pp_seasons enable row level security;
+alter table pp_players enable row level security;
+alter table pp_tags enable row level security;
+alter table pp_events enable row level security;
+alter table pp_entries enable row level security;
+alter table pp_ledger enable row level security;
+
+-- Policies allowing the application to read and write data
+create policy "pp_seasons_access" on pp_seasons for all using (true) with check (true);
+create policy "pp_players_access" on pp_players for all using (true) with check (true);
+create policy "pp_tags_access" on pp_tags for all using (true) with check (true);
+create policy "pp_events_access" on pp_events for all using (true) with check (true);
+create policy "pp_entries_access" on pp_entries for all using (true) with check (true);
+create policy "pp_ledger_access" on pp_ledger for all using (true) with check (true);
 
 -- ---------------------------------------------------------------------------
--- Row Level Security: Allow read & write via client (admin app is password-protected)
+-- 4. Realtime Subscriptions (For live scoreboard viewing on spectator phones)
 -- ---------------------------------------------------------------------------
-do $$
-declare t text;
-begin
-  foreach t in array array['pp_seasons','pp_players','pp_tags','pp_events','pp_entries','pp_ledger'] loop
-    execute format('alter table %I enable row level security', t);
-    execute format('drop policy if exists "%s_policy" on %I', t, t);
-    execute format('drop policy if exists "%s_read" on %I', t, t);
-    execute format('drop policy if exists "%s_write" on %I', t, t);
-    execute format('create policy "%s_policy" on %I for all using (true) with check (true)', t, t);
-  end loop;
-end $$;
-
--- Live updates for the public (QR) view
 alter publication supabase_realtime add table pp_events, pp_entries, pp_ledger;
