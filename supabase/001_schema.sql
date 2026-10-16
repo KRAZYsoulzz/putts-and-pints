@@ -103,7 +103,9 @@ alter table pp_events enable row level security;
 alter table pp_entries enable row level security;
 alter table pp_ledger enable row level security;
 
--- Policies allowing the application to read and write data
+-- These open policies match what was originally applied. They allow anonymous
+-- writes and are replaced by supabase/002_admin_auth.sql. Run that migration
+-- before treating the scoreboard as admin-protected.
 create policy "pp_seasons_access" on pp_seasons for all using (true) with check (true);
 create policy "pp_players_access" on pp_players for all using (true) with check (true);
 create policy "pp_tags_access" on pp_tags for all using (true) with check (true);

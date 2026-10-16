@@ -24,7 +24,9 @@ interface Data {
   records: Record<Division, number | null>
   reload: () => Promise<void>
   patchEntry: (id: string, patch: Partial<Entry>) => Promise<void>
-  setAdmin: (admin: boolean) => void
+  /** True once the first session and director check have finished. */
+  authReady: boolean
+  signOut: () => Promise<void>
 }
 
 const Ctx = createContext<Data | null>(null)
@@ -39,7 +41,8 @@ export async function must<T>(q: PromiseLike<{ data: T; error: { message: string
 export function DataProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
   const [session, setSession] = useState<Session | null>(null)
-  const [isAdmin, setIsAdmin] = useState(() => localStorage.getItem('puttsAndPintsAdmin') === 'true')
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [authReady, setAuthReady] = useState(false)
   const [seasons, setSeasons] = useState<Season[]>([])
   const [players, setPlayers] = useState<Player[]>([])
   const [tags, setTags] = useState<Tag[]>([])
@@ -47,20 +50,57 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const [entries, setEntries] = useState<Entry[]>([])
   const [ledger, setLedger] = useState<LedgerRow[]>([])
 
-  const setAdmin = useCallback((admin: boolean) => {
-    setIsAdmin(admin)
-    if (admin) {
-      localStorage.setItem('puttsAndPintsAdmin', 'true')
-    } else {
-      localStorage.removeItem('puttsAndPintsAdmin')
-    }
+  // Drop the old client-side "admin" flag. It was a localStorage boolean,
+  // not a session, and anyone could set it.
+  useEffect(() => {
+    localStorage.removeItem('puttsAndPintsAdmin')
   }, [])
 
-  // Auth (optional session sync) ---------------------------------------------
+  const signOut = useCallback(async () => {
+    await supabase.auth.signOut()
+    setSession(null)
+    setIsAdmin(false)
+  }, [])
+
+  // Session plus director membership. Other Supabase calls are deferred out
+  // of onAuthStateChange so they don't run while the auth client holds its lock.
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setSession(data.session))
-    const { data } = supabase.auth.onAuthStateChange((_e, s) => setSession(s))
-    return () => data.subscription.unsubscribe()
+    let cancelled = false
+    let generation = 0
+    const timers = new Set<number>()
+
+    const applySession = (next: Session | null) => {
+      const gen = ++generation
+      setSession(next)
+      const timer = window.setTimeout(() => {
+        timers.delete(timer)
+        void (async () => {
+          if (cancelled || gen !== generation) return
+          if (!next) {
+            setIsAdmin(false)
+            setAuthReady(true)
+            return
+          }
+          const { data, error } = await supabase.rpc('pp_is_admin')
+          if (cancelled || gen !== generation) return
+          setIsAdmin(!error && data === true)
+          setAuthReady(true)
+        })()
+      }, 0)
+      timers.add(timer)
+    }
+
+    void supabase.auth.getSession().then(({ data }) => {
+      if (!cancelled) applySession(data.session)
+    })
+    const { data: auth } = supabase.auth.onAuthStateChange((_event, next) => {
+      if (!cancelled) applySession(next)
+    })
+    return () => {
+      cancelled = true
+      for (const timer of timers) window.clearTimeout(timer)
+      auth.subscription.unsubscribe()
+    }
   }, [])
 
   // Load ---------------------------------------------------------------------
@@ -110,10 +150,11 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
   // Optimistic entry edits (score grid) ---------------------------------------
   const patchEntry = useCallback(async (id: string, patch: Partial<Entry>) => {
+    if (!isAdmin) return
     setEntries(prev => prev.map(e => (e.id === id ? { ...e, ...patch } : e)))
     const { error } = await supabase.from('pp_entries').update(patch).eq('id', id)
     if (error) { alert(error.message); reload() }
-  }, [reload])
+  }, [isAdmin, reload])
 
   // Derived ------------------------------------------------------------------
   const value = useMemo<Data>(() => {
@@ -131,9 +172,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
       players, playerById: new Map(players.map(p => [p.id, p])),
       tags, events, entries, ledger,
       liveEvent: [...events].reverse().find(e => e.status !== 'complete') ?? null,
-      records, reload, patchEntry, setAdmin,
+      records, reload, patchEntry, authReady, signOut,
     }
-  }, [loading, session, isAdmin, seasons, players, tags, events, entries, ledger, reload, patchEntry, setAdmin])
+  }, [loading, session, isAdmin, authReady, seasons, players, tags, events, entries, ledger, reload, patchEntry, signOut])
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }

@@ -17,7 +17,7 @@ const ADMIN_NAV = [
 ]
 
 export default function Shell() {
-  const { season, isAdmin, setAdmin } = useData()
+  const { season, isAdmin, signOut } = useData()
   const [qr, setQr] = useState(false)
   const nav = useNavigate()
   const link = (n: typeof PUBLIC_NAV[number]) => (
@@ -47,7 +47,7 @@ export default function Shell() {
           <div className="whoami">
             <span><i className={`dot ${isAdmin ? 'on' : ''}`} />{isAdmin ? 'Admin' : 'View only'}</span>
             {isAdmin
-              ? <button className="btn btn-ghost btn-sm" onClick={() => setAdmin(false)}><LogOut size={14} /> Sign out</button>
+              ? <button className="btn btn-ghost btn-sm" onClick={() => { void signOut(); nav('/') }}><LogOut size={14} /> Sign out</button>
               : <button className="btn btn-ghost btn-sm" onClick={() => nav('/login')}><LogIn size={14} /> Sign in</button>}
           </div>
         </div>
@@ -57,6 +57,12 @@ export default function Shell() {
         <img src="/logo.jpg" alt="" />
         <span className="display brand-name">Putts &amp; Pints</span>
         <span className="spacer" />
+        {isAdmin && (
+          <button className="btn btn-ghost btn-sm btn-icon" onClick={() => nav('/settings')} aria-label="Settings"><Settings2 size={18} /></button>
+        )}
+        {isAdmin
+          ? <button className="btn btn-ghost btn-sm btn-icon" onClick={() => { void signOut(); nav('/') }} aria-label="Sign out"><LogOut size={18} /></button>
+          : <button className="btn btn-ghost btn-sm btn-icon" onClick={() => nav('/login')} aria-label="Sign in"><LogIn size={18} /></button>}
         <button className="btn btn-ghost btn-sm btn-icon" onClick={() => setQr(true)} aria-label="Share"><QrCode size={18} /></button>
       </header>
 

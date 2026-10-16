@@ -42,13 +42,39 @@ Putts & Pints shares the existing Supabase project with Putt Night. All tables a
 - `pp_entries`
 - `pp_ledger`
 
-### 1. Apply Database Migration
-Open your Supabase dashboard -> **SQL Editor**, open `supabase/001_schema.sql` and run it. That's it!
+### 1. Apply Database Migrations
+Open your Supabase dashboard → **SQL Editor** and run these files in order:
 
-### 2. Director Login
-Les can log in directly on the web app at `/login`:
-- **Username:** `admin` (or `les`)
-- **Password:** `MoneyManLes`
+1. `supabase/001_schema.sql` (skip if the `pp_` tables already exist)
+2. `supabase/002_admin_auth.sql`
+
+`002` turns off anonymous writes. Players and viewers can still read the live scoreboard, standings, players, and pots. Scoring, roster edits, pot adjustments, season management, and settings saves require a signed-in director. Do not add the `pp_private` schema to **Exposed schemas**.
+
+### 2. Create the director account
+The app no longer checks a password in the browser. Directors sign in through Supabase Auth. The login page still accepts usernames `admin` and `les`; those names are aliases for one Supabase user.
+
+There is no seeded password. Create the account once:
+
+1. In the dashboard open **Authentication → Users → Add user → Create new user**.
+2. Use an email whose domain can receive mail. Supabase rejects addresses on `.local` and `example.com`.
+3. Choose a password and turn on **Auto Confirm User**. You can reuse the director password you already use. Do not put it in the repository, this README, or a migration. It used to be hardcoded in the client, so pick a new one if this repo was ever shared.
+4. Optional: under **Authentication → Providers → Email**, turn off public sign-ups. An extra account still cannot change data unless it is listed as a director.
+5. In the SQL Editor, replace the email and run:
+
+```sql
+insert into pp_private.admins (user_id)
+select id from auth.users where email = 'director@your-domain.com'
+on conflict (user_id) do nothing;
+
+insert into pp_private.director_alias (username, email) values
+  ('admin', 'director@your-domain.com'),
+  ('les', 'director@your-domain.com')
+on conflict (username) do update set email = excluded.email;
+```
+
+6. Open `/login` and sign in with username `admin` or `les`, or with that email address.
+
+To add another director, create their Supabase user, insert their id into `pp_private.admins`, and have them sign in with their email. Sign-out is in the sidebar (and in the top bar on a phone).
 
 ---
 
