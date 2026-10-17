@@ -166,5 +166,9 @@ assert.equal(tagTakenTonight(4, [{ id: 'a', division: 'M', tag_in: 4 }], 'c', 'W
 assert.match(friendlyError('duplicate key value violates unique constraint "pp_entries_event_id_player_id_key"'), /already checked in/)
 assert.doesNotMatch(friendlyError('duplicate key value violates unique constraint "pp_entries_event_id_player_id_key"'), /pp_entries_event_id_player_id_key/)
 assert.match(friendlyError('new row violates check constraint "pp_entries_r1_b1_check"'), /allowed range/)
+assert.match(friendlyError('new row violates row-level security policy for table "pp_players"'), /not signed in/)
+assert.match(friendlyError('JWT expired'), /not signed in/)
+assert.match(friendlyError(undefined), /try again/)
+assert.match(friendlyError('new row violates check constraint "pp_ledger_fund_check"'), /003_ledger_and_event_name/)
 
 console.log('All rules checks passed ✔')

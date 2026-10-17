@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Edit2, Plus, Trash2 } from 'lucide-react'
 import { useData, must } from '../lib/store'
 import { supabase } from '../lib/supabase'
-import { askConfirm } from '../lib/notify'
+import { askConfirm, messageOf } from '../lib/notify'
 import { bestTotal, clampScore, totals } from '../lib/scoring'
 import { duplicateName, normalizeName, parseTag, tagTakenOnRoster } from '../lib/validation'
 import {
@@ -118,19 +118,24 @@ export default function Players() {
     }
     setEditError('')
 
-    await must(
-      supabase
-        .from('pp_players')
-        .update({
-          name: clean,
-          division: editDivision,
-          active: editActive,
-        })
-        .eq('id', editPlayer.id),
-    )
+    try {
+      await must(
+        supabase
+          .from('pp_players')
+          .update({
+            name: clean,
+            division: editDivision,
+            active: editActive,
+          })
+          .eq('id', editPlayer.id),
+      )
 
-    if (season && (parsed.value != null || tags.some(t => t.player_id === editPlayer.id))) {
-      await saveTag(editPlayer.id, parsed.value)
+      if (season && (parsed.value != null || tags.some(t => t.player_id === editPlayer.id))) {
+        await saveTag(editPlayer.id, parsed.value)
+      }
+    } catch (err) {
+      setEditError(messageOf(err))
+      return
     }
 
     setEditPlayer(null)
@@ -155,11 +160,16 @@ export default function Players() {
 
     const ok = await askConfirm(confirmMsg, { title: 'Delete player', confirmLabel: 'Delete', danger: true })
     if (!ok) return
-    if (hasEntries) {
-      await must(supabase.from('pp_entries').delete().eq('player_id', editPlayer.id))
+    try {
+      if (hasEntries) {
+        await must(supabase.from('pp_entries').delete().eq('player_id', editPlayer.id))
+      }
+      await must(supabase.from('pp_tags').delete().eq('player_id', editPlayer.id))
+      await must(supabase.from('pp_players').delete().eq('id', editPlayer.id))
+    } catch (err) {
+      setEditError(messageOf(err))
+      return
     }
-    await must(supabase.from('pp_tags').delete().eq('player_id', editPlayer.id))
-    await must(supabase.from('pp_players').delete().eq('id', editPlayer.id))
     setEditPlayer(null)
     setSelectedPlayer(null)
     reload()
@@ -201,17 +211,22 @@ export default function Players() {
     if (!tagIn.ok) { setEntryError(tagIn.error); return }
     if (!tagOut.ok) { setEntryError(tagOut.error); return }
     setEntryError('')
-    await must(supabase.from('pp_entries').update({
-      ...entryForm,
-      r1_b1: score(entryForm.r1_b1, 30),
-      r1_b2: score(entryForm.r1_b2, 20),
-      r2_b1: score(entryForm.r2_b1, 30),
-      r2_b2: score(entryForm.r2_b2, 20),
-      f_b1: score(entryForm.f_b1, 30),
-      f_b2: score(entryForm.f_b2, 20),
-      tag_in: tagIn.value,
-      tag_out: tagOut.value,
-    }).eq('id', editEntry.id))
+    try {
+      await must(supabase.from('pp_entries').update({
+        ...entryForm,
+        r1_b1: score(entryForm.r1_b1, 30),
+        r1_b2: score(entryForm.r1_b2, 20),
+        r2_b1: score(entryForm.r2_b1, 30),
+        r2_b2: score(entryForm.r2_b2, 20),
+        f_b1: score(entryForm.f_b1, 30),
+        f_b2: score(entryForm.f_b2, 20),
+        tag_in: tagIn.value,
+        tag_out: tagOut.value,
+      }).eq('id', editEntry.id))
+    } catch (err) {
+      setEntryError(messageOf(err))
+      return
+    }
     setEditEntry(null)
     reload()
   }
@@ -221,7 +236,12 @@ export default function Players() {
     if (!editEntry) return
     const ok = await askConfirm('Scores and finishes for this night will be removed.', { title: 'Delete this entry?', confirmLabel: 'Delete', danger: true })
     if (!ok) return
-    await must(supabase.from('pp_entries').delete().eq('id', editEntry.id))
+    try {
+      await must(supabase.from('pp_entries').delete().eq('id', editEntry.id))
+    } catch (err) {
+      setEntryError(messageOf(err))
+      return
+    }
     setEditEntry(null)
     reload()
   }
@@ -241,10 +261,15 @@ export default function Players() {
       return
     }
     setAddError('')
-    const created = await must(
-      supabase.from('pp_players').insert({ name: clean, division: newDivision, active: true }).select().single(),
-    )
-    if (parsed.value != null) await saveTag(created.id, parsed.value)
+    try {
+      const created = await must(
+        supabase.from('pp_players').insert({ name: clean, division: newDivision, active: true }).select().single(),
+      )
+      if (parsed.value != null) await saveTag(created.id, parsed.value)
+    } catch (err) {
+      setAddError(messageOf(err))
+      return
+    }
     setAddModal(false)
     setNewName('')
     setInitialTag('')

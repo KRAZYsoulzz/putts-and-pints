@@ -54,15 +54,22 @@ export function payoutIssue(amounts: number[], pool: number): PayoutIssue {
 }
 
 /** Turn a Postgres error into something a director can act on. Never the raw constraint name. */
-export function friendlyError(message: string): string {
-  const m = message.toLowerCase()
+export function friendlyError(message: unknown): string {
+  const m = typeof message === 'string' ? message.toLowerCase() : ''
+  if (
+    m.includes('jwt') || m.includes('jws') || m.includes('not authenticated') ||
+    m.includes('permission denied') || m.includes('row-level security') ||
+    m.includes('pgrst301') || m.includes('invalid claim')
+  ) {
+    return 'You are not signed in as a director. Sign in again, then retry that save.'
+  }
   if (m.includes('pp_entries_event_id_player_id') || (m.includes('duplicate') && m.includes('pp_entries'))) {
     return 'That player is already checked in.'
   }
   if (m.includes('pp_players_name_unique') || (m.includes('duplicate') && m.includes('pp_players'))) {
     return 'A player with that name is already on the roster.'
   }
-  if (m.includes('pp_ledger_fund_check') || m.includes('pp_ledger_kind_check') || (m.includes('pp_events') && m.includes('name'))) {
+  if (m.includes('pp_ledger_fund_check') || m.includes('pp_ledger_kind_check') || (m.includes('pp_events') && m.includes('name') && m.includes('column'))) {
     return 'That save needs the database migration in supabase/003_ledger_and_event_name.sql. Run it in the Supabase SQL editor, then try again.'
   }
   if (m.includes('check constraint') || m.includes('violates check')) {

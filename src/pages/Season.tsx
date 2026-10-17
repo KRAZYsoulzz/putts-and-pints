@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { CheckCircle2, Pencil, Plus, Sparkles, Trash2 } from 'lucide-react'
 import { useData, must } from '../lib/store'
 import { supabase } from '../lib/supabase'
-import { askConfirm, reportInfo } from '../lib/notify'
+import { askConfirm, messageOf, reportInfo } from '../lib/notify'
 import { normalizeName } from '../lib/validation'
 import { Dialog, MoneyInput, PageHead, fmtDate } from '../components/ui'
 import type { Division, Fund, PPEvent } from '../lib/types'
@@ -18,6 +18,8 @@ export default function SeasonPage() {
   const [editEvent, setEditEvent] = useState<PPEvent | null>(null)
   const [editName, setEditName] = useState('')
   const [editDate, setEditDate] = useState('')
+  const [eventError, setEventError] = useState('')
+  const [carryError, setCarryError] = useState('')
 
   // Carryover form state
   const [carryover, setCarryover] = useState({
@@ -36,21 +38,30 @@ export default function SeasonPage() {
     if (!name) { setSeasonError('Enter a season name.'); return }
     setSeasonError('')
     setNewSeasonName(name)
-    // Deactivate others
-    await supabase.from('pp_seasons').update({ active: false }).neq('id', '00000000-0000-0000-0000-000000000000')
-    await must(
-      supabase.from('pp_seasons').insert({
-        name,
-        active: true,
-      }),
-    )
+    try {
+      await must(
+        supabase.from('pp_seasons').update({ active: false }).neq('id', '00000000-0000-0000-0000-000000000000'),
+      )
+      await must(
+        supabase.from('pp_seasons').insert({
+          name,
+          active: true,
+        }),
+      )
+    } catch (err) {
+      setSeasonError(messageOf(err))
+      return
+    }
     setNewSeasonModal(false)
     setNewSeasonName('')
     reload()
   }
 
   const handleSaveCarryover = async () => {
-    if (!season) return
+    if (!season) {
+      setCarryError('Create or activate a season before saving carryovers.')
+      return
+    }
     const entriesToPost: { division: Division; fund: Fund; amount: number; note: string }[] = [
       { division: 'M', fund: 'perfect_round', amount: carryover.prM, note: 'Carried over from last year' },
       { division: 'W', fund: 'perfect_round', amount: carryover.prW, note: 'Carried over from last year' },
@@ -62,19 +73,25 @@ export default function SeasonPage() {
       { division: 'W', fund: 'high_score', amount: carryover.hsW, note: 'Carried over from last year' },
     ]
 
-    for (const item of entriesToPost) {
-      if (item.amount > 0) {
-        await must(
-          supabase.from('pp_ledger').insert({
-            season_id: season.id,
-            division: item.division,
-            fund: item.fund,
-            kind: 'carryover',
-            amount: item.amount,
-            note: item.note,
-          }),
-        )
+    setCarryError('')
+    try {
+      for (const item of entriesToPost) {
+        if (item.amount > 0) {
+          await must(
+            supabase.from('pp_ledger').insert({
+              season_id: season.id,
+              division: item.division,
+              fund: item.fund,
+              kind: 'carryover',
+              amount: item.amount,
+              note: item.note,
+            }),
+          )
+        }
       }
+    } catch (err) {
+      setCarryError(messageOf(err))
+      return
     }
 
     setCarryoverModal(false)
@@ -86,12 +103,22 @@ export default function SeasonPage() {
     setEditEvent(ev)
     setEditName(ev.name ?? '')
     setEditDate(ev.event_date)
+    setEventError('')
   }
 
   const saveEvent = async () => {
-    if (!editEvent || !editDate) return
+    if (!editEvent || !editDate) {
+      setEventError('Pick a date before saving.')
+      return
+    }
     const name = normalizeName(editName)
-    await must(supabase.from('pp_events').update({ event_date: editDate, name: name || null }).eq('id', editEvent.id))
+    setEventError('')
+    try {
+      await must(supabase.from('pp_events').update({ event_date: editDate, name: name || null }).eq('id', editEvent.id))
+    } catch (err) {
+      setEventError(messageOf(err))
+      return
+    }
     setEditEvent(null)
     reload()
   }
@@ -103,7 +130,11 @@ export default function SeasonPage() {
       { title: 'Delete season', confirmLabel: 'Delete season', danger: true },
     )
     if (!ok) return
-    await must(supabase.from('pp_seasons').delete().eq('id', season.id))
+    try {
+      await must(supabase.from('pp_seasons').delete().eq('id', season.id))
+    } catch {
+      return
+    }
     openEvent(null)
     reload()
   }
@@ -216,7 +247,11 @@ export default function SeasonPage() {
                                   { title: 'Delete event', confirmLabel: 'Delete', danger: true },
                                 )
                                 if (!ok) return
-                                await must(supabase.from('pp_events').delete().eq('id', ev.id))
+                                try {
+                                  await must(supabase.from('pp_events').delete().eq('id', ev.id))
+                                } catch {
+                                  return
+                                }
                                 if (viewEventId === ev.id) openEvent(null)
                                 reload()
                               }}
@@ -276,6 +311,7 @@ export default function SeasonPage() {
                 ? 'A finalized night can be renamed here. Open it and choose Reopen to change scores.'
                 : 'Open the event to keep scoring it.'}
             </p>
+            {eventError && <small className="field-error">{eventError}</small>}
             <button className="btn btn-primary btn-block" disabled={!editDate} onClick={saveEvent}>Save event</button>
           </div>
         </Dialog>
@@ -351,6 +387,7 @@ export default function SeasonPage() {
               </div>
             </div>
 
+            {carryError && <small className="field-error">{carryError}</small>}
             <div style={{ marginTop: 16 }}>
               <button className="btn btn-primary btn-block" onClick={handleSaveCarryover}>
                 Save Carryovers to Ledger

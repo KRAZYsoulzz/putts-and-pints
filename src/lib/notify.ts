@@ -48,6 +48,12 @@ export function report(message: string, tone: Tone = 'info') {
 export function reportError(message: string) { report(message, 'error') }
 export function reportInfo(message: string) { report(message, 'info') }
 
+/** Text for a failed save. `must()` throws an Error whose message is already readable. */
+export function messageOf(err: unknown): string {
+  if (err instanceof Error && err.message) return err.message
+  return 'Something went wrong saving that. Please try again.'
+}
+
 export function subscribeConfirm(fn: ConfirmListener) {
   confirmListener = fn
   fn(pendingConfirm)

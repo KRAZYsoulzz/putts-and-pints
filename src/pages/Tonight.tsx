@@ -12,7 +12,7 @@ import {
 } from 'lucide-react'
 import { useData, must } from '../lib/store'
 import { supabase } from '../lib/supabase'
-import { askConfirm, reportError, reportInfo } from '../lib/notify'
+import { askConfirm, messageOf, reportError, reportInfo } from '../lib/notify'
 import {
   AWARD_LABEL,
   AWARD_SHORT,
@@ -176,7 +176,7 @@ export default function Tonight() {
             onDate={setEventDate}
             onClose={() => setStartOpen(false)}
             onCreate={async () => {
-              if (!season) return
+              if (!season) throw new Error('Create or activate a season first, on the Season page.')
               openEvent(null)
               const name = normalizeName(eventName)
               const row: Record<string, unknown> = {
@@ -234,7 +234,9 @@ export default function Tonight() {
       }, { onConflict: 'event_id,player_id', ignoreDuplicates: true })
       if (error) {
         console.error(error.message)
-        reportError(friendlyError(error.message))
+        const message = friendlyError(error.message)
+        reportError(message)
+        setCreateError(message)
         return
       }
       setAddPlayerOpen(false)
@@ -251,10 +253,14 @@ export default function Tonight() {
     if (!clean) { setCreateError('Enter a player name.'); return }
     if (duplicateName(clean, players)) { setCreateError(`“${clean}” is already on the roster.`); return }
     setCreateError('')
-    const created = await must(
-      supabase.from('pp_players').insert({ name: clean, division: pDiv, active: true }).select().single(),
-    )
-    await handleCheckinPlayer(created.id, pDiv)
+    try {
+      const created = await must(
+        supabase.from('pp_players').insert({ name: clean, division: pDiv, active: true }).select().single(),
+      )
+      await handleCheckinPlayer(created.id, pDiv)
+    } catch (err) {
+      setCreateError(messageOf(err))
+    }
   }
 
   const setStatus = (status: EventStatus) => patchEvent(event.id, { status })
@@ -839,6 +845,7 @@ function StartEventDialog({ name, date, onName, onDate, onClose, onCreate }: {
   onCreate: () => Promise<void>
 }) {
   const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
   return (
     <Dialog title="Start New Event" onClose={onClose}>
       <div className="stack">
@@ -850,7 +857,12 @@ function StartEventDialog({ name, date, onName, onDate, onClose, onCreate }: {
           <span>Date</span>
           <input className="input" type="date" value={date} onChange={e => onDate(e.target.value)} />
         </div>
-        <button className="btn btn-primary btn-block" disabled={busy || !date} onClick={async () => { setBusy(true); try { await onCreate() } finally { setBusy(false) } }}>
+        {error && <small className="field-error">{error}</small>}
+        <button className="btn btn-primary btn-block" disabled={busy || !date} onClick={async () => {
+          setBusy(true)
+          setError('')
+          try { await onCreate() } catch (err) { setError(messageOf(err)) } finally { setBusy(false) }
+        }}>
           {busy ? 'Starting…' : 'Start check-in'}
         </button>
       </div>

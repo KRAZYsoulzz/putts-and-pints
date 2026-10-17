@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { PlusCircle, ShieldAlert, Sparkles, Tag } from 'lucide-react'
+import { messageOf } from '../lib/notify'
 import { useData, must } from '../lib/store'
 import { supabase } from '../lib/supabase'
 import { balances } from '../lib/money'
@@ -23,6 +24,7 @@ export default function Pots() {
   const [kind, setKind] = useState<LedgerKind>('adjustment')
   const [amount, setAmount] = useState<number>(0)
   const [note, setNote] = useState('')
+  const [adjustError, setAdjustError] = useState('')
 
   const curBalances = useMemo(() => balances(ledger, division), [ledger, division])
 
@@ -34,18 +36,31 @@ export default function Pots() {
   }, [ledger, division])
 
   const handlePostAdjustment = async () => {
-    if (!amount || !season) return
+    if (!season) {
+      setAdjustError('Create or activate a season before posting to the ledger.')
+      return
+    }
+    if (!amount) {
+      setAdjustError('Enter an amount.')
+      return
+    }
+    setAdjustError('')
     const div = targetFund === 'tag_fund' ? null : targetDivision === 'ALL' ? division : targetDivision
-    await must(
-      supabase.from('pp_ledger').insert({
-        season_id: season.id,
-        division: div,
-        fund: targetFund,
-        kind,
-        amount,
-        note: note.trim() || 'Manual adjustment by admin',
-      }),
-    )
+    try {
+      await must(
+        supabase.from('pp_ledger').insert({
+          season_id: season.id,
+          division: div,
+          fund: targetFund,
+          kind,
+          amount,
+          note: note.trim() || 'Manual adjustment by admin',
+        }),
+      )
+    } catch (err) {
+      setAdjustError(messageOf(err))
+      return
+    }
 
     setAdjustModal(false)
     setAmount(0)
@@ -289,10 +304,10 @@ export default function Pots() {
               />
             </div>
 
+            {adjustError && <small className="field-error">{adjustError}</small>}
             <div style={{ marginTop: 14 }}>
               <button
                 className="btn btn-primary btn-block"
-                disabled={!amount}
                 onClick={handlePostAdjustment}
               >
                 Save Ledger Entry
