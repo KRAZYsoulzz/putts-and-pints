@@ -119,11 +119,13 @@ export function Stat({ label, value, sub }: { label: string; value: ReactNode; s
  * Saving on every keystroke raced the live refetch and dropped or repeated digits.
  * Negatives are refused unless `allowNegative` (pot adjustments) is set.
  */
-export function MoneyInput({ value, onChange, onReject, allowNegative = false, silentInvalid = false, ...rest }: {
+export function MoneyInput({ value, onChange, onReject, onEdit, allowNegative = false, silentInvalid = false, ...rest }: {
   value: number
   onChange: (n: number) => void
   /** Shown by the parent when a blur is rejected. Cleared when the director types again. */
   onReject?: (message: string) => void
+  /** The director focused the field or changed the draft. */
+  onEdit?: () => void
   allowNegative?: boolean
   /** Payout fields revert to the last saved amount, so a message about the rejected number would be stale. */
   silentInvalid?: boolean
@@ -164,7 +166,7 @@ export function MoneyInput({ value, onChange, onReject, allowNegative = false, s
           inputMode="decimal"
           value={shown}
           onFocus={e => { setDraft(Number.isFinite(value) ? String(value) : ''); e.target.select() }}
-          onChange={e => { setError(null); onReject?.(''); setDraft(e.target.value) }}
+          onChange={e => { setError(null); onReject?.(''); onEdit?.(); setDraft(e.target.value) }}
           onBlur={e => commit(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur() }}
           {...rest}

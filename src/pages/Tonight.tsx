@@ -25,8 +25,8 @@ import {
   type PPEvent,
 } from '../lib/types'
 import { byEntryOrder, cents, effectiveCut, qualifiers, suggestedCut, totals, type Ranked } from '../lib/scoring'
-import { balances, divisionResult, eventMoney, nightBonusCost, payoutPool, suggestedPaidPlaces, suggestedPayouts } from '../lib/money'
-import { duplicateName, friendlyError, normalizeName, parseTag, payoutIssue, tagTakenTonight } from '../lib/validation'
+import { balances, displayedPerfectRound, divisionResult, eventLedgerPosted, eventMoney, nightBonusCost, payoutPool, suggestedPaidPlaces, suggestedPayouts } from '../lib/money'
+import { duplicateName, friendlyError, normalizeName, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../lib/validation'
 import { Dialog, DivisionSeg, Menu, MoneyInput, PageHead, ScoreInput, Stat, money, ordinal } from '../components/ui'
 
 const STEPS: { status: EventStatus; label: string }[] = [
@@ -41,7 +41,7 @@ const DIVS: Division[] = ['M', 'W']
 export default function Tonight() {
   const data = useData()
   const {
-    isAdmin, season, settings, liveEvent, events, viewEventId, openEvent,
+    isAdmin, season, settings, liveEvent, events, viewEventId, openEvent, loading,
     entries, players, playerById, tags, ledger, records, reload, patchEntry, patchEvent,
   } = data
 
@@ -57,6 +57,7 @@ export default function Tonight() {
   const [eventName, setEventName] = useState('')
   const [eventDate, setEventDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [barError, setBarError] = useState('')
+  const [payoutNote, setPayoutNote] = useState<{ scope: string; text: string } | null>(null)
   const [extraPlaces, setExtraPlaces] = useState<{ key: string; n: number }>({ key: '', n: 0 })
   const [cutOverride, setCutOverride] = useState<{ key: string; value: number } | null>(null)
 
@@ -67,7 +68,9 @@ export default function Tonight() {
   const queue = useRef(Promise.resolve())
   const entriesRef = useRef(entries)
   const settingsRef = useRef(settings)
+  const payoutNoteTimer = useRef<number | undefined>(undefined)
   useEffect(() => { entriesRef.current = entries }, [entries])
+  useEffect(() => () => window.clearTimeout(payoutNoteTimer.current), [])
   useEffect(() => { settingsRef.current = settings }, [settings])
 
   const divEntries = useMemo(
@@ -167,7 +170,8 @@ export default function Tonight() {
       <div>
         <PageHead title="Tonight's Tournament" eyebrow="Putts & Pints">
           {isAdmin && (
-            <button className="btn btn-primary" onClick={() => {
+            <button className="btn btn-primary" disabled={loading} onClick={() => {
+              if (loading) return
               if (!season) {
                 reportError('Create or activate a season first, on the Season page.')
                 return
@@ -176,7 +180,7 @@ export default function Tonight() {
               setEventDate(new Date().toISOString().slice(0, 10))
               setStartOpen(true)
             }}>
-              <Plus size={16} /> Start New Event
+              <Plus size={16} /> {loading ? 'Loading season…' : 'Start New Event'}
             </button>
           )}
         </PageHead>
@@ -335,18 +339,40 @@ export default function Tonight() {
     }).catch(() => { /* patchEvent already reported the failure */ })
   }
 
+  const payoutScope = `${event.id}|${division}`
+  const payoutNoteText = payoutNote?.scope === payoutScope ? payoutNote.text : ''
+
+  const clearPayoutNote = () => {
+    window.clearTimeout(payoutNoteTimer.current)
+    setPayoutNote(null)
+  }
+
+  const showPayoutNote = (message: string) => {
+    const scope = payoutScope
+    setPayoutNote({ scope, text: message })
+    window.clearTimeout(payoutNoteTimer.current)
+    payoutNoteTimer.current = window.setTimeout(() => {
+      setPayoutNote(prev => (prev?.scope === scope ? null : prev))
+    }, 4500)
+  }
+
   const savePayout = (idx: number, val: number) => {
     const next = Array.from({ length: Math.max(payoutsList.length, idx + 1) }, (_, i) => Number(payoutsList[i] ?? 0))
     next[idx] = val
     while (next.length > 0 && next[next.length - 1] === 0) next.pop()
-    // Rejected amounts are not stored, so the field snaps back. Don't keep a
-    // message that still describes the number the director just left.
-    if (payoutIssue(next, pool)) return
+    const rejected = payoutRejectMessage(next, pool)
+    if (rejected) {
+      // The field snaps back to the saved amount. Say why, then let it fade.
+      showPayoutNote(rejected)
+      return
+    }
+    clearPayoutNote()
     void patchEvent(event.id, division === 'M' ? { payouts_men: next } : { payouts_women: next })
   }
 
   const useSuggested = () => {
     // Split across the place rows on screen, not the default "one per five".
+    clearPayoutNote()
     const next = suggestedPayouts(pool, placeRows)
     void patchEvent(event.id, division === 'M' ? { payouts_men: next } : { payouts_women: next })
   }
@@ -444,6 +470,19 @@ export default function Tonight() {
     }
   }
 
+  // A finalized or reopened night already has its $2s in the ledger. Adding them
+  // again is how the card showed $20 while Pots showed $10.
+  const nightPosted = eventLedgerPosted(ledger, event.id)
+  const previewPot = (event.status === 'results' || event.status === 'complete') && !nightPosted
+  const perfectRoundShown = displayedPerfectRound(
+    curBalances.perfect_round,
+    previewPot ? result.potAfterEntries : curBalances.perfect_round,
+    nightPosted,
+  )
+  const recordedPerfectRound = cents(ledger
+    .filter(r => r.event_id === event.id && r.fund === 'perfect_round' && r.kind === 'bonus_payout')
+    .reduce((sum, r) => sum + Math.abs(Number(r.amount)), 0))
+
   const viewingOther = viewEventId != null && liveEvent != null && viewEventId !== liveEvent.id
   const eventLabel = event.name?.trim() || 'Tonight’s Tournament'
 
@@ -483,8 +522,8 @@ export default function Tonight() {
         />
         <Stat
           label="Perfect Round Pot"
-          value={money(event.status === 'results' || event.status === 'complete' ? result.potAfterEntries : curBalances.perfect_round)}
-          sub={event.status === 'results' || event.status === 'complete'
+          value={money(perfectRoundShown)}
+          sub={previewPot
             ? `After tonight’s $2 per entry · Backup ${money(curBalances.backup)} · cap $${settings.perfectRoundCap}`
             : `Backup Pot: ${money(curBalances.backup)} (Cap $${settings.perfectRoundCap})`}
         />
@@ -767,6 +806,7 @@ export default function Tonight() {
                             value={Number(payoutsList[idx] ?? 0)}
                             aria-label={`${ordinal(idx + 1)} place payout`}
                             silentInvalid
+                            onEdit={clearPayoutNote}
                             onChange={val => savePayout(idx, val)}
                           />
                         </div>
@@ -783,6 +823,7 @@ export default function Tonight() {
                       Payouts add up to {money(allocated)}, which is more than the {money(pool)} pool.
                     </small>
                   )}
+                  {!overPool && payoutNoteText && <small className="field-error">{payoutNoteText}</small>}
                 </div>
               )}
 
@@ -790,16 +831,22 @@ export default function Tonight() {
                 <div className="eyebrow" style={{ marginBottom: 8 }}>Tonight's Bonus Winners</div>
                 {result.bonuses.length === 0 ? (
                   <p className="muted" style={{ fontSize: 12 }}>No bonus awards assigned tonight.</p>
-                ) : result.bonuses.map(b => (
+                ) : result.bonuses.map(b => {
+                  const each = b.type !== 'perfect_round' ? b.each
+                    : nightPosted
+                      ? cents((recordedPerfectRound || curBalances.perfect_round) / Math.max(1, b.entryIds.length))
+                      : b.each
+                  return (
                   <div key={b.type} className="kv">
                     <dt>{AWARD_LABEL[b.type]}</dt>
                     <dd style={{ color: 'var(--orange)' }}>
-                      {money(b.each)}
+                      {money(each)}
                       {b.type === 'perfect_round' ? ' from the pot' : ''}
                       {b.entryIds.length > 1 ? ` (${b.entryIds.length} split)` : ''}
                     </dd>
                   </div>
-                ))}
+                  )
+                })}
               </div>
             </div>
           </div>
@@ -821,7 +868,7 @@ export default function Tonight() {
                 <span className="check">{has ? <Check size={14} /> : null}</span>
                 <span>{AWARD_LABEL[a]}</span>
                 <span className="hint">
-                  {a === 'perfect_round' ? money(result.potAfterEntries)
+                  {a === 'perfect_round' ? money(perfectRoundShown)
                     : a === 'high_score' ? money(settings.bonus.highScore)
                     : a === 'perfect5' ? money(settings.bonus.perfect5)
                     : money(settings.bonus.perfect4)}

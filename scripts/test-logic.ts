@@ -2,8 +2,8 @@
 import assert from 'node:assert/strict'
 import { DEFAULT_SETTINGS as S } from '../src/lib/settings'
 import { bestTotal, clampScore, effectiveCut, perfectHints, qualifiers, rank18, rankFinal, suggestedCut, totals } from '../src/lib/scoring'
-import { balances, divisionResult, eventMoney, nightBonusCost, payoutPool, suggestedPaidPlaces, suggestedPayouts } from '../src/lib/money'
-import { duplicateName, friendlyError, parseMoney, parseTag, payoutIssue, tagTakenTonight } from '../src/lib/validation'
+import { balances, displayedPerfectRound, divisionResult, eventLedgerPosted, eventMoney, nightBonusCost, payoutPool, suggestedPaidPlaces, suggestedPayouts } from '../src/lib/money'
+import { duplicateName, friendlyError, parseMoney, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../src/lib/validation'
 import type { Entry } from '../src/lib/types'
 
 let n = 0
@@ -127,6 +127,10 @@ assert.deepEqual(suggested, [42])
 assert.equal(payoutIssue([500], 42), 'over')
 assert.equal(payoutIssue([-1], 42), 'negative')
 assert.equal(payoutIssue([30, 12], 42), null)
+assert.equal(payoutRejectMessage([22.5], 45), null)
+assert.match(payoutRejectMessage([100], 45) ?? '', /\$100/)
+assert.match(payoutRejectMessage([100], 45) ?? '', /more than the \$45 pool/)
+assert.equal(payoutRejectMessage([-1], 45), 'Payouts can’t be negative.')
 const split = suggestedPayouts(52, 3)
 assert.equal(split.reduce((a, b) => a + b, 0), 52)
 
@@ -170,6 +174,34 @@ const after = balances([
 assert.equal(after.perfect5, 0)
 assert.equal(after.purse, 0)
 assert.equal(after.perfect_round, 8)
+
+// A posted night already includes tonight's $2s. The card must not add them again.
+assert.equal(eventLedgerPosted([{ event_id: 'night' }, { event_id: null }], 'night'), true)
+assert.equal(eventLedgerPosted([{ event_id: 'other' }], 'night'), false)
+assert.equal(displayedPerfectRound(10, 20, true), 10, 'ledger says $10; do not preview another $10')
+assert.equal(displayedPerfectRound(0, 10, false), 10, 'before the post, preview tonight’s $2s')
+
+// Five men's entries post $10. Opening that night again must not show $20.
+const fiveMen = Array.from({ length: 5 }, () => e({}))
+const fiveNight = divisionResult({
+  division: 'M', entries: fiveMen, payoutPlaces: [], settings: S,
+  balances: { ...zero }, barMatch: 0, priorRecord: null,
+})
+const fiveRows = fiveNight.ledger.map((r, i) => ({
+  ...r, id: `l${i}`, season_id: 's', event_id: 'night', created_at: '', division: 'M' as const,
+}))
+const fiveBal = balances(fiveRows, 'M')
+assert.equal(fiveBal.perfect_round, 10, '5 × $2 posted to the pot')
+const reopened = divisionResult({
+  division: 'M', entries: fiveMen, payoutPlaces: [], settings: S,
+  balances: fiveBal, barMatch: 0, priorRecord: null,
+})
+assert.equal(reopened.potAfterEntries, 20, 'the projection still adds tonight on top of the posted balance')
+assert.equal(
+  displayedPerfectRound(fiveBal.perfect_round, reopened.potAfterEntries, eventLedgerPosted(fiveRows, 'night')),
+  10,
+  'a finalized or reopened card matches the ledger',
+)
 
 // Perfect Round pays the pot (tonight's $2s included, cap applies), not a flat $10,
 // and that payout does not come out of the place pool.

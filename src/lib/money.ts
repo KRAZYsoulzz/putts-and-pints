@@ -50,6 +50,20 @@ export function payoutPool(count: number, barMatch: number, s: Settings, bonuses
 export const suggestedPaidPlaces = (count: number, s: Settings) =>
   count ? Math.max(1, Math.round(count / s.paidEvery)) : 0
 
+/** This night already has ledger rows. Reopen keeps them until the next finalize. */
+export function eventLedgerPosted(rows: { event_id: string | null }[], eventId: string): boolean {
+  return rows.some(r => r.event_id === eventId)
+}
+
+/**
+ * Before the post, the card previews the pot plus tonight's $2s.
+ * After the post those $2s are already in the ledger, so adding them again
+ * shows $20 when the ledger says $10.
+ */
+export function displayedPerfectRound(ledgerBalance: number, projected: number, posted: boolean): number {
+  return posted ? ledgerBalance : projected
+}
+
 /** What the awarded night bonuses actually cost (ties split, and the cents have to add back up). */
 export function nightBonusCost(entries: Entry[], s: Settings): number {
   const amounts: Record<(typeof NIGHT_BONUSES)[number], number> = {

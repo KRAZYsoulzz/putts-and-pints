@@ -66,6 +66,18 @@ export function payoutIssue(amounts: number[], pool: number): PayoutIssue {
   return null
 }
 
+const dollar = (n: number) =>
+  (n < 0 ? '−$' : '$') + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 })
+
+/** Why a payout blur was thrown away. Null when the amounts can be saved. */
+export function payoutRejectMessage(amounts: number[], pool: number): string | null {
+  const issue = payoutIssue(amounts, pool)
+  if (!issue) return null
+  if (issue === 'negative') return 'Payouts can’t be negative.'
+  const sum = cents(amounts.reduce((a, b) => a + (Number(b) || 0), 0))
+  return `Those payouts add up to ${dollar(sum)}, which is more than the ${dollar(pool)} pool.`
+}
+
 /** Turn a Postgres error into something a director can act on. Never the raw constraint name. */
 export function friendlyError(message: unknown): string {
   const m = typeof message === 'string' ? message.toLowerCase() : ''
