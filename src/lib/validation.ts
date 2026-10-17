@@ -43,6 +43,19 @@ export function tagTakenOnRoster(
   })
 }
 
+export type MoneyParse = { ok: true; value: number } | { ok: false; error: string }
+
+/** Empty clears to $0. A dash or junk is an error, not a silent $0. */
+export function parseMoney(raw: string, allowNegative = false): MoneyParse {
+  const t = raw.trim()
+  if (t === '' || t === '.') return { ok: true, value: 0 }
+  if (!allowNegative && (t === '-' || t === '-.')) return { ok: false, error: 'Amount can’t be negative.' }
+  const n = Number(t)
+  if (!Number.isFinite(n)) return { ok: false, error: 'Enter a dollar amount.' }
+  if (!allowNegative && n < 0) return { ok: false, error: 'Amount can’t be negative.' }
+  return { ok: true, value: Math.round(n * 100) / 100 }
+}
+
 export type PayoutIssue = 'negative' | 'over' | null
 
 /** Place checks can't be negative, and together they can't exceed the night's pool. */

@@ -1,9 +1,9 @@
 // Quick sanity checks for the rules engine. Run: npx tsx scripts/test-logic.ts
 import assert from 'node:assert/strict'
 import { DEFAULT_SETTINGS as S } from '../src/lib/settings'
-import { bestTotal, clampScore, perfectHints, qualifiers, rank18, rankFinal, suggestedCut, totals } from '../src/lib/scoring'
+import { bestTotal, clampScore, effectiveCut, perfectHints, qualifiers, rank18, rankFinal, suggestedCut, totals } from '../src/lib/scoring'
 import { balances, divisionResult, eventMoney, nightBonusCost, payoutPool, suggestedPaidPlaces, suggestedPayouts } from '../src/lib/money'
-import { duplicateName, friendlyError, parseTag, payoutIssue, tagTakenTonight } from '../src/lib/validation'
+import { duplicateName, friendlyError, parseMoney, parseTag, payoutIssue, tagTakenTonight } from '../src/lib/validation'
 import type { Entry } from '../src/lib/types'
 
 let n = 0
@@ -37,6 +37,11 @@ const field = [
   e({ r1_b1: 10, r1_b2: 10, r2_b1: 10, r2_b2: 10, tag_in: 9 }),  // 40
 ]
 assert.equal(suggestedCut(field.length, S), 2)
+assert.equal(suggestedCut(2, S), 1, 'two players: top half is one, not zero')
+assert.equal(suggestedCut(1, S), 1, 'the only player still makes the final')
+assert.equal(effectiveCut(0, 2, S), 1, 'a stored 0 is unset once players exist')
+assert.equal(effectiveCut(null, 2, S), 1)
+assert.equal(effectiveCut(2, 4, S), 2)
 const q = qualifiers(field, 2, S)
 assert.equal(q.size, 3, 'tie at the cut line includes both')
 
@@ -125,6 +130,18 @@ assert.equal(payoutIssue([30, 12], 42), null)
 const split = suggestedPayouts(52, 3)
 assert.equal(split.reduce((a, b) => a + b, 0), 52)
 
+// $55 across 1, 2, or 3 paid places is a declining split, not 55/0/0.
+assert.deepEqual(suggestedPayouts(55, 1), [55])
+const twoPlaces = suggestedPayouts(55, 2)
+const threePlaces = suggestedPayouts(55, 3)
+assert.deepEqual(twoPlaces, [36.67, 18.33])
+assert.deepEqual(threePlaces, [27.5, 18.33, 9.17])
+assert.ok(twoPlaces[0] > twoPlaces[1])
+assert.ok(threePlaces[0] > threePlaces[1] && threePlaces[1] > threePlaces[2])
+assert.equal(twoPlaces.reduce((a, b) => a + b, 0), 55)
+assert.equal(threePlaces.reduce((a, b) => a + b, 0), 55)
+assert.notDeepEqual(threePlaces, [55, 0, 0])
+
 // Ledger: purse is funded by the $8 share and the bar, bonuses are funded before they are paid,
 // and place checks leave a row. Perfect 5 nets to zero instead of −$10.
 const paid = [
@@ -154,6 +171,35 @@ assert.equal(after.perfect5, 0)
 assert.equal(after.purse, 0)
 assert.equal(after.perfect_round, 8)
 
+// Perfect Round pays the pot (tonight's $2s included, cap applies), not a flat $10,
+// and that payout does not come out of the place pool.
+const prNight = divisionResult({
+  division: 'W',
+  entries: [e({ awards: ['perfect_round', 'perfect5'], player_id: 'pr' })],
+  payoutPlaces: [],
+  settings: S,
+  balances: { ...zero },
+  barMatch: 0,
+  priorRecord: null,
+})
+assert.equal(prNight.potAfterEntries, 2, 'one entry adds $2 to an empty pot')
+assert.equal(prNight.bonuses.find(b => b.type === 'perfect_round')?.each, 2)
+assert.equal(prNight.bonuses.find(b => b.type === 'perfect5')?.each, 10)
+assert.ok(!prNight.ledger.some(r => r.fund === 'purse' && r.note.includes('Perfect Round')))
+assert.ok(prNight.ledger.some(r => r.fund === 'purse' && r.amount === -10 && r.note.includes('Perfect 5')))
+const capped = divisionResult({
+  division: 'M',
+  entries: [e({ awards: ['perfect_round'] }), e({}), e({})],
+  payoutPlaces: [],
+  settings: S,
+  balances: { ...zero, perfect_round: 248 },
+  barMatch: 0,
+  priorRecord: null,
+})
+assert.equal(capped.potAfterEntries, 250, 'three × $2 stops at the $250 cap')
+assert.equal(capped.bonuses.find(b => b.type === 'perfect_round')?.each, 250)
+assert.ok(capped.ledger.some(r => r.fund === 'backup' && r.kind === 'overflow' && r.amount === 4))
+
 // Names, tags, and raw database errors.
 assert.equal(duplicateName('  Ann   Lee ', [{ id: '1', name: 'ann lee' }]), true)
 assert.equal(duplicateName('Ann', [{ id: '1', name: 'Ann' }], '1'), false)
@@ -170,5 +216,11 @@ assert.match(friendlyError('new row violates row-level security policy for table
 assert.match(friendlyError('JWT expired'), /not signed in/)
 assert.match(friendlyError(undefined), /try again/)
 assert.match(friendlyError('new row violates check constraint "pp_ledger_fund_check"'), /003_ledger_and_event_name/)
+assert.deepEqual(parseMoney('-5'), { ok: false, error: 'Amount can’t be negative.' })
+assert.deepEqual(parseMoney('abc'), { ok: false, error: 'Enter a dollar amount.' })
+assert.deepEqual(parseMoney('-'), { ok: false, error: 'Amount can’t be negative.' })
+assert.deepEqual(parseMoney(''), { ok: true, value: 0 })
+assert.deepEqual(parseMoney('12.5'), { ok: true, value: 12.5 })
+assert.equal(parseMoney('-3', true).ok, true)
 
 console.log('All rules checks passed ✔')

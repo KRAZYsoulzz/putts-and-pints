@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { Session } from '@supabase/supabase-js'
+import type { AuthChangeEvent, Session } from '@supabase/supabase-js'
 import { supabase } from './supabase'
 import { resolveSettings } from './settings'
 import { totals } from './scoring'
@@ -90,12 +90,18 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
   // Session plus director membership. Other Supabase calls are deferred out
   // of onAuthStateChange so they don't run while the auth client holds its lock.
+  // A cold load of /season used to redirect to login: getSession and the first
+  // auth event both wrote state, and a null from a refresh race was last, so
+  // authReady flipped true with no session while storage still had one.
   useEffect(() => {
     let cancelled = false
     let generation = 0
+    let sawInitial = false
+    let current: Session | null = null
     const timers = new Set<number>()
 
     const applySession = (next: Session | null) => {
+      current = next
       const gen = ++generation
       setSession(next)
       const timer = window.setTimeout(() => {
@@ -116,12 +122,43 @@ export function DataProvider({ children }: { children: ReactNode }) {
       timers.add(timer)
     }
 
-    void supabase.auth.getSession().then(({ data }) => {
-      if (!cancelled) applySession(data.session)
+    const { data: auth } = supabase.auth.onAuthStateChange((event: AuthChangeEvent, next) => {
+      if (cancelled) return
+      if (event === 'SIGNED_OUT') {
+        applySession(null)
+        return
+      }
+      if (event === 'INITIAL_SESSION') {
+        sawInitial = true
+        if (next) {
+          applySession(next)
+          return
+        }
+        // Ask storage again after this callback returns. A refresh that loses
+        // the race reports null once; the saved session is often still there.
+        const timer = window.setTimeout(() => {
+          timers.delete(timer)
+          void supabase.auth.getSession().then(({ data }) => {
+            if (cancelled || current) return
+            applySession(data.session ?? null)
+          })
+        }, 0)
+        timers.add(timer)
+        return
+      }
+      if (next) applySession(next)
     })
-    const { data: auth } = supabase.auth.onAuthStateChange((_event, next) => {
-      if (!cancelled) applySession(next)
-    })
+
+    // If the client never emits INITIAL_SESSION, don't leave the gate spinning.
+    const fallback = window.setTimeout(() => {
+      if (cancelled || sawInitial) return
+      sawInitial = true
+      void supabase.auth.getSession().then(({ data }) => {
+        if (!cancelled) applySession(data.session ?? null)
+      })
+    }, 4000)
+    timers.add(fallback)
+
     return () => {
       cancelled = true
       for (const timer of timers) window.clearTimeout(timer)

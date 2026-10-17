@@ -19,7 +19,7 @@ export default function Notices() {
         </div>
       )}
       {confirm && (
-        <Dialog title={confirm.title} onClose={() => confirm.resolve(false)}>
+        <Dialog title={confirm.title} layer="top" onClose={() => confirm.resolve(false)}>
           <p style={{ margin: 0 }}>{confirm.message}</p>
           <div className="dialog-actions">
             <button className="btn btn-ghost" onClick={() => confirm.resolve(false)}>Cancel</button>

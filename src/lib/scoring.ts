@@ -143,8 +143,18 @@ export function rank18(entries: Entry[], s: Settings): Ranked[] {
 }
 
 export function suggestedCut(fieldSize: number, s: Settings): number {
+  if (fieldSize <= 0) return 0
   const half = fieldSize / 2
-  return s.cutRounding === 'up' ? Math.ceil(half) : Math.floor(half)
+  const rounded = s.cutRounding === 'up' ? Math.ceil(half) : Math.floor(half)
+  // A stored 0 used to cut a two-player division out entirely. One player still plays the final.
+  return Math.max(1, Math.min(fieldSize, rounded))
+}
+
+/** A missing or 0 cut is unset. Use the half-field default once anyone is checked in. */
+export function effectiveCut(stored: number | null | undefined, fieldSize: number, s: Settings): number {
+  if (fieldSize <= 0) return 0
+  if (stored == null || stored < 1) return suggestedCut(fieldSize, s)
+  return Math.min(stored, fieldSize)
 }
 
 /** Entry ids that make the final 9. Anyone tied at the line (unresolved) is included. */

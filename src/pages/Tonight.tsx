@@ -24,7 +24,7 @@ import {
   type Player,
   type PPEvent,
 } from '../lib/types'
-import { byEntryOrder, cents, qualifiers, suggestedCut, totals, type Ranked } from '../lib/scoring'
+import { byEntryOrder, cents, effectiveCut, qualifiers, suggestedCut, totals, type Ranked } from '../lib/scoring'
 import { balances, divisionResult, eventMoney, nightBonusCost, payoutPool, suggestedPaidPlaces, suggestedPayouts } from '../lib/money'
 import { duplicateName, friendlyError, normalizeName, parseTag, payoutIssue, tagTakenTonight } from '../lib/validation'
 import { Dialog, DivisionSeg, Menu, MoneyInput, PageHead, ScoreInput, Stat, money, ordinal } from '../components/ui'
@@ -56,12 +56,13 @@ export default function Tonight() {
   const [startOpen, setStartOpen] = useState(false)
   const [eventName, setEventName] = useState('')
   const [eventDate, setEventDate] = useState(() => new Date().toISOString().slice(0, 10))
-  const [payoutError, setPayoutError] = useState<{ key: string; message: string } | null>(null)
+  const [barError, setBarError] = useState('')
   const [extraPlaces, setExtraPlaces] = useState<{ key: string; n: number }>({ key: '', n: 0 })
   const [cutOverride, setCutOverride] = useState<{ key: string; value: number } | null>(null)
 
   const checkingIn = useRef(new Set<string>())
   const prefilled = useRef(new Set<string>())
+  const defaultedCut = useRef(new Set<string>())
   const cutRef = useRef<Partial<Record<Division, number>>>({})
   const queue = useRef(Promise.resolve())
   const entriesRef = useRef(entries)
@@ -112,9 +113,7 @@ export default function Tonight() {
 
   const rankedById = useMemo(() => new Map(result.ranked.map(r => [r.entry.id, r])), [result])
 
-  const payoutKey = `${event?.id ?? ''}|${division}|${pool}|${payoutsList.join(',')}`
   const placeKey = `${event?.id ?? ''}|${division}`
-  const payoutMessage = payoutError?.key === payoutKey ? payoutError.message : null
   const extraCount = extraPlaces.key === placeKey ? extraPlaces.n : 0
 
   // Suggest payouts the first time a night reaches results, instead of leaving every place at $0.
@@ -140,6 +139,28 @@ export default function Tonight() {
     }
     if (patch.payouts_men || patch.payouts_women) void patchEvent(event.id, patch)
   }, [event, entries, isAdmin, settings, patchEvent])
+
+  // A women's cut saved as 0 (empty field at the time, or half of one player
+  // rounded down) stays 0 after players arrive, so nobody makes the final.
+  // Fill a sensible half-field cut once and mark those qualifiers.
+  useEffect(() => {
+    if (!event || event.status !== 'final9' || !isAdmin) return
+    for (const d of DIVS) {
+      const field = entries.filter(e => e.event_id === event.id && e.division === d)
+      if (!field.length) continue
+      const stored = d === 'M' ? event.final_cut_men : event.final_cut_women
+      if (stored != null && stored >= 1) continue
+      const key = `${event.id}|${d}|${field.length}`
+      if (defaultedCut.current.has(key)) continue
+      defaultedCut.current.add(key)
+      const cut = suggestedCut(field.length, settings)
+      void patchEvent(event.id, d === 'M' ? { final_cut_men: cut } : { final_cut_women: cut })
+      const ids = qualifiers(field, cut, settings)
+      for (const ent of field) {
+        if (ent.made_final !== ids.has(ent.id)) void patchEntry(ent.id, { made_final: ids.has(ent.id) })
+      }
+    }
+  }, [event, entries, isAdmin, settings, patchEvent, patchEntry])
 
   if (!event) {
     return (
@@ -278,8 +299,9 @@ export default function Tonight() {
     for (const d of DIVS) {
       const field = entries.filter(e => e.event_id === event.id && e.division === d)
       const stored = d === 'M' ? event.final_cut_men : event.final_cut_women
-      const cut = stored ?? suggestedCut(field.length, settings)
-      if (stored == null) {
+      const cut = effectiveCut(stored, field.length, settings)
+      // Don't store 0 for an empty division. That 0 stuck after players checked in.
+      if (field.length > 0 && stored !== cut) {
         if (d === 'M') patch.final_cut_men = cut
         else patch.final_cut_women = cut
       }
@@ -291,7 +313,11 @@ export default function Tonight() {
   const cutKey = `${event.id}|${division}`
   const shownCut = cutOverride?.key === cutKey
     ? cutOverride.value
-    : (division === 'M' ? event.final_cut_men : event.final_cut_women) ?? suggestedCut(counts[division], settings)
+    : effectiveCut(
+        division === 'M' ? event.final_cut_men : event.final_cut_women,
+        counts[division],
+        settings,
+      )
 
   const stepCut = (delta: number) => {
     const size = Math.max(1, divEntries.length)
@@ -313,19 +339,15 @@ export default function Tonight() {
     const next = Array.from({ length: Math.max(payoutsList.length, idx + 1) }, (_, i) => Number(payoutsList[i] ?? 0))
     next[idx] = val
     while (next.length > 0 && next[next.length - 1] === 0) next.pop()
-    const issue = payoutIssue(next, pool)
-    if (issue === 'negative') { setPayoutError({ key: payoutKey, message: 'Payouts can’t be negative.' }); return }
-    if (issue === 'over') {
-      setPayoutError({ key: payoutKey, message: `Those payouts add up to ${money(cents(next.reduce((a, b) => a + b, 0)))}, which is more than the ${money(pool)} pool.` })
-      return
-    }
-    setPayoutError(null)
+    // Rejected amounts are not stored, so the field snaps back. Don't keep a
+    // message that still describes the number the director just left.
+    if (payoutIssue(next, pool)) return
     void patchEvent(event.id, division === 'M' ? { payouts_men: next } : { payouts_women: next })
   }
 
   const useSuggested = () => {
-    const next = suggestedPayouts(pool, suggestedPlaces)
-    setPayoutError(null)
+    // Split across the place rows on screen, not the default "one per five".
+    const next = suggestedPayouts(pool, placeRows)
     void patchEvent(event.id, division === 'M' ? { payouts_men: next } : { payouts_women: next })
   }
 
@@ -432,7 +454,7 @@ export default function Tonight() {
         title={eventLabel}
       >
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-          <DivisionSeg value={division} onChange={setDivision} counts={counts} />
+          <DivisionSeg value={division} onChange={d => { setBarError(''); setDivision(d) }} counts={counts} />
           {viewingOther && (
             <button className="btn btn-ghost btn-sm" onClick={() => openEvent(null)}>Back to tonight</button>
           )}
@@ -461,8 +483,10 @@ export default function Tonight() {
         />
         <Stat
           label="Perfect Round Pot"
-          value={money(curBalances.perfect_round)}
-          sub={`Backup Pot: ${money(curBalances.backup)} (Cap $${settings.perfectRoundCap})`}
+          value={money(event.status === 'results' || event.status === 'complete' ? result.potAfterEntries : curBalances.perfect_round)}
+          sub={event.status === 'results' || event.status === 'complete'
+            ? `After tonight’s $2 per entry · Backup ${money(curBalances.backup)} · cap $${settings.perfectRoundCap}`
+            : `Backup Pot: ${money(curBalances.backup)} (Cap $${settings.perfectRoundCap})`}
         />
         <Stat
           label="Score To Beat"
@@ -563,8 +587,13 @@ export default function Tonight() {
                 <MoneyInput
                   value={barAmount}
                   aria-label={`${division === 'M' ? "Men's" : "Women's"} bar match`}
-                  onChange={val => { void patchEvent(event.id, division === 'M' ? { bar_match_men: val } : { bar_match_women: val }) }}
+                  onReject={setBarError}
+                  onChange={val => {
+                    setBarError('')
+                    void patchEvent(event.id, division === 'M' ? { bar_match_men: val } : { bar_match_women: val })
+                  }}
                 />
+                {barError && <small className="field-error">{barError}</small>}
                 <small>Suggested proportional split: {money(moneyCalc.barSplit[division])}</small>
               </div>
               <button style={{ marginTop: 16 }} className="btn btn-primary btn-block" disabled={divEntries.length === 0} onClick={() => setStatus('scoring')}>
@@ -737,6 +766,7 @@ export default function Tonight() {
                           <MoneyInput
                             value={Number(payoutsList[idx] ?? 0)}
                             aria-label={`${ordinal(idx + 1)} place payout`}
+                            silentInvalid
                             onChange={val => savePayout(idx, val)}
                           />
                         </div>
@@ -748,9 +778,9 @@ export default function Tonight() {
                       <Plus size={14} /> Add a paid place
                     </button>
                   )}
-                  {(payoutMessage || overPool) && (
+                  {overPool && (
                     <small className="field-error">
-                      {payoutMessage ?? `Payouts add up to ${money(allocated)}, which is more than the ${money(pool)} pool.`}
+                      Payouts add up to {money(allocated)}, which is more than the {money(pool)} pool.
                     </small>
                   )}
                 </div>
@@ -764,7 +794,9 @@ export default function Tonight() {
                   <div key={b.type} className="kv">
                     <dt>{AWARD_LABEL[b.type]}</dt>
                     <dd style={{ color: 'var(--orange)' }}>
-                      {money(b.each)}{b.entryIds.length > 1 ? ` (${b.entryIds.length} split)` : ''}
+                      {money(b.each)}
+                      {b.type === 'perfect_round' ? ' from the pot' : ''}
+                      {b.entryIds.length > 1 ? ` (${b.entryIds.length} split)` : ''}
                     </dd>
                   </div>
                 ))}
@@ -789,7 +821,7 @@ export default function Tonight() {
                 <span className="check">{has ? <Check size={14} /> : null}</span>
                 <span>{AWARD_LABEL[a]}</span>
                 <span className="hint">
-                  {a === 'perfect_round' ? money(curBalances.perfect_round)
+                  {a === 'perfect_round' ? money(result.potAfterEntries)
                     : a === 'high_score' ? money(settings.bonus.highScore)
                     : a === 'perfect5' ? money(settings.bonus.perfect5)
                     : money(settings.bonus.perfect4)}
