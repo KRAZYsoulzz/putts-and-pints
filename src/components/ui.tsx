@@ -1,5 +1,7 @@
-import { useEffect, useRef, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { X } from 'lucide-react'
+import { clampScore } from '../lib/scoring'
+import { parseMoney } from '../lib/validation'
 import { DIVISION_LABEL, DIVISIONS, type Division } from '../lib/types'
 
 export const money = (n: number) =>
@@ -54,8 +56,10 @@ export function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boo
     className={`toggle ${on ? 'on' : ''}`} onClick={() => onChange(!on)} />
 }
 
-export function Dialog({ title, onClose, children, footer }: {
+export function Dialog({ title, onClose, children, footer, layer = 'base' }: {
   title: string; onClose: () => void; children: ReactNode; footer?: ReactNode
+  /** Confirmations stack above the dialog that opened them. */
+  layer?: 'base' | 'top'
 }) {
   useEffect(() => {
     const k = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
@@ -63,7 +67,7 @@ export function Dialog({ title, onClose, children, footer }: {
     return () => window.removeEventListener('keydown', k)
   }, [onClose])
   return (
-    <div className="scrim" onMouseDown={e => e.target === e.currentTarget && onClose()}>
+    <div className={`scrim${layer === 'top' ? ' scrim-top' : ''}`} onMouseDown={e => e.target === e.currentTarget && onClose()}>
       <div className="dialog" role="dialog" aria-modal="true">
         <div className="dialog-head">
           <h2 className="display dialog-title">{title}</h2>
@@ -110,13 +114,101 @@ export function Stat({ label, value, sub }: { label: string; value: ReactNode; s
   )
 }
 
-export function MoneyInput({ value, onChange, ...rest }: {
-  value: number; onChange: (n: number) => void
+/**
+ * Dollar field that keeps what you're typing until you leave it.
+ * Saving on every keystroke raced the live refetch and dropped or repeated digits.
+ * Negatives are refused unless `allowNegative` (pot adjustments) is set.
+ */
+export function MoneyInput({ value, onChange, onReject, onEdit, allowNegative = false, silentInvalid = false, ...rest }: {
+  value: number
+  onChange: (n: number) => void
+  /** Shown by the parent when a blur is rejected. Cleared when the director types again. */
+  onReject?: (message: string) => void
+  /** The director focused the field or changed the draft. */
+  onEdit?: () => void
+  allowNegative?: boolean
+  /** Payout fields revert to the last saved amount, so a message about the rejected number would be stale. */
+  silentInvalid?: boolean
 } & Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange'>) {
+  const [draft, setDraft] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const shown = draft ?? (Number.isFinite(value) ? String(value) : '')
+
+  const reject = (message: string) => {
+    setDraft(null)
+    if (silentInvalid) {
+      setError(null)
+      onReject?.('')
+      return
+    }
+    setError(onReject ? null : message)
+    onReject?.(message)
+  }
+
+  const commit = (raw: string) => {
+    const parsed = parseMoney(raw, allowNegative)
+    if (!parsed.ok) {
+      reject(parsed.error)
+      return
+    }
+    setError(null)
+    onReject?.('')
+    setDraft(null)
+    if (parsed.value !== value) onChange(parsed.value)
+  }
+
   return (
-    <div className="input-money">
-      <input className="input num" type="number" step="0.01" inputMode="decimal"
-        value={Number.isFinite(value) ? value : ''} onChange={e => onChange(parseFloat(e.target.value) || 0)} {...rest} />
+    <div>
+      <div className="input-money">
+        <input
+          className="input num"
+          type="text"
+          inputMode="decimal"
+          value={shown}
+          onFocus={e => { setDraft(Number.isFinite(value) ? String(value) : ''); e.target.select() }}
+          onChange={e => { setError(null); onReject?.(''); onEdit?.(); setDraft(e.target.value) }}
+          onBlur={e => commit(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur() }}
+          {...rest}
+        />
+      </div>
+      {error && <small className="field-error">{error}</small>}
     </div>
+  )
+}
+
+/** Score cell. Draft while focused; clamped into 0..max on blur so a negative never hits the database. */
+export function ScoreInput({ value, max, disabled, onCommit }: {
+  value: number | null
+  max: number
+  disabled?: boolean
+  onCommit: (n: number | null) => void
+}) {
+  const [draft, setDraft] = useState<string | null>(null)
+  const shown = draft ?? (value ?? '')
+  return (
+    <input
+      className={`score ${value === max ? 'perfect' : ''}`}
+      type="number"
+      inputMode="numeric"
+      min={0}
+      max={max}
+      disabled={disabled}
+      aria-label={`Score, 0 to ${max}`}
+      value={shown}
+      onFocus={e => { setDraft(value == null ? '' : String(value)); e.target.select() }}
+      onChange={e => setDraft(e.target.value)}
+      onBlur={() => {
+        const raw = draft ?? ''
+        setDraft(null)
+        if (raw.trim() === '') {
+          if (value !== null) onCommit(null)
+          return
+        }
+        const next = clampScore(raw, max)
+        if (next == null) return
+        if (next !== value) onCommit(next)
+      }}
+    />
   )
 }

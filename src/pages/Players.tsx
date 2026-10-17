@@ -2,7 +2,9 @@ import { useMemo, useState } from 'react'
 import { Edit2, Plus, Trash2 } from 'lucide-react'
 import { useData, must } from '../lib/store'
 import { supabase } from '../lib/supabase'
-import { totals } from '../lib/scoring'
+import { askConfirm, messageOf } from '../lib/notify'
+import { bestTotal, clampScore, totals } from '../lib/scoring'
+import { duplicateName, normalizeName, parseTag, tagTakenOnRoster } from '../lib/validation'
 import {
   AWARDS,
   AWARD_LABEL,
@@ -16,7 +18,7 @@ import {
 import { Dialog, DivisionSeg, MoneyInput, PageHead, Toggle, money, ordinal } from '../components/ui'
 
 export default function Players() {
-  const { players, tags, entries, events, season, isAdmin, reload } = useData()
+  const { players, tags, entries, events, season, isAdmin, reload, saveTag } = useData()
   const [division, setDivision] = useState<Division>('M')
   const [query, setQuery] = useState('')
   const [selectedPlayer, setSelectedPlayer] = useState<Player | null>(null)
@@ -26,6 +28,7 @@ export default function Players() {
   const [newName, setNewName] = useState('')
   const [newDivision, setNewDivision] = useState<Division>('M')
   const [initialTag, setInitialTag] = useState('')
+  const [addError, setAddError] = useState('')
 
   // Edit Player Profile State
   const [editPlayer, setEditPlayer] = useState<Player | null>(null)
@@ -33,10 +36,12 @@ export default function Players() {
   const [editDivision, setEditDivision] = useState<Division>('M')
   const [editActive, setEditActive] = useState(true)
   const [editTag, setEditTag] = useState('')
+  const [editError, setEditError] = useState('')
 
   // Edit Historical Event Entry State
   const [editEntry, setEditEntry] = useState<Entry | null>(null)
   const [entryForm, setEntryForm] = useState<Partial<Entry>>({})
+  const [entryError, setEntryError] = useState('')
 
   // Filter players
   const filtered = useMemo(() => {
@@ -57,8 +62,6 @@ export default function Players() {
     const winnings = completed.reduce((acc, cur) => acc + (cur.payout || 0), 0)
     const currentTag = tags.find((t) => t.player_id === selectedPlayer.id)?.tag_number ?? null
 
-    let best18 = 0
-    let best27 = 0
     const awardsCount: Record<Award, number> = {
       perfect_round: 0,
       perfect5: 0,
@@ -67,9 +70,6 @@ export default function Players() {
     }
 
     for (const ent of playerEntries) {
-      const t = totals(ent)
-      if (t.t18 && t.t18 > best18) best18 = t.t18
-      if (t.total && t.total > best27) best27 = t.total
       for (const a of ent.awards || []) {
         awardsCount[a] = (awardsCount[a] || 0) + 1
       }
@@ -80,8 +80,8 @@ export default function Players() {
       points,
       winnings,
       currentTag,
-      best18,
-      best27,
+      best18: bestTotal(playerEntries, 't18'),
+      best27: bestTotal(playerEntries, 'total'),
       awardsCount,
     }
   }, [selectedPlayer, entries, tags])
@@ -94,50 +94,55 @@ export default function Players() {
     setEditActive(p.active)
     const curTag = tags.find((t) => t.player_id === p.id)?.tag_number
     setEditTag(curTag ? String(curTag) : '')
+    setEditError('')
   }
 
   // Save Player Profile Edits
   const handleSavePlayer = async () => {
-    if (!editPlayer || !editName.trim()) return
+    if (!editPlayer) return
+    const clean = normalizeName(editName)
+    if (!clean) { setEditError('Enter a player name.'); return }
+    if (duplicateName(clean, players, editPlayer.id)) {
+      setEditError(`“${clean}” is already on the roster.`)
+      return
+    }
+    const parsed = parseTag(editTag)
+    if (!parsed.ok) { setEditError(parsed.error); return }
+    if (parsed.value != null && tagTakenOnRoster(parsed.value, tags, players, editDivision, editPlayer.id)) {
+      setEditError(`Tag #${parsed.value} is already held in this division.`)
+      return
+    }
+    if (parsed.value != null && !season) {
+      setEditError('Start a season before assigning a tag.')
+      return
+    }
+    setEditError('')
 
-    // 1. Update player table
-    await must(
-      supabase
-        .from('pp_players')
-        .update({
-          name: editName.trim(),
-          division: editDivision,
-          active: editActive,
-        })
-        .eq('id', editPlayer.id),
-    )
+    try {
+      await must(
+        supabase
+          .from('pp_players')
+          .update({
+            name: clean,
+            division: editDivision,
+            active: editActive,
+          })
+          .eq('id', editPlayer.id),
+      )
 
-    // 2. Update tag in pp_tags
-    if (season) {
-      const tagNum = editTag.trim() ? parseInt(editTag.trim(), 10) : null
-      if (tagNum != null && !isNaN(tagNum)) {
-        await supabase.from('pp_tags').upsert(
-          {
-            season_id: season.id,
-            player_id: editPlayer.id,
-            tag_number: tagNum,
-          },
-          { onConflict: 'season_id,player_id' },
-        )
-      } else {
-        await supabase
-          .from('pp_tags')
-          .delete()
-          .eq('season_id', season.id)
-          .eq('player_id', editPlayer.id)
+      if (season && (parsed.value != null || tags.some(t => t.player_id === editPlayer.id))) {
+        await saveTag(editPlayer.id, parsed.value)
       }
+    } catch (err) {
+      setEditError(messageOf(err))
+      return
     }
 
     setEditPlayer(null)
     if (selectedPlayer?.id === editPlayer.id) {
       setSelectedPlayer({
         ...editPlayer,
-        name: editName.trim(),
+        name: clean,
         division: editDivision,
         active: editActive,
       })
@@ -153,16 +158,21 @@ export default function Players() {
       ? `Warning: ${editPlayer.name} has tournament entry records. Deleting them will delete all associated scores and history. Are you sure?`
       : `Delete ${editPlayer.name}? This cannot be undone.`
 
-    if (confirm(confirmMsg)) {
+    const ok = await askConfirm(confirmMsg, { title: 'Delete player', confirmLabel: 'Delete', danger: true })
+    if (!ok) return
+    try {
       if (hasEntries) {
         await must(supabase.from('pp_entries').delete().eq('player_id', editPlayer.id))
       }
       await must(supabase.from('pp_tags').delete().eq('player_id', editPlayer.id))
       await must(supabase.from('pp_players').delete().eq('id', editPlayer.id))
-      setEditPlayer(null)
-      setSelectedPlayer(null)
-      reload()
+    } catch (err) {
+      setEditError(messageOf(err))
+      return
     }
+    setEditPlayer(null)
+    setSelectedPlayer(null)
+    reload()
   }
 
   // Open Edit Entry Dialog
@@ -188,7 +198,35 @@ export default function Players() {
   // Save Historical Entry Edits
   const handleSaveEntry = async () => {
     if (!editEntry) return
-    await must(supabase.from('pp_entries').update(entryForm).eq('id', editEntry.id))
+    const score = (v: number | null | undefined, max: number) =>
+      v == null || Number.isNaN(v) ? null : clampScore(String(v), max)
+    const tag = (v: number | null | undefined, label: string) => {
+      if (v == null || Number.isNaN(v)) return { ok: true as const, value: null }
+      const parsed = parseTag(String(v))
+      if (!parsed.ok) return { ok: false as const, error: `${label}: ${parsed.error}` }
+      return parsed
+    }
+    const tagIn = tag(entryForm.tag_in, 'Tag in')
+    const tagOut = tag(entryForm.tag_out, 'Tag out')
+    if (!tagIn.ok) { setEntryError(tagIn.error); return }
+    if (!tagOut.ok) { setEntryError(tagOut.error); return }
+    setEntryError('')
+    try {
+      await must(supabase.from('pp_entries').update({
+        ...entryForm,
+        r1_b1: score(entryForm.r1_b1, 30),
+        r1_b2: score(entryForm.r1_b2, 20),
+        r2_b1: score(entryForm.r2_b1, 30),
+        r2_b2: score(entryForm.r2_b2, 20),
+        f_b1: score(entryForm.f_b1, 30),
+        f_b2: score(entryForm.f_b2, 20),
+        tag_in: tagIn.value,
+        tag_out: tagOut.value,
+      }).eq('id', editEntry.id))
+    } catch (err) {
+      setEntryError(messageOf(err))
+      return
+    }
     setEditEntry(null)
     reload()
   }
@@ -196,40 +234,42 @@ export default function Players() {
   // Delete Historical Entry
   const handleDeleteEntry = async () => {
     if (!editEntry) return
-    if (confirm('Delete this event entry completely? Scores and finishes for this night will be removed.')) {
+    const ok = await askConfirm('Scores and finishes for this night will be removed.', { title: 'Delete this entry?', confirmLabel: 'Delete', danger: true })
+    if (!ok) return
+    try {
       await must(supabase.from('pp_entries').delete().eq('id', editEntry.id))
-      setEditEntry(null)
-      reload()
+    } catch (err) {
+      setEntryError(messageOf(err))
+      return
     }
+    setEditEntry(null)
+    reload()
   }
 
   const handleAddPlayer = async () => {
-    if (!newName.trim()) return
-    const created = await must(
-      supabase
-        .from('pp_players')
-        .insert({
-          name: newName.trim(),
-          division: newDivision,
-          active: true,
-        })
-        .select()
-        .single(),
-    )
-
-    if (initialTag.trim()) {
-      const tagNum = parseInt(initialTag.trim(), 10)
-      if (!isNaN(tagNum)) {
-        if (season) {
-          await supabase.from('pp_tags').insert({
-            season_id: season.id,
-            player_id: created.id,
-            tag_number: tagNum,
-          })
-        }
-      }
+    const clean = normalizeName(newName)
+    if (!clean) { setAddError('Enter a player name.'); return }
+    if (duplicateName(clean, players)) { setAddError(`“${clean}” is already on the roster.`); return }
+    const parsed = parseTag(initialTag)
+    if (!parsed.ok) { setAddError(parsed.error); return }
+    if (parsed.value != null && tagTakenOnRoster(parsed.value, tags, players, newDivision)) {
+      setAddError(`Tag #${parsed.value} is already held in this division.`)
+      return
     }
-
+    if (parsed.value != null && !season) {
+      setAddError('Start a season before assigning a tag.')
+      return
+    }
+    setAddError('')
+    try {
+      const created = await must(
+        supabase.from('pp_players').insert({ name: clean, division: newDivision, active: true }).select().single(),
+      )
+      if (parsed.value != null) await saveTag(created.id, parsed.value)
+    } catch (err) {
+      setAddError(messageOf(err))
+      return
+    }
     setAddModal(false)
     setNewName('')
     setInitialTag('')
@@ -242,7 +282,7 @@ export default function Players() {
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           <DivisionSeg value={division} onChange={setDivision} />
           {isAdmin && (
-            <button className="btn btn-primary" onClick={() => setAddModal(true)}>
+            <button className="btn btn-primary" onClick={() => { setAddError(''); setAddModal(true) }}>
               <Plus size={16} /> Add Player
             </button>
           )}
@@ -301,7 +341,7 @@ export default function Players() {
                         {!p.active && <span className="chip chip-danger" style={{ marginLeft: 6 }}>Inactive</span>}
                       </td>
                       <td className="c">
-                        {currentTag ? <span className="chip chip-tag">#{currentTag}</span> : <span className="faint">—</span>}
+                        {currentTag != null ? <span className="chip chip-tag">#{currentTag}</span> : <span className="faint">—</span>}
                       </td>
                       <td className="c faint">{playerEntries.length}</td>
                       <td className="r bl num strong" style={{ color: totalWon > 0 ? 'var(--teal)' : 'var(--text-3)' }}>
@@ -339,7 +379,7 @@ export default function Players() {
             <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
               <div className="row" style={{ gap: 8 }}>
                 <span className="chip chip-orange">{DIVISION_LABEL[selectedPlayer.division]}</span>
-                {profileStats.currentTag && (
+                {profileStats.currentTag != null && (
                   <span className="chip chip-tag">Holding Tag #{profileStats.currentTag}</span>
                 )}
                 {!selectedPlayer.active && <span className="chip chip-danger">Inactive</span>}
@@ -370,11 +410,11 @@ export default function Players() {
               </div>
               <div className="stat">
                 <div className="eyebrow">Best 18 Score</div>
-                <div className="stat-value">{profileStats.best18 || '—'}</div>
+                <div className="stat-value">{profileStats.best18 ?? '—'}</div>
               </div>
               <div className="stat">
                 <div className="eyebrow">Best 27 Score</div>
-                <div className="stat-value">{profileStats.best27 || '—'}</div>
+                <div className="stat-value">{profileStats.best27 ?? '—'}</div>
               </div>
             </div>
 
@@ -505,6 +545,7 @@ export default function Players() {
               <Toggle on={editActive} onChange={setEditActive} label="Active Status" />
             </div>
 
+            {editError && <small className="field-error">{editError}</small>}
             <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
               <button className="btn btn-primary" style={{ flex: 1 }} onClick={handleSavePlayer}>
                 Save Profile
@@ -742,6 +783,7 @@ export default function Players() {
               </div>
             </div>
 
+            {entryError && <small className="field-error">{entryError}</small>}
             <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
               <button className="btn btn-primary" style={{ flex: 1 }} onClick={handleSaveEntry}>
                 Save Changes
@@ -766,7 +808,7 @@ export default function Players() {
                 placeholder="e.g. John Doe"
                 autoFocus
                 value={newName}
-                onChange={(e) => setNewName(e.target.value)}
+                onChange={(e) => { setNewName(e.target.value); setAddError('') }}
               />
             </div>
 
@@ -797,6 +839,7 @@ export default function Players() {
               />
             </div>
 
+            {addError && <small className="field-error">{addError}</small>}
             <div style={{ marginTop: 16 }}>
               <button className="btn btn-primary btn-block" onClick={handleAddPlayer}>
                 Save Player

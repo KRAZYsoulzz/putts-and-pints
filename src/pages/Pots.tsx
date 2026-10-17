@@ -1,10 +1,12 @@
 import { useMemo, useState } from 'react'
 import { PlusCircle, ShieldAlert, Sparkles, Tag } from 'lucide-react'
+import { messageOf } from '../lib/notify'
 import { useData, must } from '../lib/store'
 import { supabase } from '../lib/supabase'
 import { balances } from '../lib/money'
 import {
   FUND_LABEL,
+  KIND_LABEL,
   type Division,
   type Fund,
   type LedgerKind,
@@ -22,6 +24,7 @@ export default function Pots() {
   const [kind, setKind] = useState<LedgerKind>('adjustment')
   const [amount, setAmount] = useState<number>(0)
   const [note, setNote] = useState('')
+  const [adjustError, setAdjustError] = useState('')
 
   const curBalances = useMemo(() => balances(ledger, division), [ledger, division])
 
@@ -33,18 +36,31 @@ export default function Pots() {
   }, [ledger, division])
 
   const handlePostAdjustment = async () => {
-    if (!amount || !season) return
+    if (!season) {
+      setAdjustError('Create or activate a season before posting to the ledger.')
+      return
+    }
+    if (!amount) {
+      setAdjustError('Enter an amount.')
+      return
+    }
+    setAdjustError('')
     const div = targetFund === 'tag_fund' ? null : targetDivision === 'ALL' ? division : targetDivision
-    await must(
-      supabase.from('pp_ledger').insert({
-        season_id: season.id,
-        division: div,
-        fund: targetFund,
-        kind,
-        amount,
-        note: note.trim() || 'Manual adjustment by admin',
-      }),
-    )
+    try {
+      await must(
+        supabase.from('pp_ledger').insert({
+          season_id: season.id,
+          division: div,
+          fund: targetFund,
+          kind,
+          amount,
+          note: note.trim() || 'Manual adjustment by admin',
+        }),
+      )
+    } catch (err) {
+      setAdjustError(messageOf(err))
+      return
+    }
 
     setAdjustModal(false)
     setAmount(0)
@@ -141,6 +157,19 @@ export default function Pots() {
           </div>
         )}
 
+        {/* Unallocated night purse */}
+        {settings.potsVisibility?.purse !== false && (
+          <div className="panel panel-pad stack">
+            <div className="eyebrow">Payout Purse ({division === 'M' ? "Men's" : "Women's"})</div>
+            <div className="display" style={{ fontSize: 38 }}>
+              {money(curBalances.purse)}
+            </div>
+            <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+              Entry payout share plus the bar match, minus bonuses and place checks. Zero means the night was fully paid out.
+            </p>
+          </div>
+        )}
+
         {/* Tag Fund Card */}
         {settings.potsVisibility?.tag_fund !== false && (
           <div className="panel panel-pad stack">
@@ -191,7 +220,7 @@ export default function Pots() {
                       <td className="faint">{fmtDate(row.created_at.slice(0, 10))}</td>
                       <td className="strong">{FUND_LABEL[row.fund]}</td>
                       <td className="c">
-                        <span className="chip chip-tag">{row.kind}</span>
+                        <span className="chip chip-tag">{KIND_LABEL[row.kind] ?? row.kind}</span>
                       </td>
                       <td className="muted">{row.note ?? '—'}</td>
                       <td
@@ -226,6 +255,7 @@ export default function Pots() {
                 <option value="perfect4">Perfect 4 Pot</option>
                 <option value="high_score">High Score Pot</option>
                 <option value="tag_fund">Tag Fund (Season-Wide)</option>
+                <option value="purse">Payout Purse</option>
               </select>
             </div>
 
@@ -260,7 +290,7 @@ export default function Pots() {
 
             <div className="field">
               <span>Amount ($) — use negative for deductions</span>
-              <MoneyInput value={amount} onChange={setAmount} />
+              <MoneyInput value={amount} allowNegative onChange={setAmount} />
             </div>
 
             <div className="field">
@@ -274,10 +304,10 @@ export default function Pots() {
               />
             </div>
 
+            {adjustError && <small className="field-error">{adjustError}</small>}
             <div style={{ marginTop: 14 }}>
               <button
                 className="btn btn-primary btn-block"
-                disabled={!amount}
                 onClick={handlePostAdjustment}
               >
                 Save Ledger Entry

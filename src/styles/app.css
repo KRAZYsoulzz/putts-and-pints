@@ -125,7 +125,9 @@
 
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field > span { font-size: 12px; color: var(--text-2); font-weight: 500; }
-.field small { color: var(--text-3); font-size: 11px; }
+.field small, .field-error { font-size: 11px; }
+.field small { color: var(--text-3); }
+.field-error { color: var(--danger); display: block; margin-top: 4px; }
 
 .input, .select {
   height: 36px; width: 100%;
@@ -265,11 +267,25 @@ input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
 .menu .note { padding: 6px 10px 8px; font-size: 12px; color: var(--text-3); max-width: 240px; }
 
 .scrim { position: fixed; inset: 0; z-index: 40; background: rgba(5, 8, 15, 0.6); display: grid; place-items: center; padding: 20px; animation: fade 150ms var(--ease); }
+.scrim-top { z-index: 80; }
 .dialog { width: 100%; max-width: 440px; background: var(--surface-1); border: 1px solid var(--line-strong); border-radius: 12px; box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5); animation: pop 150ms var(--ease); }
 .dialog-head { display: flex; align-items: center; justify-content: space-between; padding: 18px 20px 0; }
 .dialog-title { font-size: 22px; }
 .dialog-body { padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
 .dialog-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 0 20px 18px; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+.toaster {
+  position: fixed; right: 16px; bottom: 16px; z-index: 70;
+  display: flex; flex-direction: column; gap: 8px; width: min(360px, calc(100vw - 32px));
+}
+.toast {
+  padding: 12px 14px; border-radius: 8px;
+  background: var(--surface-2); border: 1px solid var(--line-strong);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+  font-size: 13px; color: var(--text);
+}
+.toast.error { border-color: var(--danger); }
 
 @keyframes pop { from { opacity: 0; transform: translateY(-4px) scale(0.98); } }
 @keyframes fade { from { opacity: 0; } }

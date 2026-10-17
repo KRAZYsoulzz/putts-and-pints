@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Tag as TagIcon } from 'lucide-react'
 import { useData } from '../lib/store'
-import { totals } from '../lib/scoring'
+import { bestTotal } from '../lib/scoring'
 import type { Division } from '../lib/types'
 import { DivisionSeg, PageHead, Stat, money, ordinal } from '../components/ui'
 
@@ -25,7 +25,7 @@ export default function Standings() {
         winnings: number
         eventsPlayed: number
         firstPlaces: number
-        highScore: number
+        highScore: number | null
       }
     >()
 
@@ -37,17 +37,19 @@ export default function Standings() {
         winnings: 0,
         eventsPlayed: 0,
         firstPlaces: 0,
-        highScore: 0,
+        highScore: null,
       }
 
       existing.points += ent.points || 0
       existing.winnings += ent.payout || 0
       existing.eventsPlayed += 1
       if (ent.place === 1) existing.firstPlaces += 1
-      const t = totals(ent).total ?? 0
-      if (t > existing.highScore) existing.highScore = t
-
       statsMap.set(ent.player_id, existing)
+    }
+
+    for (const row of statsMap.values()) {
+      const mine = entries.filter(e => completedEventIds.has(e.event_id) && e.player_id === row.playerId && e.division === division)
+      row.highScore = bestTotal(mine, 'total')
     }
 
     return Array.from(statsMap.values()).sort((a, b) => b.points - a.points || b.firstPlaces - a.firstPlaces || b.winnings - a.winnings)
@@ -134,7 +136,7 @@ export default function Standings() {
                         <td className="strong">{p?.name ?? 'Unknown'}</td>
                         <td className="c">{item.eventsPlayed}</td>
                         <td className="c">{item.firstPlaces > 0 ? `${item.firstPlaces}x` : '—'}</td>
-                        <td className="c">{item.highScore > 0 ? item.highScore : '—'}</td>
+                        <td className="c">{item.highScore == null ? '—' : item.highScore}</td>
                         <td className="r bl num" style={{ color: item.winnings > 0 ? 'var(--teal)' : 'var(--text-3)' }}>
                           {item.winnings > 0 ? money(item.winnings) : '—'}
                         </td>

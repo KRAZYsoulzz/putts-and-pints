@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Check, RotateCcw, Save } from 'lucide-react'
+import { askConfirm, messageOf } from '../lib/notify'
 import { useData, must } from '../lib/store'
 import { supabase } from '../lib/supabase'
 import { DEFAULT_SETTINGS } from '../lib/settings'
@@ -10,24 +11,33 @@ export default function SettingsPage() {
   const { season, settings: initialSettings, isAdmin, reload } = useData()
   const [form, setForm] = useState<Settings>(initialSettings)
   const [saved, setSaved] = useState(false)
+  const [saveError, setSaveError] = useState('')
 
   const handleSave = async () => {
-    if (!season) return
-    await must(
-      supabase
-        .from('pp_seasons')
-        .update({ settings: form })
-        .eq('id', season.id),
-    )
+    if (!season) {
+      setSaveError('Create or activate a season before saving settings.')
+      return
+    }
+    setSaveError('')
+    try {
+      await must(
+        supabase
+          .from('pp_seasons')
+          .update({ settings: form })
+          .eq('id', season.id),
+      )
+    } catch (err) {
+      setSaveError(messageOf(err))
+      return
+    }
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
     reload()
   }
 
-  const handleResetDefaults = () => {
-    if (confirm('Reset all settings to default tournament rules?')) {
-      setForm(DEFAULT_SETTINGS)
-    }
+  const handleResetDefaults = async () => {
+    const ok = await askConfirm('Reset all settings to the default tournament rules?', { title: 'Reset settings', confirmLabel: 'Reset', danger: true })
+    if (ok) setForm(DEFAULT_SETTINGS)
   }
 
   return (
@@ -45,6 +55,7 @@ export default function SettingsPage() {
           </div>
         )}
       </PageHead>
+      {saveError && <small className="field-error">{saveError}</small>}
 
       <div className="grid-cols" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 20 }}>
         {/* Entry & Pot Finances */}
@@ -222,6 +233,7 @@ export default function SettingsPage() {
               { key: 'perfect4' as Fund, label: 'Perfect 4 Pot' },
               { key: 'high_score' as Fund, label: 'High Score Pot' },
               { key: 'tag_fund' as Fund, label: 'Tag Fund (Season-Wide)' },
+              { key: 'purse' as Fund, label: 'Payout Purse' },
             ].map((item) => {
               const isVisible = form.potsVisibility?.[item.key] !== false
               return (
