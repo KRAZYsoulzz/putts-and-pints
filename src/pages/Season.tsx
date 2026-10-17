@@ -1,15 +1,23 @@
 import { useState } from 'react'
-import { CheckCircle2, Plus, Sparkles, Trash2 } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { CheckCircle2, Pencil, Plus, Sparkles, Trash2 } from 'lucide-react'
 import { useData, must } from '../lib/store'
 import { supabase } from '../lib/supabase'
+import { askConfirm, reportInfo } from '../lib/notify'
+import { normalizeName } from '../lib/validation'
 import { Dialog, MoneyInput, PageHead, fmtDate } from '../components/ui'
-import type { Division, Fund } from '../lib/types'
+import type { Division, Fund, PPEvent } from '../lib/types'
 
 export default function SeasonPage() {
-  const { season, events, entries, isAdmin, reload } = useData()
+  const { season, events, entries, isAdmin, reload, openEvent, viewEventId } = useData()
+  const nav = useNavigate()
   const [newSeasonModal, setNewSeasonModal] = useState(false)
   const [newSeasonName, setNewSeasonName] = useState('')
+  const [seasonError, setSeasonError] = useState('')
   const [carryoverModal, setCarryoverModal] = useState(false)
+  const [editEvent, setEditEvent] = useState<PPEvent | null>(null)
+  const [editName, setEditName] = useState('')
+  const [editDate, setEditDate] = useState('')
 
   // Carryover form state
   const [carryover, setCarryover] = useState({
@@ -24,12 +32,15 @@ export default function SeasonPage() {
   })
 
   const handleCreateSeason = async () => {
-    if (!newSeasonName.trim()) return
+    const name = normalizeName(newSeasonName)
+    if (!name) { setSeasonError('Enter a season name.'); return }
+    setSeasonError('')
+    setNewSeasonName(name)
     // Deactivate others
     await supabase.from('pp_seasons').update({ active: false }).neq('id', '00000000-0000-0000-0000-000000000000')
     await must(
       supabase.from('pp_seasons').insert({
-        name: newSeasonName.trim(),
+        name,
         active: true,
       }),
     )
@@ -67,7 +78,33 @@ export default function SeasonPage() {
     }
 
     setCarryoverModal(false)
-    alert('Carryover balances saved successfully!')
+    reportInfo('Carryover balances saved.')
+    reload()
+  }
+
+  const openEditor = (ev: PPEvent) => {
+    setEditEvent(ev)
+    setEditName(ev.name ?? '')
+    setEditDate(ev.event_date)
+  }
+
+  const saveEvent = async () => {
+    if (!editEvent || !editDate) return
+    const name = normalizeName(editName)
+    await must(supabase.from('pp_events').update({ event_date: editDate, name: name || null }).eq('id', editEvent.id))
+    setEditEvent(null)
+    reload()
+  }
+
+  const deleteSeason = async () => {
+    if (!season) return
+    const ok = await askConfirm(
+      `Delete ${season.name}? Its events, tags, and ledger rows are removed. Players stay on the roster.`,
+      { title: 'Delete season', confirmLabel: 'Delete season', danger: true },
+    )
+    if (!ok) return
+    await must(supabase.from('pp_seasons').delete().eq('id', season.id))
+    openEvent(null)
     reload()
   }
 
@@ -96,9 +133,16 @@ export default function SeasonPage() {
             </h2>
           </div>
           {season && (
-            <span className="chip chip-teal">
-              <CheckCircle2 size={12} /> Active
-            </span>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <span className="chip chip-teal">
+                <CheckCircle2 size={12} /> Active
+              </span>
+              {isAdmin && (
+                <button className="btn btn-ghost btn-sm btn-danger" onClick={deleteSeason}>
+                  <Trash2 size={14} /> Delete season
+                </button>
+              )}
+            </div>
           )}
         </div>
       </div>
@@ -117,17 +161,18 @@ export default function SeasonPage() {
             <thead>
               <tr>
                 <th style={{ width: 120 }}>Date</th>
+                <th>Name</th>
                 <th>Status</th>
                 <th className="c">Men</th>
                 <th className="c">Women</th>
                 <th className="c">Total</th>
-                {isAdmin && <th className="r bl" style={{ width: 100 }}>Actions</th>}
+                {isAdmin && <th className="r bl" style={{ width: 180 }}>Actions</th>}
               </tr>
             </thead>
             <tbody>
               {events.length === 0 ? (
                 <tr>
-                  <td colSpan={6} style={{ textAlign: 'center', padding: '36px 0' }} className="muted">
+                  <td colSpan={7} style={{ textAlign: 'center', padding: '36px 0' }} className="muted">
                     No tournament events recorded yet in this season.
                   </td>
                 </tr>
@@ -140,6 +185,7 @@ export default function SeasonPage() {
                   return (
                     <tr key={ev.id}>
                       <td className="strong">{fmtDate(ev.event_date)}</td>
+                      <td>{ev.name?.trim() || <span className="faint">—</span>}</td>
                       <td>
                         <span
                           className={`chip ${
@@ -154,17 +200,30 @@ export default function SeasonPage() {
                       <td className="c strong">{mCount + wCount}</td>
                       {isAdmin && (
                         <td className="r bl">
-                          <button
-                            className="btn btn-ghost btn-sm btn-danger"
-                            onClick={async () => {
-                              if (confirm(`Delete tournament on ${ev.event_date}?`)) {
+                          <div style={{ display: 'inline-flex', gap: 6 }}>
+                            <button className="btn btn-ghost btn-sm" onClick={() => { openEvent(ev.id); nav('/') }}>
+                              Open
+                            </button>
+                            <button className="btn btn-ghost btn-sm btn-icon" aria-label={`Edit ${ev.name || ev.event_date}`} onClick={() => openEditor(ev)}>
+                              <Pencil size={14} />
+                            </button>
+                            <button
+                              className="btn btn-ghost btn-sm btn-icon btn-danger"
+                              aria-label={`Delete ${ev.name || ev.event_date}`}
+                              onClick={async () => {
+                                const ok = await askConfirm(
+                                  `Delete ${ev.name?.trim() || fmtDate(ev.event_date)}? Scores and ledger rows for that night are removed.`,
+                                  { title: 'Delete event', confirmLabel: 'Delete', danger: true },
+                                )
+                                if (!ok) return
                                 await must(supabase.from('pp_events').delete().eq('id', ev.id))
+                                if (viewEventId === ev.id) openEvent(null)
                                 reload()
-                              }
-                            }}
-                          >
-                            <Trash2 size={14} />
-                          </button>
+                              }}
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
                         </td>
                       )}
                     </tr>
@@ -188,14 +247,36 @@ export default function SeasonPage() {
                 placeholder="e.g. 2026 Season"
                 autoFocus
                 value={newSeasonName}
-                onChange={(e) => setNewSeasonName(e.target.value)}
+                onChange={(e) => { setNewSeasonName(e.target.value); setSeasonError('') }}
               />
+              {seasonError && <small className="field-error">{seasonError}</small>}
             </div>
             <div style={{ marginTop: 14 }}>
               <button className="btn btn-primary btn-block" onClick={handleCreateSeason}>
                 Create &amp; Activate
               </button>
             </div>
+          </div>
+        </Dialog>
+      )}
+
+      {editEvent && (
+        <Dialog title="Edit Event" onClose={() => setEditEvent(null)}>
+          <div className="stack">
+            <div className="field">
+              <span>Event name (optional)</span>
+              <input className="input" type="text" value={editName} onChange={e => setEditName(e.target.value)} placeholder="e.g. Week 4" autoFocus />
+            </div>
+            <div className="field">
+              <span>Date</span>
+              <input className="input" type="date" value={editDate} onChange={e => setEditDate(e.target.value)} />
+            </div>
+            <p className="muted" style={{ fontSize: 12, margin: 0 }}>
+              {editEvent.status === 'complete'
+                ? 'A finalized night can be renamed here. Open it and choose Reopen to change scores.'
+                : 'Open the event to keep scoring it.'}
+            </p>
+            <button className="btn btn-primary btn-block" disabled={!editDate} onClick={saveEvent}>Save event</button>
           </div>
         </Dialog>
       )}

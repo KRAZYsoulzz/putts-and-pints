@@ -47,6 +47,7 @@ Open your Supabase dashboard → **SQL Editor** and run these files in order:
 
 1. `supabase/001_schema.sql` (skip if the `pp_` tables already exist)
 2. `supabase/002_admin_auth.sql`
+3. `supabase/003_ledger_and_event_name.sql` (optional event names, the payout purse, bar-match and place-payout ledger rows, and bonus funding). Run this before using payouts. The app does not run it itself.
 
 `002` turns off anonymous writes. Players and viewers can still read the live scoreboard, standings, players, and pots. Scoring, roster edits, pot adjustments, season management, and settings saves require a signed-in director. Do not add the `pp_private` schema to **Exposed schemas**.
 

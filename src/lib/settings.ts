@@ -22,6 +22,7 @@ export const DEFAULT_SETTINGS: Settings = {
     perfect4: true,
     high_score: true,
     tag_fund: true,
+    purse: true,
   },
 }
 

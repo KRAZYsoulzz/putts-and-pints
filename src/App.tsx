@@ -1,5 +1,6 @@
 import { BrowserRouter, Route, Routes, Navigate } from 'react-router-dom'
 import { DataProvider } from './lib/store'
+import Notices from './components/Notices'
 import Shell from './components/Shell'
 import Tonight from './pages/Tonight'
 import Standings from './pages/Standings'
@@ -13,6 +14,7 @@ import RequireAdmin from './components/RequireAdmin'
 export default function App() {
   return (
     <DataProvider>
+      <Notices />
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />

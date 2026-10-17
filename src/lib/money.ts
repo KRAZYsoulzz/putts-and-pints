@@ -2,11 +2,13 @@ import { cents, distribute, rankFinal, redistributeTags, totals, type Ranked } f
 import { AWARD_LABEL, AWARDS } from './types'
 import type { Award, Division, Entry, Fund, LedgerKind, LedgerRow, Settings } from './types'
 
+const NIGHT_BONUSES = ['perfect5', 'perfect4', 'high_score'] as const
+
 // ---------------------------------------------------------------------------
 // Pot balances
 // ---------------------------------------------------------------------------
 export type Balances = Record<Fund, number>
-const EMPTY: Balances = { perfect_round: 0, backup: 0, perfect5: 0, perfect4: 0, high_score: 0, tag_fund: 0 }
+const EMPTY: Balances = { perfect_round: 0, backup: 0, perfect5: 0, perfect4: 0, high_score: 0, tag_fund: 0, purse: 0 }
 
 /** Balances for one division (season-wide tag fund included). */
 export function balances(ledger: LedgerRow[], division: Division): Balances {
@@ -35,12 +37,54 @@ export function eventMoney(counts: Record<Division, number>, s: Settings): Event
   return { totalPot, barMatch, barSplit: { M: men, W: cents(barMatch - men) } }
 }
 
-export function payoutPool(count: number, barMatch: number, s: Settings): number {
-  return cents(count * (s.entryFee - s.perfectRoundShare) + barMatch)
+/**
+ * Night purse available for place checks.
+ * $8 of each entry (the $2 perfect-round share is already removed) plus the bar match,
+ * minus Perfect 5 / Perfect 4 / High Score bonuses that have actually been awarded.
+ * The Perfect Round pot is not part of this pool.
+ */
+export function payoutPool(count: number, barMatch: number, s: Settings, bonuses = 0): number {
+  return cents(count * (s.entryFee - s.perfectRoundShare) + barMatch - bonuses)
 }
 
 export const suggestedPaidPlaces = (count: number, s: Settings) =>
   count ? Math.max(1, Math.round(count / s.paidEvery)) : 0
+
+/** What the awarded night bonuses actually cost (ties split, and the cents have to add back up). */
+export function nightBonusCost(entries: Entry[], s: Settings): number {
+  const amounts: Record<(typeof NIGHT_BONUSES)[number], number> = {
+    perfect5: s.bonus.perfect5,
+    perfect4: s.bonus.perfect4,
+    high_score: s.bonus.highScore,
+  }
+  let total = 0
+  for (const type of NIGHT_BONUSES) {
+    const winners = entries.filter(e => e.awards?.includes(type)).length
+    if (!winners) continue
+    const each = cents(amounts[type] / winners)
+    total += cents(each * winners)
+  }
+  return cents(total)
+}
+
+/**
+ * Split a pool across `places` in a declining ratio (2 places → 2/3 + 1/3, and so on).
+ * The first place absorbs rounding so the suggestions add up to the pool exactly.
+ */
+export function suggestedPayouts(pool: number, places: number): number[] {
+  if (places <= 0 || pool <= 0) return []
+  const weights = Array.from({ length: places }, (_, i) => places - i)
+  const sumW = weights.reduce((a, b) => a + b, 0)
+  const raw = weights.map(w => cents((pool * w) / sumW))
+  raw[0] = cents(raw[0] + (pool - raw.reduce((a, b) => a + b, 0)))
+  return raw
+}
+
+function placeNote(place: number): string {
+  const suffix = ['th', 'st', 'nd', 'rd']
+  const v = place % 100
+  return `${place}${suffix[(v - 20) % 10] || suffix[v] || suffix[0]} place`
+}
 
 // ---------------------------------------------------------------------------
 // Results for one division
@@ -69,6 +113,8 @@ interface ResultInput {
   payoutPlaces: number[]
   settings: Settings
   balances: Balances
+  /** This division's bar-match dollars for the night. */
+  barMatch?: number
   /** best 27-hole total from earlier completed events this season (null = first event) */
   priorRecord: number | null
 }
@@ -81,6 +127,11 @@ export function divisionResult(i: ResultInput): DivisionResult {
     if (amount) ledger.push({ division, fund, kind, amount: cents(amount), note, player_id })
   }
 
+  // Night purse: the $8 payout share of each entry, plus whatever the bar matched.
+  const entryShare = s.entryFee - s.perfectRoundShare
+  row('purse', 'entry', entries.length * entryShare, `${entries.length} entries × $${entryShare} to the payout pool`)
+  row('purse', 'bar_match', i.barMatch ?? 0, 'Bar match')
+
   // Perfect Round pot: $X per entry, capped, overflow to backup
   const contribution = entries.length * s.perfectRoundShare
   const room = Math.max(0, s.perfectRoundCap - i.balances.perfect_round)
@@ -90,6 +141,8 @@ export function divisionResult(i: ResultInput): DivisionResult {
   const potAfterEntries = cents(i.balances.perfect_round + toPot)
 
   // Bonuses: awarded by hand (right-click). Multiple winners of the same award split it.
+  // Perfect 5 / Perfect 4 / High Score are flat night bonuses paid out of the purse.
+  // Fund the pot first so the payout does not drive it negative.
   const bonuses: BonusWin[] = []
   const amounts: Record<Award, number> = {
     perfect_round: potAfterEntries,
@@ -101,13 +154,24 @@ export function divisionResult(i: ResultInput): DivisionResult {
     const winners = entries.filter(e => e.awards?.includes(type))
     if (!winners.length) continue
     const each = cents(amounts[type] / winners.length)
+    const paid = cents(each * winners.length)
     bonuses.push({ type, entryIds: winners.map(w => w.id), each })
+    if (type !== 'perfect_round') {
+      row('purse', 'transfer', -paid, `${AWARD_LABEL[type]} funded from the payout pool`)
+      row(type, 'transfer', paid, 'Funded from the payout pool')
+    }
     winners.forEach(w => row(type, 'bonus_payout', -each, AWARD_LABEL[type], w.player_id))
     if (type === 'perfect_round') {
       const roll = Math.min(i.balances.backup + (contribution - toPot), s.perfectRoundCap)
       row('backup', 'rollover', -roll, 'Backup becomes the Perfect Round pot')
       row('perfect_round', 'rollover', roll, 'From backup pot')
     }
+  }
+
+  const payouts = distribute(ranked, i.payoutPlaces)
+  for (const r of ranked) {
+    const pay = payouts.get(r.entry.id) ?? 0
+    if (pay) row('purse', 'place_payout', -pay, placeNote(r.place), r.entry.player_id)
   }
 
   // High score record (shown as a hint — must BEAT it; first event only sets it)
@@ -117,7 +181,7 @@ export function divisionResult(i: ResultInput): DivisionResult {
 
   return {
     ranked,
-    payouts: distribute(ranked, i.payoutPlaces),
+    payouts,
     points: distribute(ranked, s.points),
     tagsOut: redistributeTags(ranked),
     bonuses,

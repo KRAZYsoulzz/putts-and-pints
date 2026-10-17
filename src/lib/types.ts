@@ -15,10 +15,11 @@ export const AWARD_LABEL: Record<Award, string> = {
 }
 export const AWARD_SHORT: Record<Award, string> = { perfect_round: 'PR', perfect5: 'P5', perfect4: 'P4', high_score: 'HS' }
 
-export type Fund = 'perfect_round' | 'backup' | 'perfect5' | 'perfect4' | 'high_score' | 'tag_fund'
+export type Fund = 'perfect_round' | 'backup' | 'perfect5' | 'perfect4' | 'high_score' | 'tag_fund' | 'purse'
 export type LedgerKind =
   | 'carryover' | 'entry' | 'overflow' | 'bonus_payout' | 'transfer'
   | 'adjustment' | 'expense' | 'tag_sale' | 'rollover'
+  | 'bar_match' | 'place_payout'
 
 export const FUND_LABEL: Record<Fund, string> = {
   perfect_round: 'Perfect Round',
@@ -27,6 +28,21 @@ export const FUND_LABEL: Record<Fund, string> = {
   perfect4: 'Perfect 4',
   high_score: 'High Score',
   tag_fund: 'Tag Fund',
+  purse: 'Payout Purse',
+}
+
+export const KIND_LABEL: Record<LedgerKind, string> = {
+  carryover: 'Carryover',
+  entry: 'Entry',
+  overflow: 'Overflow',
+  bonus_payout: 'Bonus',
+  transfer: 'Transfer',
+  adjustment: 'Adjustment',
+  expense: 'Expense',
+  tag_sale: 'Tag sale',
+  rollover: 'Rollover',
+  bar_match: 'Bar match',
+  place_payout: 'Payout',
 }
 
 /** Ordered criteria used to break ties by countback. */
@@ -84,6 +100,8 @@ export interface PPEvent {
   id: string
   season_id: string
   event_date: string
+  /** Optional label. Events without one are shown by date. */
+  name?: string | null
   status: EventStatus
   bar_match_men: number
   bar_match_women: number

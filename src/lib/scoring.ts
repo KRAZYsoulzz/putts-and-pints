@@ -8,6 +8,30 @@ export const MAX_B2 = 20
 
 const nine = (b1: number | null, b2: number | null) => (b1 == null || b2 == null ? null : b1 + b2)
 
+/** Blank stays blank. Anything else is clamped into 0..max so a negative never reaches Postgres. */
+export function clampScore(raw: string, max: number): number | null {
+  const t = raw.trim()
+  if (t === '') return null
+  const n = Number(t)
+  if (!Number.isFinite(n)) return null
+  return Math.min(max, Math.max(0, Math.trunc(n)))
+}
+
+/** Check-in order. Scoring grids stay in this order so a keystroke cannot jump rows. */
+export function byEntryOrder(a: Entry, b: Entry): number {
+  return (a.created_at ?? '').localeCompare(b.created_at ?? '') || a.id.localeCompare(b.id)
+}
+
+/** Best completed total. Zero is a real score; null means nobody has a finished round. */
+export function bestTotal(entries: Entry[], which: 't18' | 'total'): number | null {
+  let best: number | null = null
+  for (const e of entries) {
+    const t = totals(e)[which]
+    if (t != null && (best == null || t > best)) best = t
+  }
+  return best
+}
+
 export interface Totals {
   r1: number | null
   r2: number | null
@@ -61,11 +85,19 @@ interface RankOpts {
   countback: CountbackKey[]
 }
 
-/** Standard competition ranking (1, 2, 2, 4) after applying the tie mode. */
+/**
+ * Competition ranking (1, 2, 2, 4).
+ * A blank score is unplaced (place 0) — it must not share a number with other unfinished rows.
+ * A finished 0 is a real score and gets a place.
+ */
 function rank(entries: Entry[], o: RankOpts): Ranked[] {
   const group = o.group ?? (() => 0)
+  const scored: Entry[] = []
+  const unscored: Entry[] = []
+  for (const e of entries) (o.score(e) == null ? unscored : scored).push(e)
+
   const primary = (a: Entry, b: Entry) =>
-    group(a) - group(b) || (o.score(b) ?? -1) - (o.score(a) ?? -1)
+    group(a) - group(b) || (o.score(b) as number) - (o.score(a) as number)
 
   const breaker = (a: Entry, b: Entry) => {
     if (o.mode === 'playoff') return (a.tiebreak ?? Infinity) - (b.tiebreak ?? Infinity) || 0
@@ -78,13 +110,14 @@ function rank(entries: Entry[], o: RankOpts): Ranked[] {
     return 0
   }
 
-  const sorted = [...entries].sort((a, b) => primary(a, b) || breaker(a, b))
+  const sorted = [...scored].sort((a, b) => primary(a, b) || breaker(a, b) || byEntryOrder(a, b))
   const out: Ranked[] = []
   sorted.forEach((e, i) => {
     const prev = sorted[i - 1]
     const tied = prev && primary(prev, e) === 0 && breaker(prev, e) === 0
     out.push({ entry: e, totals: totals(e), place: tied ? out[i - 1].place : i + 1 })
   })
+  for (const e of unscored) out.push({ entry: e, totals: totals(e), place: 0 })
   return out
 }
 
@@ -133,6 +166,7 @@ export function distribute(ranked: Ranked[], values: number[]): Map<string, numb
   const byPlace = new Map<number, Ranked[]>()
   ranked.forEach(r => byPlace.set(r.place, [...(byPlace.get(r.place) ?? []), r]))
   for (const [place, group] of byPlace) {
+    if (place < 1) continue
     const slice = values.slice(place - 1, place - 1 + group.length)
     const each = slice.reduce((a, b) => a + (b || 0), 0) / group.length
     group.forEach(r => out.set(r.entry.id, cents(each)))

@@ -1,5 +1,6 @@
-import { useEffect, useRef, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { X } from 'lucide-react'
+import { clampScore } from '../lib/scoring'
 import { DIVISION_LABEL, DIVISIONS, type Division } from '../lib/types'
 
 export const money = (n: number) =>
@@ -110,13 +111,97 @@ export function Stat({ label, value, sub }: { label: string; value: ReactNode; s
   )
 }
 
-export function MoneyInput({ value, onChange, ...rest }: {
-  value: number; onChange: (n: number) => void
+/**
+ * Dollar field that keeps what you're typing until you leave it.
+ * Saving on every keystroke raced the live refetch and dropped or repeated digits.
+ * Negatives are refused unless `allowNegative` (pot adjustments) is set.
+ */
+export function MoneyInput({ value, onChange, allowNegative = false, ...rest }: {
+  value: number
+  onChange: (n: number) => void
+  allowNegative?: boolean
 } & Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange'>) {
+  const [draft, setDraft] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const shown = draft ?? (Number.isFinite(value) ? String(value) : '')
+
+  const commit = (raw: string) => {
+    const t = raw.trim()
+    if (t === '' || t === '-' || t === '.' || t === '-.') {
+      setError(null)
+      setDraft(null)
+      if (value !== 0) onChange(0)
+      return
+    }
+    const n = Number(t)
+    if (!Number.isFinite(n)) {
+      setError('Enter a dollar amount.')
+      setDraft(null)
+      return
+    }
+    if (!allowNegative && n < 0) {
+      setError('Amount can’t be negative.')
+      setDraft(null)
+      return
+    }
+    const rounded = Math.round(n * 100) / 100
+    setError(null)
+    setDraft(null)
+    if (rounded !== value) onChange(rounded)
+  }
+
   return (
-    <div className="input-money">
-      <input className="input num" type="number" step="0.01" inputMode="decimal"
-        value={Number.isFinite(value) ? value : ''} onChange={e => onChange(parseFloat(e.target.value) || 0)} {...rest} />
+    <div>
+      <div className="input-money">
+        <input
+          className="input num"
+          type="text"
+          inputMode="decimal"
+          value={shown}
+          onFocus={e => { setDraft(Number.isFinite(value) ? String(value) : ''); e.target.select() }}
+          onChange={e => { setError(null); setDraft(e.target.value) }}
+          onBlur={e => commit(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur() }}
+          {...rest}
+        />
+      </div>
+      {error && <small className="field-error">{error}</small>}
     </div>
+  )
+}
+
+/** Score cell. Draft while focused; clamped into 0..max on blur so a negative never hits the database. */
+export function ScoreInput({ value, max, disabled, onCommit }: {
+  value: number | null
+  max: number
+  disabled?: boolean
+  onCommit: (n: number | null) => void
+}) {
+  const [draft, setDraft] = useState<string | null>(null)
+  const shown = draft ?? (value ?? '')
+  return (
+    <input
+      className={`score ${value === max ? 'perfect' : ''}`}
+      type="number"
+      inputMode="numeric"
+      min={0}
+      max={max}
+      disabled={disabled}
+      aria-label={`Score, 0 to ${max}`}
+      value={shown}
+      onFocus={e => { setDraft(value == null ? '' : String(value)); e.target.select() }}
+      onChange={e => setDraft(e.target.value)}
+      onBlur={() => {
+        const raw = draft ?? ''
+        setDraft(null)
+        if (raw.trim() === '') {
+          if (value !== null) onCommit(null)
+          return
+        }
+        const next = clampScore(raw, max)
+        if (next == null) return
+        if (next !== value) onCommit(next)
+      }}
+    />
   )
 }
