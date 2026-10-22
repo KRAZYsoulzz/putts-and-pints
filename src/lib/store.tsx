@@ -332,7 +332,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       settings: resolveSettings(season?.settings),
       players, playerById: new Map(players.map(p => [p.id, p])),
       tags, events, entries, ledger,
-      liveEvent: [...events].reverse().find(e => e.status !== 'complete') ?? null,
+      liveEvent: events.find(e => e.status !== 'complete' && e.status !== 'scheduled') ?? null,
       viewEventId, openEvent,
       records, reload, patchEntry, patchEvent, saveTag, authReady, signOut,
     }

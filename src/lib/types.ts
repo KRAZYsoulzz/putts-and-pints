@@ -2,7 +2,7 @@ export type Division = 'M' | 'W'
 export const DIVISIONS: Division[] = ['M', 'W']
 export const DIVISION_LABEL: Record<Division, string> = { M: "Men's", W: "Women's" }
 
-export type EventStatus = 'checkin' | 'scoring' | 'final9' | 'results' | 'complete'
+export type EventStatus = 'scheduled' | 'checkin' | 'scoring' | 'final9' | 'results' | 'complete'
 
 /** Bonuses Les awards by hand (right-click a player). */
 export type Award = 'perfect_round' | 'perfect5' | 'perfect4' | 'high_score'

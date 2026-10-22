@@ -192,6 +192,31 @@ export default function Tonight() {
               ? 'Start a new event to check players in, set the bar match, and record scores.'
               : 'Standings and pot balances are in the sidebar. Check back once tonight starts.'}
           </p>
+          {events.some(e => e.status === 'scheduled') && (
+            <div style={{ marginTop: 16, textAlign: 'left' }}>
+              <div className="display" style={{ fontSize: 20 }}>Upcoming events</div>
+              {events.filter(e => e.status === 'scheduled').map(ev => (
+                <div key={ev.id} style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 6 }}>
+                  <span>{ev.event_date}</span>
+                  <span style={{ flex: 1 }}>{ev.name ?? ''}</span>
+                  {isAdmin && (
+                    <button className="btn" onClick={async () => {
+                      try {
+                        openEvent(null)
+                        await must(supabase.from('pp_events').update({
+                          status: 'checkin',
+                          settings_snapshot: settings,
+                          bar_match_men: moneyCalc.barSplit.M,
+                          bar_match_women: moneyCalc.barSplit.W,
+                        }).eq('id', ev.id).select().single())
+                        reload()
+                      } catch (err) { reportError(messageOf(err)) }
+                    }}>Start</button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
         {startOpen && (
           <StartEventDialog
