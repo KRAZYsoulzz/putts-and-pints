@@ -183,7 +183,7 @@ export default function SeasonPage() {
         <div className="panel-head">
           <span className="eyebrow">Tournament Events</span>
           <span className="faint" style={{ fontSize: 12 }}>
-            {events.length} event{events.length === 1 ? '' : 's'} recorded
+            {events.filter(e => e.status !== 'scheduled').length} event{events.filter(e => e.status !== 'scheduled').length === 1 ? '' : 's'} recorded
           </span>
         </div>
 
