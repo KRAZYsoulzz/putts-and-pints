@@ -49,6 +49,9 @@ export default function Tonight() {
 
   const [division, setDivision] = useState<Division>('M')
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entry: Entry } | null>(null)
+  const [upDate, setUpDate] = useState('')
+  const [upName, setUpName] = useState('')
+  const [upEditId, setUpEditId] = useState<string | null>(null)
   const [addPlayerOpen, setAddPlayerOpen] = useState(false)
   const [searchName, setSearchName] = useState('')
   const [createError, setCreateError] = useState('')
@@ -192,9 +195,31 @@ export default function Tonight() {
               ? 'Start a new event to check players in, set the bar match, and record scores.'
               : 'Standings and pot balances are in the sidebar. Check back once tonight starts.'}
           </p>
-          {events.some(e => e.status === 'scheduled') && (
+          {(isAdmin || events.some(e => e.status === 'scheduled')) && (
             <div style={{ marginTop: 16, textAlign: 'left' }}>
               <div className="display" style={{ fontSize: 20 }}>Upcoming events</div>
+              {isAdmin && (
+                <form style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }} onSubmit={async (e) => {
+                  e.preventDefault()
+                  try {
+                    if (!season) throw new Error('Create or activate a season first, on the Season page.')
+                    if (!upDate) throw new Error('Pick a date.')
+                    const name = normalizeName(upName) || null
+                    if (upEditId) {
+                      await must(supabase.from('pp_events').update({ event_date: upDate, name }).eq('id', upEditId).eq('status', 'scheduled').select().single())
+                    } else {
+                      await must(supabase.from('pp_events').insert({ season_id: season.id, status: 'scheduled', event_date: upDate, name }).select().single())
+                    }
+                    setUpDate(''); setUpName(''); setUpEditId(null)
+                    reload()
+                  } catch (err) { reportError(messageOf(err)) }
+                }}>
+                  <input className="input" type="date" value={upDate} onChange={e => setUpDate(e.target.value)} />
+                  <input className="input" placeholder="Event name" value={upName} onChange={e => setUpName(e.target.value)} />
+                  <button className="btn btn-primary" type="submit">{upEditId ? 'Save' : 'Add upcoming event'}</button>
+                  {upEditId && <button className="btn" type="button" onClick={() => { setUpEditId(null); setUpDate(''); setUpName('') }}>Cancel</button>}
+                </form>
+              )}
               {events.filter(e => e.status === 'scheduled').map(ev => (
                 <div key={ev.id} style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 6 }}>
                   <span>{ev.event_date}</span>
@@ -212,6 +237,18 @@ export default function Tonight() {
                         reload()
                       } catch (err) { reportError(messageOf(err)) }
                     }}>Start</button>
+                  )}
+                  {isAdmin && (
+                    <button className="btn" onClick={() => { setUpEditId(ev.id); setUpDate(ev.event_date); setUpName(ev.name ?? '') }}>Edit</button>
+                  )}
+                  {isAdmin && (
+                    <button className="btn" onClick={async () => {
+                      if (!(await askConfirm(`Delete ${ev.name ?? 'event'} on ${ev.event_date}?`, { danger: true, confirmLabel: 'Delete' }))) return
+                      try {
+                        await must(supabase.from('pp_events').delete().eq('id', ev.id).eq('status', 'scheduled').select())
+                        reload()
+                      } catch (err) { reportError(messageOf(err)) }
+                    }}>Delete</button>
                   )}
                 </div>
               ))}
