@@ -17,8 +17,6 @@ export default defineConfig({
         'icon-192.png',
         'icon-512.png',
         'icon-maskable-512.png',
-        '_headers',
-        '_redirects',
       ],
       devOptions: {
         enabled: true,
