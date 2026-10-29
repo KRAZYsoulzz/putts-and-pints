@@ -1,8 +1,8 @@
 // Quick sanity checks for the rules engine. Run: npx tsx scripts/test-logic.ts
 import assert from 'node:assert/strict'
 import { DEFAULT_SETTINGS as S } from '../src/lib/settings'
-import { bestTotal, clampScore, effectiveCut, perfectHints, qualifiers, rank18, rankFinal, suggestedCut, totals } from '../src/lib/scoring'
-import { balances, displayedPerfectRound, divisionResult, eventLedgerPosted, eventMoney, nightBonusCost, payoutPool, suggestedPaidPlaces, suggestedPayouts } from '../src/lib/money'
+import { bestTotal, clampScore, effectiveCut, qualifiers, rank18, rankFinal, suggestedCut, totals } from '../src/lib/scoring'
+import { balances, displayedPerfectRound, divisionResult, eventLedgerPosted, eventMoney, nightBonusCost, payoutPool, splitEvenly, suggestedPaidPlaces, suggestedPayouts } from '../src/lib/money'
 import { duplicateName, friendlyError, parseMoney, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../src/lib/validation'
 import type { Entry } from '../src/lib/types'
 
@@ -10,7 +10,7 @@ let n = 0
 const e = (p: Partial<Entry>): Entry => ({
   id: `e${++n}`, event_id: 'ev', player_id: `p${n}`, division: 'M', paid: true,
   tag_in: null, tag_out: null, r1_b1: null, r1_b2: null, r2_b1: null, r2_b2: null,
-  f_b1: null, f_b2: null, awards: [],
+  f_b1: null, f_b2: null, score_18: null, score_final: null, awards: [],
   made_final: false, tiebreak: null, place: null, payout: 0, points: 0, ...p,
 })
 const zero = { perfect_round: 0, backup: 0, perfect5: 0, perfect4: 0, high_score: 0, tag_fund: 0, purse: 0 }
@@ -19,9 +19,25 @@ const zero = { perfect_round: 0, backup: 0, perfect5: 0, perfect4: 0, high_score
 const perfect = e({ r1_b1: 30, r1_b2: 20, r2_b1: 30, r2_b2: 20, made_final: true, f_b1: 30, f_b2: 20 })
 assert.deepEqual(totals(perfect), { r1: 50, r2: 50, f: 50, t18: 100, total: 150 })
 
-// Hints only (bonuses are manual)
-assert.deepEqual(perfectHints(e({ r1_b1: 30, r2_b2: 20 })), { p5: true, p4: true })
-assert.deepEqual(perfectHints(e({ f_b1: 30 })), { p5: false, p4: false }, 'final 9 ignored when not a finalist')
+// Totals-only entry: score_18 / score_final win; older nights fall back to the per-basket columns
+assert.deepEqual(totals(e({ score_18: 77, made_final: true, score_final: 41 })), { r1: null, r2: null, f: 41, t18: 77, total: 118 })
+assert.equal(totals(e({ score_18: 77, score_final: 41 })).f, null, 'final total ignored when not a finalist')
+assert.equal(totals(e({ score_18: 0 })).total, 0, 'a finished 0 is a real score')
+assert.equal(totals(e({ score_18: 90, r1_b1: 1, r1_b2: 1, r2_b1: 1, r2_b2: 1 })).t18, 90, 'new total beats old columns')
+const totalsOnly = [e({ score_18: 80 }), e({ score_18: 80 }), e({ score_18: 60 })]
+assert.deepEqual(rank18(totalsOnly, S).map(r => r.place), [1, 1, 3], 'ranks off the 18 total alone')
+
+// Bar match cap
+const bigNight = eventMoney({ M: 30, W: 10 }, S)
+assert.equal(bigNight.totalPot, 400); assert.equal(bigNight.barMatch, 150, '50% of 400 is 200, capped at 150')
+assert.equal(bigNight.barSplit.M + bigNight.barSplit.W, 150)
+assert.equal(eventMoney({ M: 14, W: 6 }, S).barMatch, 100, 'under the cap is unchanged')
+
+// Shared pots split to the cent
+assert.deepEqual(splitEvenly(10, 3), [3.34, 3.33, 3.33])
+assert.deepEqual(splitEvenly(10, 2), [5, 5])
+assert.deepEqual(splitEvenly(10, 1), [10])
+assert.equal(splitEvenly(250, 7).reduce((a, b) => a + b, 0).toFixed(2), '250.00')
 
 // Money: 20 players, bar matches 50%
 const m = eventMoney({ M: 14, W: 6 }, S)
@@ -80,9 +96,9 @@ const c = e({ r1_b1: 30, r1_b2: 10, r2_b1: 10, r2_b2: 10, tag_in: 4, awards: ['p
 const aw = divisionResult({ division: 'M', entries: [a, b, c], payoutPlaces: [], settings: S,
   balances: { ...zero, perfect_round: 100, backup: 30 }, priorRecord: null })
 assert.deepEqual(aw.bonuses, [
-  { type: 'perfect_round', entryIds: [c.id], each: 106 },
-  { type: 'perfect5', entryIds: [a.id, b.id], each: 5 },
-  { type: 'high_score', entryIds: [b.id], each: 10 },
+  { type: 'perfect_round', entryIds: [c.id], each: 106, amounts: [106] },
+  { type: 'perfect5', entryIds: [a.id, b.id], each: 5, amounts: [5, 5] },
+  { type: 'high_score', entryIds: [b.id], each: 10, amounts: [10] },
 ])
 assert.ok(aw.ledger.some(r => r.fund === 'perfect_round' && r.kind === 'rollover' && r.amount === 30))
 
@@ -231,6 +247,29 @@ const capped = divisionResult({
 assert.equal(capped.potAfterEntries, 250, 'three × $2 stops at the $250 cap')
 assert.equal(capped.bonuses.find(b => b.type === 'perfect_round')?.each, 250)
 assert.ok(capped.ledger.some(r => r.fund === 'backup' && r.kind === 'overflow' && r.amount === 4))
+
+// Shared pots: P5/P4 winners split the pot balance plus tonight's flat $10; odd cents add back up.
+const sharedP5 = divisionResult({
+  division: 'M',
+  entries: [e({ awards: ['perfect5', 'perfect4'], player_id: 's1' }), e({ awards: ['perfect5'], player_id: 's2' })],
+  payoutPlaces: [], settings: S,
+  balances: { ...zero, perfect5: 40, perfect4: 5 }, barMatch: 0, priorRecord: null,
+})
+assert.deepEqual(sharedP5.bonuses.find(b => b.type === 'perfect5')?.amounts, [25, 25], '$40 pot + $10 split two ways')
+assert.deepEqual(sharedP5.bonuses.find(b => b.type === 'perfect4')?.amounts, [15], 'sole winner takes the pot')
+const p5Sum = (fund: string) => sharedP5.ledger.filter(r => r.fund === fund).reduce((a, r) => a + r.amount, 0)
+assert.equal(p5Sum('perfect5'), -40, 'pot goes from $40 to 0 (the $10 transfer in, $50 paid out)')
+assert.equal(p5Sum('perfect4'), -5)
+assert.equal(nightBonusCost(sharedP5.ledger.length ? [e({ awards: ['perfect5', 'perfect4'] }), e({ awards: ['perfect5'] })] : [], S), 20, 'purse only funds the flat amounts')
+const threeWay = divisionResult({
+  division: 'M',
+  entries: [1, 2, 3].map(i => e({ awards: ['perfect_round'], player_id: `t${i}` })),
+  payoutPlaces: [], settings: S,
+  balances: { ...zero, perfect_round: 100 }, barMatch: 0, priorRecord: null,
+})
+const prAmounts = threeWay.bonuses[0].amounts
+assert.equal(prAmounts.reduce((a, b) => a + b, 0).toFixed(2), '106.00', 'pot of 100 + 3x$2 splits with no cent lost')
+assert.deepEqual(prAmounts, [35.34, 35.33, 35.33])
 
 // Names, tags, and raw database errors.
 assert.equal(duplicateName('  Ann   Lee ', [{ id: '1', name: 'ann lee' }]), true)

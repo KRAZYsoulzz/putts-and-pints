@@ -4,6 +4,7 @@ export const DEFAULT_SETTINGS: Settings = {
   entryFee: 10,
   perfectRoundShare: 2,
   barMatchPct: 50,
+  barMatchCap: 150,
   perfectRoundCap: 250,
   tagPrice: 20,
   bonus: { perfect5: 10, perfect4: 10, highScore: 10 },

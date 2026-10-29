@@ -11,18 +11,15 @@ Built with **React**, **TypeScript**, **Vite**, **Supabase**, and **VitePWA**.
 - **Divisions:** Separate Men's & Women's divisions.
 - **Entry & Pots:**
   - $10 entry ($8 to night's division payout, $2 to Perfect Round Pot).
-  - Bar matches half the total entry pot.
+  - Bar matches half the total entry pot, up to $150 per event (both divisions combined).
   - Perfect Round Pot builds and caps at $250; excess flows into the Backup Pot.
-- **Scoring (18 Holes):**
-  - **Basket 1 (5 stations):** 2 discs each, 1 to 5 pts per make (Max: 30 pts). Making all 10 discs is a **Perfect 5**.
-  - **Basket 2 (4 stations):** 2 discs each, 1 to 4 pts per make (Max: 20 pts). Making all 8 discs is a **Perfect 4**.
-  - One 9 is 50 pts max; 18 holes is 100 pts max.
+- **Scoring:** scorers enter two totals per player, the 18-hole total (max 100) and, for finalists, the Final 9 total (max 50). Per-basket scores are not tracked, so Perfect 5 / Perfect 4 / Perfect Round are awarded by hand. Making all 10 Basket 1 discs is a **Perfect 5**; all 8 Basket 2 discs is a **Perfect 4**.
 - **The Cut & Final 9:** Top half of the field qualifies for the Final 9. Final 9 points are added to 18-hole totals (Max: 150 pts).
 - **Bonuses:**
-  - Perfect 5: $10 (split on ties)
-  - Perfect 4: $10 (split on ties)
+  - Perfect 5: shared pot (carryover + $10 added when someone wins), split evenly among everyone who hits it
+  - Perfect 4: shared pot (carryover + $10 added when someone wins), split evenly among everyone who hits it
   - Division High Score: $10 (must beat previous record; split on ties)
-  - Perfect Round Pot: Basket 1 = 30 + bonus spot makes.
+  - Perfect Round Pot: shared pot, split evenly among everyone who hits it.
   - Bonuses awarded manually by tournament director via right-click context menu.
 - **Tags ($20):**
   - Optional. Tag fund finances tags, trophy, and subsidies.

@@ -3,7 +3,7 @@ import { Edit2, Plus, Trash2 } from 'lucide-react'
 import { useData, must } from '../lib/store'
 import { supabase } from '../lib/supabase'
 import { askConfirm, messageOf } from '../lib/notify'
-import { bestTotal, clampScore, totals } from '../lib/scoring'
+import { bestTotal, clampScore, MAX_18, MAX_FINAL, totals } from '../lib/scoring'
 import { duplicateName, normalizeName, parseTag, tagTakenOnRoster } from '../lib/validation'
 import {
   AWARDS,
@@ -179,12 +179,8 @@ export default function Players() {
   const openEditEntry = (ent: Entry) => {
     setEditEntry(ent)
     setEntryForm({
-      r1_b1: ent.r1_b1,
-      r1_b2: ent.r1_b2,
-      r2_b1: ent.r2_b1,
-      r2_b2: ent.r2_b2,
-      f_b1: ent.f_b1,
-      f_b2: ent.f_b2,
+      score_18: totals(ent).t18,
+      score_final: ent.made_final ? totals(ent).f : ent.score_final,
       made_final: ent.made_final,
       place: ent.place,
       payout: ent.payout,
@@ -214,12 +210,8 @@ export default function Players() {
     try {
       await must(supabase.from('pp_entries').update({
         ...entryForm,
-        r1_b1: score(entryForm.r1_b1, 30),
-        r1_b2: score(entryForm.r1_b2, 20),
-        r2_b1: score(entryForm.r2_b1, 30),
-        r2_b2: score(entryForm.r2_b2, 20),
-        f_b1: score(entryForm.f_b1, 30),
-        f_b2: score(entryForm.f_b2, 20),
+        score_18: score(entryForm.score_18, MAX_18),
+        score_final: score(entryForm.score_final, MAX_FINAL),
         tag_in: tagIn.value,
         tag_out: tagOut.value,
       }).eq('id', editEntry.id))
@@ -568,66 +560,17 @@ export default function Players() {
 
             <div className="grid-cols" style={{ gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
               <div className="field">
-                <span>R1 Basket 1 (0–30)</span>
+                <span>18-hole total (0-100)</span>
                 <input
                   className="input num"
                   type="number"
                   min="0"
-                  max="30"
-                  value={entryForm.r1_b1 ?? ''}
+                  max="100"
+                  value={entryForm.score_18 ?? ''}
                   onChange={(e) =>
                     setEntryForm((prev) => ({
                       ...prev,
-                      r1_b1: e.target.value === '' ? null : parseInt(e.target.value, 10),
-                    }))
-                  }
-                />
-              </div>
-              <div className="field">
-                <span>R1 Basket 2 (0–20)</span>
-                <input
-                  className="input num"
-                  type="number"
-                  min="0"
-                  max="20"
-                  value={entryForm.r1_b2 ?? ''}
-                  onChange={(e) =>
-                    setEntryForm((prev) => ({
-                      ...prev,
-                      r1_b2: e.target.value === '' ? null : parseInt(e.target.value, 10),
-                    }))
-                  }
-                />
-              </div>
-
-              <div className="field">
-                <span>R2 Basket 1 (0–30)</span>
-                <input
-                  className="input num"
-                  type="number"
-                  min="0"
-                  max="30"
-                  value={entryForm.r2_b1 ?? ''}
-                  onChange={(e) =>
-                    setEntryForm((prev) => ({
-                      ...prev,
-                      r2_b1: e.target.value === '' ? null : parseInt(e.target.value, 10),
-                    }))
-                  }
-                />
-              </div>
-              <div className="field">
-                <span>R2 Basket 2 (0–20)</span>
-                <input
-                  className="input num"
-                  type="number"
-                  min="0"
-                  max="20"
-                  value={entryForm.r2_b2 ?? ''}
-                  onChange={(e) =>
-                    setEntryForm((prev) => ({
-                      ...prev,
-                      r2_b2: e.target.value === '' ? null : parseInt(e.target.value, 10),
+                      score_18: e.target.value === '' ? null : parseInt(e.target.value, 10),
                     }))
                   }
                 />
@@ -649,38 +592,22 @@ export default function Players() {
             {entryForm.made_final && (
               <div className="grid-cols" style={{ gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
                 <div className="field">
-                  <span>Final 9 Basket 1 (0–30)</span>
+                  <span>Final 9 total (0-50)</span>
                   <input
                     className="input num"
                     type="number"
                     min="0"
-                    max="30"
-                    value={entryForm.f_b1 ?? ''}
+                    max="50"
+                    value={entryForm.score_final ?? ''}
                     onChange={(e) =>
                       setEntryForm((prev) => ({
                         ...prev,
-                        f_b1: e.target.value === '' ? null : parseInt(e.target.value, 10),
+                        score_final: e.target.value === '' ? null : parseInt(e.target.value, 10),
                       }))
                     }
                   />
                 </div>
-                <div className="field">
-                  <span>Final 9 Basket 2 (0–20)</span>
-                  <input
-                    className="input num"
-                    type="number"
-                    min="0"
-                    max="20"
-                    value={entryForm.f_b2 ?? ''}
-                    onChange={(e) =>
-                      setEntryForm((prev) => ({
-                        ...prev,
-                        f_b2: e.target.value === '' ? null : parseInt(e.target.value, 10),
-                      }))
-                    }
-                  />
                 </div>
-              </div>
             )}
 
             <div className="eyebrow" style={{ marginTop: 8 }}>

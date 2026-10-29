@@ -64,6 +64,8 @@ export interface Settings {
   entryFee: number
   perfectRoundShare: number
   barMatchPct: number
+  /** Most the bar matches per event, both divisions combined. */
+  barMatchCap: number
   perfectRoundCap: number
   tagPrice: number
   bonus: { perfect5: number; perfect4: number; highScore: number }
@@ -127,6 +129,9 @@ export interface Entry {
   r2_b2: number | null
   f_b1: number | null
   f_b2: number | null
+  /** Scorers enter only these two totals. Older nights keep the per-basket columns below. */
+  score_18: number | null
+  score_final: number | null
   awards: Award[]
   made_final: boolean
   tiebreak: number | null
