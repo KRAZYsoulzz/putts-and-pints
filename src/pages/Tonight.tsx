@@ -21,11 +21,12 @@ import {
   type Division,
   type Entry,
   type EventStatus,
+  type Fund,
   type Player,
   type PPEvent,
 } from '../lib/types'
-import { byEntryOrder, cents, effectiveCut, qualifiers, suggestedCut, totals, type Ranked } from '../lib/scoring'
-import { balances, displayedPerfectRound, divisionResult, eventLedgerPosted, eventMoney, nightBonusCost, payoutPool, suggestedPaidPlaces, suggestedPayouts } from '../lib/money'
+import { byEntryOrder, cents, effectiveCut, MAX_18, MAX_FINAL, qualifiers, suggestedCut, totals, type Ranked } from '../lib/scoring'
+import { balances, displayedPerfectRound, divisionResult, eventLedgerPosted, effectiveBar, eventMoney, nightBonusCost, payoutPool, suggestedPaidPlaces, suggestedPayouts } from '../lib/money'
 import { duplicateName, friendlyError, normalizeName, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../lib/validation'
 import { Dialog, DivisionSeg, Menu, MoneyInput, PageHead, ScoreInput, Stat, money, ordinal } from '../components/ui'
 
@@ -91,9 +92,10 @@ export default function Tonight() {
   }, [entries, event?.id])
 
   const moneyCalc = useMemo(() => eventMoney(counts, settings), [counts, settings])
+  // Bar match follows the check-ins unless a director typed an amount.
   const barOf = (ev: PPEvent, d: Division) => {
-    const n = Number(d === 'M' ? ev.bar_match_men : ev.bar_match_women)
-    return Number.isFinite(n) && n > 0 ? n : 0
+    const mine = entries.filter(e => e.event_id === ev.id)
+    return effectiveBar(ev, d, { M: mine.filter(e => e.division === 'M').length, W: mine.filter(e => e.division === 'W').length }, settings)
   }
   const barAmount = event ? barOf(event, division) : 0
   const bonusCost = useMemo(() => nightBonusCost(divEntries, settings), [divEntries, settings])
@@ -102,6 +104,11 @@ export default function Tonight() {
     [counts, division, barAmount, settings, bonusCost],
   )
   const curBalances = useMemo(() => balances(ledger, division), [ledger, division])
+  // Pots as they stood before this night, so a reopened night is not counted against itself.
+  const priorBalances = useMemo(
+    () => balances(ledger.filter(r => r.event_id !== event?.id), division),
+    [ledger, division, event?.id],
+  )
   const payoutsList = useMemo(
     () => (division === 'M' ? event?.payouts_men : event?.payouts_women) ?? [],
     [division, event?.payouts_men, event?.payouts_women],
@@ -112,10 +119,10 @@ export default function Tonight() {
     entries: divEntries,
     payoutPlaces: payoutsList,
     settings,
-    balances: curBalances,
+    balances: priorBalances,
     barMatch: barAmount,
     priorRecord: records[division],
-  }), [division, divEntries, payoutsList, settings, curBalances, barAmount, records])
+  }), [division, divEntries, payoutsList, settings, priorBalances, barAmount, records])
 
   const rankedById = useMemo(() => new Map(result.ranked.map(r => [r.entry.id, r])), [result])
 
@@ -136,9 +143,7 @@ export default function Tonight() {
       const list = d === 'M' ? event.payouts_men : event.payouts_women
       if (list && list.length > 0) continue
       const group = entries.filter(e => e.event_id === event.id && e.division === d)
-      const rawBar = Number(d === 'M' ? event.bar_match_men : event.bar_match_women)
-      const bar = Number.isFinite(rawBar) && rawBar > 0 ? rawBar : 0
-      const net = payoutPool(group.length, bar, settings, nightBonusCost(group, settings))
+      const net = payoutPool(group.length, barOf(event, d), settings, nightBonusCost(group, settings))
       const next = suggestedPayouts(net, suggestedPaidPlaces(group.length, settings))
       if (d === 'M') patch.payouts_men = next
       else patch.payouts_women = next
@@ -231,8 +236,10 @@ export default function Tonight() {
                         await must(supabase.from('pp_events').update({
                           status: 'checkin',
                           settings_snapshot: settings,
-                          bar_match_men: moneyCalc.barSplit.M,
-                          bar_match_women: moneyCalc.barSplit.W,
+                          bar_match_men: 0,
+                          bar_match_women: 0,
+                          bar_match_men_manual: false,
+                          bar_match_women_manual: false,
                         }).eq('id', ev.id).select().single())
                         reload()
                       } catch (err) { reportError(messageOf(err)) }
@@ -270,8 +277,10 @@ export default function Tonight() {
                 season_id: season.id,
                 status: 'checkin',
                 settings_snapshot: settings,
-                bar_match_men: moneyCalc.barSplit.M,
-                bar_match_women: moneyCalc.barSplit.W,
+                bar_match_men: 0,
+                bar_match_women: 0,
+                bar_match_men_manual: false,
+                bar_match_women_manual: false,
                 event_date: eventDate,
               }
               if (name) row.name = name
@@ -467,6 +476,8 @@ export default function Tonight() {
       if ((event.payouts_men ?? []).length === 0 || (event.payouts_women ?? []).length === 0) {
         await patchEvent(event.id, { payouts_men: lists.M, payouts_women: lists.W })
       }
+      // Save the amounts this night actually used, so the finished night never moves.
+      await patchEvent(event.id, { bar_match_men: barOf(event, 'M'), bar_match_women: barOf(event, 'W') })
       const rows: Record<string, unknown>[] = []
       const plans = DIVS.map(d => {
         const group = entries.filter(e => e.event_id === event.id && e.division === d)
@@ -475,7 +486,7 @@ export default function Tonight() {
           entries: group,
           payoutPlaces: lists[d],
           settings,
-          balances: balances(ledger, d),
+          balances: balances(ledger.filter(r => r.event_id !== event.id), d),
           barMatch: barOf(event, d),
           priorRecord: records[d],
         })
@@ -541,9 +552,10 @@ export default function Tonight() {
     previewPot ? result.potAfterEntries : curBalances.perfect_round,
     nightPosted,
   )
-  const recordedPerfectRound = cents(ledger
-    .filter(r => r.event_id === event.id && r.fund === 'perfect_round' && r.kind === 'bonus_payout')
+  const recordedPayout = (fund: Fund) => cents(ledger
+    .filter(r => r.event_id === event.id && r.fund === fund && r.kind === 'bonus_payout' && r.division === division)
     .reduce((sum, r) => sum + Math.abs(Number(r.amount)), 0))
+  const recordedPerfectRound = recordedPayout('perfect_round')
 
   const viewingOther = viewEventId != null && liveEvent != null && viewEventId !== liveEvent.id
   const eventLabel = event.name?.trim() || 'Tonight’s Tournament'
@@ -682,7 +694,7 @@ export default function Tonight() {
               <div className="eyebrow">Night Finances & Match</div>
               <div className="kv"><dt>Total Field (Both Divs)</dt><dd>{counts.M + counts.W} players</dd></div>
               <div className="kv"><dt>Combined Entry Pot</dt><dd>{money(moneyCalc.totalPot)}</dd></div>
-              <div className="kv"><dt>Bar Half Match ({settings.barMatchPct}%)</dt><dd style={{ color: 'var(--orange)' }}>+{money(moneyCalc.barMatch)}</dd></div>
+              <div className="kv"><dt>Bar Match ({settings.barMatchPct}%, max {money(settings.barMatchCap)})</dt><dd style={{ color: 'var(--orange)' }}>+{money(moneyCalc.barMatch)}</dd></div>
               <div style={{ marginTop: 14 }} className="field">
                 <span>{division === 'M' ? "Men's" : "Women's"} Bar Match Contribution</span>
                 <MoneyInput
@@ -691,11 +703,21 @@ export default function Tonight() {
                   onReject={setBarError}
                   onChange={val => {
                     setBarError('')
-                    void patchEvent(event.id, division === 'M' ? { bar_match_men: val } : { bar_match_women: val })
+                    void patchEvent(event.id, division === 'M'
+                      ? { bar_match_men: val, bar_match_men_manual: true }
+                      : { bar_match_women: val, bar_match_women_manual: true })
                   }}
                 />
                 {barError && <small className="field-error">{barError}</small>}
-                <small>Suggested proportional split: {money(moneyCalc.barSplit[division])}</small>
+                {barOf(event, 'M') + barOf(event, 'W') > settings.barMatchCap + 0.001 && (
+                  <small className="field-error">Both divisions together are over the {money(settings.barMatchCap)} bar match cap.</small>
+                )}
+                <small>
+                  {(division === 'M' ? event.bar_match_men_manual : event.bar_match_women_manual)
+                    ? <>Typed in by hand. Automatic would be {money(moneyCalc.barSplit[division])}.{' '}
+                        <button type="button" className="btn btn-ghost btn-sm" onClick={() => void patchEvent(event.id, division === 'M' ? { bar_match_men_manual: false } : { bar_match_women_manual: false })}>Use automatic</button></>
+                    : <>Automatic from entries: {money(moneyCalc.barSplit[division])}. Type an amount to override.</>}
+                </small>
               </div>
               <button style={{ marginTop: 16 }} className="btn btn-primary btn-block" disabled={divEntries.length === 0} onClick={() => setStatus('scoring')}>
                 Start 18-Holes Scoring <ChevronRight size={16} />
@@ -894,16 +916,20 @@ export default function Tonight() {
                 {result.bonuses.length === 0 ? (
                   <p className="muted" style={{ fontSize: 12 }}>No bonus awards assigned tonight.</p>
                 ) : result.bonuses.map(b => {
-                  const each = b.type !== 'perfect_round' ? b.each
-                    : nightPosted
+                  // A posted night shows what the ledger actually paid, not today's pot.
+                  const each = b.type === 'perfect_round'
+                    ? nightPosted
                       ? cents((recordedPerfectRound || curBalances.perfect_round) / Math.max(1, b.entryIds.length))
+                      : b.each
+                    : nightPosted && recordedPayout(b.type) > 0
+                      ? cents(recordedPayout(b.type) / Math.max(1, b.entryIds.length))
                       : b.each
                   return (
                   <div key={b.type} className="kv">
                     <dt>{AWARD_LABEL[b.type]}</dt>
                     <dd style={{ color: 'var(--orange)' }}>
                       {money(each)}
-                      {b.type === 'perfect_round' ? ' from the pot' : ''}
+                      {b.type === 'perfect_round' || b.type === 'perfect5' || b.type === 'perfect4' ? ' from the pot' : ''}
                       {b.entryIds.length > 1 ? ` (${b.entryIds.length} split)` : ''}
                     </dd>
                   </div>
@@ -932,8 +958,8 @@ export default function Tonight() {
                 <span className="hint">
                   {a === 'perfect_round' ? money(perfectRoundShown)
                     : a === 'high_score' ? money(settings.bonus.highScore)
-                    : a === 'perfect5' ? money(settings.bonus.perfect5)
-                    : money(settings.bonus.perfect4)}
+                    : a === 'perfect5' ? money(cents(priorBalances.perfect5 + settings.bonus.perfect5))
+                    : money(cents(priorBalances.perfect4 + settings.bonus.perfect4))}
                 </span>
               </button>
             )
@@ -1069,19 +1095,11 @@ function ScoreTable({ rows, rankedById, playerById, mode, onContextMenu, onScore
                   <th style={{ width: 45 }}>Plc</th>
                   <th>Player</th>
                   <th className="c">Tag</th>
-                  <th className="group bl" colSpan={3}>Round 1 (First 9)</th>
-                  <th className="group bl" colSpan={3}>Round 2 (Second 9)</th>
-                  <th className="group bl" style={{ width: 80 }}>18 Total</th>
+                  <th className="c bl" style={{ width: 110 }}>18 Total</th>
                   <th className="c bl" style={{ width: 140 }}>Awards</th>
                 </tr>
                 <tr>
                   <th></th><th></th><th></th>
-                  <th className="c bl" style={{ width: 55 }}>B1 (30)</th>
-                  <th className="c" style={{ width: 55 }}>B2 (20)</th>
-                  <th className="c" style={{ width: 50 }}>9-1</th>
-                  <th className="c bl" style={{ width: 55 }}>B1 (30)</th>
-                  <th className="c" style={{ width: 55 }}>B2 (20)</th>
-                  <th className="c" style={{ width: 50 }}>9-2</th>
                   <th className="c bl" title="18 holes, 100 points maximum">/ 100</th>
                   <th className="c bl">Right-Click</th>
                 </tr>
@@ -1093,15 +1111,13 @@ function ScoreTable({ rows, rankedById, playerById, mode, onContextMenu, onScore
                   <th>Player</th>
                   <th className="c">Status</th>
                   <th className="c bl" style={{ width: 70 }}>18 Total</th>
-                  <th className="group bl" colSpan={3}>Final 9</th>
+                  <th className="c bl" style={{ width: 90 }} title="Final 9, 50 points maximum">Final 9 (/ 50)</th>
                   <th className="c bl" style={{ width: 90 }}>27 Total</th>
                 </tr>
                 <tr>
                   <th></th><th></th><th></th>
                   <th className="c bl" title="18 holes, 100 points maximum">/ 100</th>
-                  <th className="c bl" style={{ width: 65 }}>B1 (30)</th>
-                  <th className="c" style={{ width: 65 }}>B2 (20)</th>
-                  <th className="c" title="Final 9, 50 points maximum">/ 50</th>
+                  <th className="c bl" title="Final 9, 50 points maximum">/ 50</th>
                   <th className="c bl" title="18 holes plus Final 9, 150 points maximum">/ 150</th>
                 </tr>
               </>
@@ -1124,13 +1140,7 @@ function ScoreTable({ rows, rankedById, playerById, mode, onContextMenu, onScore
                       )}
                     </td>
                     <td className="c faint">{ent.tag_in ? `#${ent.tag_in}` : '—'}</td>
-                    <td className="c bl"><ScoreInput value={ent.r1_b1} max={30} onCommit={n => onScore(ent.id, { r1_b1: n })} /></td>
-                    <td className="c"><ScoreInput value={ent.r1_b2} max={20} onCommit={n => onScore(ent.id, { r1_b2: n })} /></td>
-                    <td className="c sub-total">{t.r1 ?? '—'}</td>
-                    <td className="c bl"><ScoreInput value={ent.r2_b1} max={30} onCommit={n => onScore(ent.id, { r2_b1: n })} /></td>
-                    <td className="c"><ScoreInput value={ent.r2_b2} max={20} onCommit={n => onScore(ent.id, { r2_b2: n })} /></td>
-                    <td className="c sub-total">{t.r2 ?? '—'}</td>
-                    <td className="c bl big" style={{ color: t.t18 != null ? 'var(--orange)' : 'var(--text-3)' }}>{t.t18 ?? '—'}</td>
+                    <td className="c bl"><ScoreInput value={t.t18} max={MAX_18} onCommit={n => onScore(ent.id, { score_18: n })} /></td>
                     <td className="c bl">
                       <button className="btn btn-ghost btn-sm" style={{ fontSize: 11 }} onClick={e => onContextMenu(e, ent)}>
                         <Sparkles size={12} /> Awards
@@ -1149,9 +1159,7 @@ function ScoreTable({ rows, rankedById, playerById, mode, onContextMenu, onScore
                     </button>
                   </td>
                   <td className="c bl strong">{t.t18 ?? '—'}</td>
-                  <td className="c bl"><ScoreInput value={ent.f_b1} max={30} disabled={!ent.made_final} onCommit={n => onScore(ent.id, { f_b1: n })} /></td>
-                  <td className="c"><ScoreInput value={ent.f_b2} max={20} disabled={!ent.made_final} onCommit={n => onScore(ent.id, { f_b2: n })} /></td>
-                  <td className="c sub-total">{ent.made_final ? t.f ?? '—' : '—'}</td>
+                  <td className="c bl"><ScoreInput value={ent.made_final ? t.f : null} max={MAX_FINAL} disabled={!ent.made_final} onCommit={n => onScore(ent.id, { score_final: n })} /></td>
                   <td className="c bl big" style={{ color: t.total != null ? 'var(--orange)' : 'var(--text-3)' }}>{t.total ?? '—'}</td>
                 </tr>
               )

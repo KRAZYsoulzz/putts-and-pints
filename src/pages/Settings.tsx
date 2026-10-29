@@ -94,6 +94,15 @@ export default function SettingsPage() {
           </div>
 
           <div className="field">
+            <span>Bar Match Cap ($ per event)</span>
+            <MoneyInput
+              value={form.barMatchCap}
+              onChange={(v) => setForm((s) => ({ ...s, barMatchCap: v }))}
+            />
+            <small>Default $150. The bar never matches more than this per event, both divisions combined</small>
+          </div>
+
+          <div className="field">
             <span>Perfect Round Pot Cap ($)</span>
             <MoneyInput
               value={form.perfectRoundCap}

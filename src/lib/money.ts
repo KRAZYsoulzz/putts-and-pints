@@ -1,6 +1,6 @@
 import { cents, distribute, rankFinal, redistributeTags, totals, type Ranked } from './scoring'
 import { AWARD_LABEL, AWARDS } from './types'
-import type { Award, Division, Entry, Fund, LedgerKind, LedgerRow, Settings } from './types'
+import type { Award, Division, Entry, Fund, LedgerKind, LedgerRow, PPEvent, Settings } from './types'
 
 const NIGHT_BONUSES = ['perfect5', 'perfect4', 'high_score'] as const
 
@@ -28,13 +28,32 @@ export interface EventMoney {
   barSplit: Record<Division, number>
 }
 
-/** Bar matches a % of the whole night's entry money; split suggested by division size. */
+/** Bar matches a % of the whole night's entry money, up to barMatchCap; split suggested by division size. */
 export function eventMoney(counts: Record<Division, number>, s: Settings): EventMoney {
   const players = counts.M + counts.W
   const totalPot = players * s.entryFee
-  const barMatch = cents(totalPot * s.barMatchPct / 100)
+  const barMatch = Math.min(cents(totalPot * s.barMatchPct / 100), s.barMatchCap)
   const men = players ? cents(barMatch * counts.M / players) : 0
   return { totalPot, barMatch, barSplit: { M: men, W: cents(barMatch - men) } }
+}
+
+/**
+ * The bar match this division gets for an event. A typed override (or a finished night, whose
+ * amount was saved at finalize) wins; otherwise it follows the check-in counts, so it moves as
+ * players arrive: 50% of the entry money, capped, split by division size.
+ */
+export function effectiveBar(
+  ev: Pick<PPEvent, 'status' | 'bar_match_men' | 'bar_match_women' | 'bar_match_men_manual' | 'bar_match_women_manual'>,
+  d: Division,
+  counts: Record<Division, number>,
+  s: Settings,
+): number {
+  const manual = d === 'M' ? ev.bar_match_men_manual : ev.bar_match_women_manual
+  if (manual || ev.status === 'complete') {
+    const n = Number(d === 'M' ? ev.bar_match_men : ev.bar_match_women)
+    return Number.isFinite(n) && n > 0 ? n : 0
+  }
+  return eventMoney(counts, s).barSplit[d]
 }
 
 /**
@@ -64,7 +83,19 @@ export function displayedPerfectRound(ledgerBalance: number, projected: number, 
   return posted ? ledgerBalance : projected
 }
 
-/** What the awarded night bonuses actually cost (ties split, and the cents have to add back up). */
+/**
+ * Split a pot evenly among n winners to the cent. Leftover cents go one at a time to
+ * the first winners, so the shares always add back up to the pot.
+ */
+export function splitEvenly(total: number, n: number): number[] {
+  if (n <= 0) return []
+  const totalCents = Math.round(total * 100)
+  const base = Math.floor(totalCents / n)
+  const extra = totalCents - base * n
+  return Array.from({ length: n }, (_, i) => (base + (i < extra ? 1 : 0)) / 100)
+}
+
+/** What the awarded night bonuses cost the purse: the flat amount, once per award with any winner. */
 export function nightBonusCost(entries: Entry[], s: Settings): number {
   const amounts: Record<(typeof NIGHT_BONUSES)[number], number> = {
     perfect5: s.bonus.perfect5,
@@ -73,10 +104,8 @@ export function nightBonusCost(entries: Entry[], s: Settings): number {
   }
   let total = 0
   for (const type of NIGHT_BONUSES) {
-    const winners = entries.filter(e => e.awards?.includes(type)).length
-    if (!winners) continue
-    const each = cents(amounts[type] / winners)
-    total += cents(each * winners)
+    if (!entries.some(e => e.awards?.includes(type))) continue
+    total += amounts[type]
   }
   return cents(total)
 }
@@ -106,7 +135,10 @@ function placeNote(place: number): string {
 export interface BonusWin {
   type: Award
   entryIds: string[]
+  /** The biggest share (shares differ by a cent when the pot does not divide evenly). */
   each: number
+  /** One share per winner, in entryIds order. Adds up to the whole pot. */
+  amounts: number[]
 }
 
 export interface DivisionResult {
@@ -154,8 +186,10 @@ export function divisionResult(i: ResultInput): DivisionResult {
   row('backup', 'overflow', contribution - toPot, 'Over the cap')
   const potAfterEntries = cents(i.balances.perfect_round + toPot)
 
-  // Bonuses: awarded by hand (right-click). Multiple winners of the same award split it.
-  // Perfect 5 / Perfect 4 / High Score are flat night bonuses paid out of the purse.
+  // Bonuses: awarded by hand (right-click). Perfect 5, Perfect 4 and Perfect Round are shared pots:
+  // everyone who hits one splits the whole pot evenly. Perfect 5 / Perfect 4 pots are the
+  // pot balance plus the flat night bonus, which is funded from the purse when someone wins.
+  // High Score stays a flat bonus (split on ties).
   // Fund the pot first so the payout does not drive it negative.
   const bonuses: BonusWin[] = []
   const amounts: Record<Award, number> = {
@@ -167,14 +201,15 @@ export function divisionResult(i: ResultInput): DivisionResult {
   for (const type of AWARDS) {
     const winners = entries.filter(e => e.awards?.includes(type))
     if (!winners.length) continue
-    const each = cents(amounts[type] / winners.length)
-    const paid = cents(each * winners.length)
-    bonuses.push({ type, entryIds: winners.map(w => w.id), each })
+    const flat = type === 'perfect_round' ? 0 : amounts[type]
+    const pot = type === 'perfect5' || type === 'perfect4' ? cents(i.balances[type] + flat) : amounts[type]
+    const shares = splitEvenly(pot, winners.length)
+    bonuses.push({ type, entryIds: winners.map(w => w.id), each: shares[0], amounts: shares })
     if (type !== 'perfect_round') {
-      row('purse', 'transfer', -paid, `${AWARD_LABEL[type]} funded from the payout pool`)
-      row(type, 'transfer', paid, 'Funded from the payout pool')
+      row('purse', 'transfer', -flat, `${AWARD_LABEL[type]} funded from the payout pool`)
+      row(type, 'transfer', flat, 'Funded from the payout pool')
     }
-    winners.forEach(w => row(type, 'bonus_payout', -each, AWARD_LABEL[type], w.player_id))
+    winners.forEach((w, k) => row(type, 'bonus_payout', -shares[k], AWARD_LABEL[type], w.player_id))
     if (type === 'perfect_round') {
       const roll = Math.min(i.balances.backup + (contribution - toPot), s.perfectRoundCap)
       row('backup', 'rollover', -roll, 'Backup becomes the Perfect Round pot')

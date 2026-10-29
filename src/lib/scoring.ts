@@ -3,8 +3,8 @@ import type { CountbackKey, CutTieMode, Entry, Settings, TieMode } from './types
 // ---------------------------------------------------------------------------
 // Scores
 // ---------------------------------------------------------------------------
-export const MAX_B1 = 30
-export const MAX_B2 = 20
+export const MAX_18 = 100
+export const MAX_FINAL = 50
 
 const nine = (b1: number | null, b2: number | null) => (b1 == null || b2 == null ? null : b1 + b2)
 
@@ -41,22 +41,17 @@ export interface Totals {
   total: number | null
 }
 
+/**
+ * New nights store two totals (score_18, score_final). Nights scored before that
+ * only have the per-basket columns, so fall back to summing those.
+ */
 export function totals(e: Entry): Totals {
   const r1 = nine(e.r1_b1, e.r1_b2)
   const r2 = nine(e.r2_b1, e.r2_b2)
-  const f = e.made_final ? nine(e.f_b1, e.f_b2) : null
-  const t18 = r1 != null && r2 != null ? r1 + r2 : null
+  const f = e.made_final ? (e.score_final ?? nine(e.f_b1, e.f_b2)) : null
+  const t18 = e.score_18 ?? (r1 != null && r2 != null ? r1 + r2 : null)
   const total = t18 == null ? null : t18 + (f ?? 0)
   return { r1, r2, f, t18, total }
-}
-
-// ---------------------------------------------------------------------------
-// Perfect hints — bonuses are awarded by hand; these just light up the grid
-// ---------------------------------------------------------------------------
-export function perfectHints(e: Entry): { p5: boolean; p4: boolean } {
-  const b1s = [e.r1_b1, e.r2_b1, e.made_final ? e.f_b1 : null]
-  const b2s = [e.r1_b2, e.r2_b2, e.made_final ? e.f_b2 : null]
-  return { p5: b1s.includes(MAX_B1), p4: b2s.includes(MAX_B2) }
 }
 
 // ---------------------------------------------------------------------------

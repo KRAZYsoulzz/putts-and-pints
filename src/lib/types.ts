@@ -64,6 +64,8 @@ export interface Settings {
   entryFee: number
   perfectRoundShare: number
   barMatchPct: number
+  /** Most the bar matches per event, both divisions combined. */
+  barMatchCap: number
   perfectRoundCap: number
   tagPrice: number
   bonus: { perfect5: number; perfect4: number; highScore: number }
@@ -105,6 +107,9 @@ export interface PPEvent {
   status: EventStatus
   bar_match_men: number
   bar_match_women: number
+  /** True once a director typed this division's bar match. Otherwise it is worked out from the entries. */
+  bar_match_men_manual: boolean
+  bar_match_women_manual: boolean
   final_cut_men: number | null
   final_cut_women: number | null
   payouts_men: number[]
@@ -127,6 +132,9 @@ export interface Entry {
   r2_b2: number | null
   f_b1: number | null
   f_b2: number | null
+  /** Scorers enter only these two totals. Older nights keep the per-basket columns below. */
+  score_18: number | null
+  score_final: number | null
   awards: Award[]
   made_final: boolean
   tiebreak: number | null
