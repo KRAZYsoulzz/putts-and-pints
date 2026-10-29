@@ -1,6 +1,6 @@
 import { cents, distribute, rankFinal, redistributeTags, totals, type Ranked } from './scoring'
 import { AWARD_LABEL, AWARDS } from './types'
-import type { Award, Division, Entry, Fund, LedgerKind, LedgerRow, Settings } from './types'
+import type { Award, Division, Entry, Fund, LedgerKind, LedgerRow, PPEvent, Settings } from './types'
 
 const NIGHT_BONUSES = ['perfect5', 'perfect4', 'high_score'] as const
 
@@ -35,6 +35,25 @@ export function eventMoney(counts: Record<Division, number>, s: Settings): Event
   const barMatch = Math.min(cents(totalPot * s.barMatchPct / 100), s.barMatchCap)
   const men = players ? cents(barMatch * counts.M / players) : 0
   return { totalPot, barMatch, barSplit: { M: men, W: cents(barMatch - men) } }
+}
+
+/**
+ * The bar match this division gets for an event. A typed override (or a finished night, whose
+ * amount was saved at finalize) wins; otherwise it follows the check-in counts, so it moves as
+ * players arrive: 50% of the entry money, capped, split by division size.
+ */
+export function effectiveBar(
+  ev: Pick<PPEvent, 'status' | 'bar_match_men' | 'bar_match_women' | 'bar_match_men_manual' | 'bar_match_women_manual'>,
+  d: Division,
+  counts: Record<Division, number>,
+  s: Settings,
+): number {
+  const manual = d === 'M' ? ev.bar_match_men_manual : ev.bar_match_women_manual
+  if (manual || ev.status === 'complete') {
+    const n = Number(d === 'M' ? ev.bar_match_men : ev.bar_match_women)
+    return Number.isFinite(n) && n > 0 ? n : 0
+  }
+  return eventMoney(counts, s).barSplit[d]
 }
 
 /**

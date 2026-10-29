@@ -107,6 +107,9 @@ export interface PPEvent {
   status: EventStatus
   bar_match_men: number
   bar_match_women: number
+  /** True once a director typed this division's bar match. Otherwise it is worked out from the entries. */
+  bar_match_men_manual: boolean
+  bar_match_women_manual: boolean
   final_cut_men: number | null
   final_cut_women: number | null
   payouts_men: number[]

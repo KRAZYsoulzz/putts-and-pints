@@ -12,7 +12,8 @@ Built with **React**, **TypeScript**, **Vite**, **Supabase**, and **VitePWA**.
 - **Entry & Pots:**
   - $10 entry ($8 to night's division payout, $2 to Perfect Round Pot).
   - Bar matches half the total entry pot, up to $150 per event (both divisions combined).
-  - Perfect Round Pot builds and caps at $250; excess flows into the Backup Pot.
+  - Men's and Women's each have their own Perfect Round Pot, funded by that division's entries. Each pot caps at $250; excess flows into that division's Backup Pot.
+  - The bar match is calculated automatically from the check-ins and added to the payout pool; a director can type an amount to override it.
 - **Scoring:** scorers enter two totals per player, the 18-hole total (max 100) and, for finalists, the Final 9 total (max 50). Per-basket scores are not tracked, so Perfect 5 / Perfect 4 / Perfect Round are awarded by hand. Making all 10 Basket 1 discs is a **Perfect 5**; all 8 Basket 2 discs is a **Perfect 4**.
 - **The Cut & Final 9:** Top half of the field qualifies for the Final 9. Final 9 points are added to 18-hole totals (Max: 150 pts).
 - **Bonuses:**

@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { DEFAULT_SETTINGS as S } from '../src/lib/settings'
 import { bestTotal, clampScore, effectiveCut, qualifiers, rank18, rankFinal, suggestedCut, totals } from '../src/lib/scoring'
-import { balances, displayedPerfectRound, divisionResult, eventLedgerPosted, eventMoney, nightBonusCost, payoutPool, splitEvenly, suggestedPaidPlaces, suggestedPayouts } from '../src/lib/money'
+import { balances, displayedPerfectRound, divisionResult, effectiveBar, eventLedgerPosted, eventMoney, nightBonusCost, payoutPool, splitEvenly, suggestedPaidPlaces, suggestedPayouts } from '../src/lib/money'
 import { duplicateName, friendlyError, parseMoney, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../src/lib/validation'
 import type { Entry } from '../src/lib/types'
 
@@ -32,6 +32,29 @@ const bigNight = eventMoney({ M: 30, W: 10 }, S)
 assert.equal(bigNight.totalPot, 400); assert.equal(bigNight.barMatch, 150, '50% of 400 is 200, capped at 150')
 assert.equal(bigNight.barSplit.M + bigNight.barSplit.W, 150)
 assert.equal(eventMoney({ M: 14, W: 6 }, S).barMatch, 100, 'under the cap is unchanged')
+
+// Bar match follows the check-ins unless typed; finished nights keep their saved amount
+const barEv = { status: 'checkin' as const, bar_match_men: 0, bar_match_women: 0, bar_match_men_manual: false, bar_match_women_manual: false }
+assert.equal(effectiveBar(barEv, 'M', { M: 0, W: 0 }, S), 0, 'nobody checked in yet')
+assert.equal(effectiveBar(barEv, 'M', { M: 14, W: 6 }, S), 70, 'auto: 50% of $200 split 14/6')
+assert.equal(effectiveBar(barEv, 'W', { M: 14, W: 6 }, S), 30)
+assert.equal(effectiveBar(barEv, 'M', { M: 30, W: 10 }, S) + effectiveBar(barEv, 'W', { M: 30, W: 10 }, S), 150, 'auto respects the cap')
+assert.equal(effectiveBar({ ...barEv, bar_match_men: 25, bar_match_men_manual: true }, 'M', { M: 14, W: 6 }, S), 25, 'typed override wins')
+assert.equal(effectiveBar({ ...barEv, bar_match_men: 25, bar_match_men_manual: true }, 'W', { M: 14, W: 6 }, S), 30, 'other division stays automatic')
+assert.equal(effectiveBar({ ...barEv, status: 'complete' as const, bar_match_men: 40 }, 'M', { M: 14, W: 6 }, S), 40, 'finished night uses the saved amount')
+assert.equal(payoutPool(14, effectiveBar(barEv, 'M', { M: 14, W: 6 }, S), S), 14 * 8 + 70, 'auto bar is part of the payout pool')
+
+// Men's and Women's Perfect Round pots are separate: each division's entries fund its own pot and a win pays only from it
+const prLedger = [
+  { id: '1', season_id: 's', event_id: null, player_id: null, division: 'M' as const, fund: 'perfect_round' as const, kind: 'carryover' as const, amount: 100, note: null, created_at: '' },
+  { id: '2', season_id: 's', event_id: null, player_id: null, division: 'W' as const, fund: 'perfect_round' as const, kind: 'carryover' as const, amount: 20, note: null, created_at: '' },
+]
+const womenWin = divisionResult({
+  division: 'W', entries: [e({ division: 'W', awards: ['perfect_round'] })], payoutPlaces: [], settings: S,
+  balances: balances(prLedger, 'W'), barMatch: 0, priorRecord: null,
+})
+assert.equal(womenWin.bonuses[0].each, 22, "women's $20 pot + her own $2, nothing from the men's $100")
+assert.ok(womenWin.ledger.every(r => r.division === 'W'), "women's night writes only women's rows")
 
 // Shared pots split to the cent
 assert.deepEqual(splitEvenly(10, 3), [3.34, 3.33, 3.33])

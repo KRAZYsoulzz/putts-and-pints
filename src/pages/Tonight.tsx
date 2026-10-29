@@ -26,7 +26,7 @@ import {
   type PPEvent,
 } from '../lib/types'
 import { byEntryOrder, cents, effectiveCut, MAX_18, MAX_FINAL, qualifiers, suggestedCut, totals, type Ranked } from '../lib/scoring'
-import { balances, displayedPerfectRound, divisionResult, eventLedgerPosted, eventMoney, nightBonusCost, payoutPool, suggestedPaidPlaces, suggestedPayouts } from '../lib/money'
+import { balances, displayedPerfectRound, divisionResult, eventLedgerPosted, effectiveBar, eventMoney, nightBonusCost, payoutPool, suggestedPaidPlaces, suggestedPayouts } from '../lib/money'
 import { duplicateName, friendlyError, normalizeName, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../lib/validation'
 import { Dialog, DivisionSeg, Menu, MoneyInput, PageHead, ScoreInput, Stat, money, ordinal } from '../components/ui'
 
@@ -92,9 +92,10 @@ export default function Tonight() {
   }, [entries, event?.id])
 
   const moneyCalc = useMemo(() => eventMoney(counts, settings), [counts, settings])
+  // Bar match follows the check-ins unless a director typed an amount.
   const barOf = (ev: PPEvent, d: Division) => {
-    const n = Number(d === 'M' ? ev.bar_match_men : ev.bar_match_women)
-    return Number.isFinite(n) && n > 0 ? n : 0
+    const mine = entries.filter(e => e.event_id === ev.id)
+    return effectiveBar(ev, d, { M: mine.filter(e => e.division === 'M').length, W: mine.filter(e => e.division === 'W').length }, settings)
   }
   const barAmount = event ? barOf(event, division) : 0
   const bonusCost = useMemo(() => nightBonusCost(divEntries, settings), [divEntries, settings])
@@ -142,9 +143,7 @@ export default function Tonight() {
       const list = d === 'M' ? event.payouts_men : event.payouts_women
       if (list && list.length > 0) continue
       const group = entries.filter(e => e.event_id === event.id && e.division === d)
-      const rawBar = Number(d === 'M' ? event.bar_match_men : event.bar_match_women)
-      const bar = Number.isFinite(rawBar) && rawBar > 0 ? rawBar : 0
-      const net = payoutPool(group.length, bar, settings, nightBonusCost(group, settings))
+      const net = payoutPool(group.length, barOf(event, d), settings, nightBonusCost(group, settings))
       const next = suggestedPayouts(net, suggestedPaidPlaces(group.length, settings))
       if (d === 'M') patch.payouts_men = next
       else patch.payouts_women = next
@@ -237,8 +236,10 @@ export default function Tonight() {
                         await must(supabase.from('pp_events').update({
                           status: 'checkin',
                           settings_snapshot: settings,
-                          bar_match_men: moneyCalc.barSplit.M,
-                          bar_match_women: moneyCalc.barSplit.W,
+                          bar_match_men: 0,
+                          bar_match_women: 0,
+                          bar_match_men_manual: false,
+                          bar_match_women_manual: false,
                         }).eq('id', ev.id).select().single())
                         reload()
                       } catch (err) { reportError(messageOf(err)) }
@@ -276,8 +277,10 @@ export default function Tonight() {
                 season_id: season.id,
                 status: 'checkin',
                 settings_snapshot: settings,
-                bar_match_men: moneyCalc.barSplit.M,
-                bar_match_women: moneyCalc.barSplit.W,
+                bar_match_men: 0,
+                bar_match_women: 0,
+                bar_match_men_manual: false,
+                bar_match_women_manual: false,
                 event_date: eventDate,
               }
               if (name) row.name = name
@@ -473,6 +476,8 @@ export default function Tonight() {
       if ((event.payouts_men ?? []).length === 0 || (event.payouts_women ?? []).length === 0) {
         await patchEvent(event.id, { payouts_men: lists.M, payouts_women: lists.W })
       }
+      // Save the amounts this night actually used, so the finished night never moves.
+      await patchEvent(event.id, { bar_match_men: barOf(event, 'M'), bar_match_women: barOf(event, 'W') })
       const rows: Record<string, unknown>[] = []
       const plans = DIVS.map(d => {
         const group = entries.filter(e => e.event_id === event.id && e.division === d)
@@ -698,14 +703,21 @@ export default function Tonight() {
                   onReject={setBarError}
                   onChange={val => {
                     setBarError('')
-                    void patchEvent(event.id, division === 'M' ? { bar_match_men: val } : { bar_match_women: val })
+                    void patchEvent(event.id, division === 'M'
+                      ? { bar_match_men: val, bar_match_men_manual: true }
+                      : { bar_match_women: val, bar_match_women_manual: true })
                   }}
                 />
                 {barError && <small className="field-error">{barError}</small>}
-                {Number(event.bar_match_men) + Number(event.bar_match_women) > settings.barMatchCap + 0.001 && (
+                {barOf(event, 'M') + barOf(event, 'W') > settings.barMatchCap + 0.001 && (
                   <small className="field-error">Both divisions together are over the {money(settings.barMatchCap)} bar match cap.</small>
                 )}
-                <small>Suggested proportional split: {money(moneyCalc.barSplit[division])}</small>
+                <small>
+                  {(division === 'M' ? event.bar_match_men_manual : event.bar_match_women_manual)
+                    ? <>Typed in by hand. Automatic would be {money(moneyCalc.barSplit[division])}.{' '}
+                        <button type="button" className="btn btn-ghost btn-sm" onClick={() => void patchEvent(event.id, division === 'M' ? { bar_match_men_manual: false } : { bar_match_women_manual: false })}>Use automatic</button></>
+                    : <>Automatic from entries: {money(moneyCalc.barSplit[division])}. Type an amount to override.</>}
+                </small>
               </div>
               <button style={{ marginTop: 16 }} className="btn btn-primary btn-block" disabled={divEntries.length === 0} onClick={() => setStatus('scoring')}>
                 Start 18-Holes Scoring <ChevronRight size={16} />
