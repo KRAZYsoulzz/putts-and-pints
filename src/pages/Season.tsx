@@ -48,6 +48,11 @@ export default function SeasonPage() {
           active: true,
         }),
       )
+      // in_tags is not per season. A new season starts everyone off, and the
+      // new season has no pp_tags rows of its own.
+      await must(
+        supabase.from('pp_players').update({ in_tags: false }).neq('id', '00000000-0000-0000-0000-000000000000'),
+      )
     } catch (err) {
       setSeasonError(messageOf(err))
       return
@@ -285,6 +290,7 @@ export default function SeasonPage() {
                 onChange={(e) => { setNewSeasonName(e.target.value); setSeasonError('') }}
               />
               {seasonError && <small className="field-error">{seasonError}</small>}
+              <small className="muted">Everyone’s In tags switch turns off. This season starts with no tag numbers.</small>
             </div>
             <div style={{ marginTop: 14 }}>
               <button className="btn btn-primary btn-block" onClick={handleCreateSeason}>

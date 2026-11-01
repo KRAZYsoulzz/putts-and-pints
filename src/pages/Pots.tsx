@@ -14,7 +14,7 @@ import {
 import { Dialog, DivisionSeg, MoneyInput, PageHead, fmtDate, money } from '../components/ui'
 
 export default function Pots() {
-  const { ledger, season, settings, isAdmin, reload } = useData()
+  const { ledger, players, season, settings, isAdmin, reload } = useData()
   const [division, setDivision] = useState<Division>('M')
   const [adjustModal, setAdjustModal] = useState(false)
 
@@ -27,6 +27,7 @@ export default function Pots() {
   const [adjustError, setAdjustError] = useState('')
 
   const curBalances = useMemo(() => balances(ledger, division), [ledger, division])
+  const inTagsCount = players.filter(p => p.in_tags).length
 
   // Filtered ledger history
   const filteredLedger = useMemo(() => {
@@ -181,7 +182,7 @@ export default function Pots() {
               {money(curBalances.tag_fund)}
             </div>
             <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-              Funded by $20 tag purchases. Used for physical tags, trophy funds, and bonus subsidies.
+              {inTagsCount} in tags × {money(settings.tagPrice)}. The balance itself is still posted by hand.
             </p>
           </div>
         )}

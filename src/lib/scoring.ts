@@ -180,10 +180,37 @@ export function distribute(ranked: Ranked[], values: number[]): Map<string, numb
 }
 
 // ---------------------------------------------------------------------------
-// Tags — highest finisher among tag holders gets the lowest tag
+// Tags — highest finisher among tag holders gets the lowest tag.
+// Only players who bought in (inTags) are in the pool. Omit inTags to keep
+// every carried number, which is how nights worked before the opt-in.
 // ---------------------------------------------------------------------------
-export function redistributeTags(ranked: Ranked[]): Map<string, number> {
-  const holders = ranked.filter(r => r.entry.tag_in != null)
+export function redistributeTags(ranked: Ranked[], inTags?: (playerId: string) => boolean): Map<string, number> {
+  const opted = inTags ?? (() => true)
+  const holders = ranked.filter(r => r.entry.tag_in != null && opted(r.entry.player_id))
   const tags = holders.map(r => r.entry.tag_in as number).sort((a, b) => a - b)
   return new Map(holders.map((r, i) => [r.entry.id, tags[i]]))
+}
+
+/**
+ * First event of a season: opted-in players who played get tag 1, 2, 3…
+ * in the same order rankFinal already produced (score, then the tiebreak,
+ * then check-in order). Unfinished rows sit at the end and take the last numbers.
+ */
+export function initialTagAssignment(ranked: Ranked[], inTags: (playerId: string) => boolean): Map<string, number> {
+  const buyers = ranked.filter(r => inTags(r.entry.player_id))
+  return new Map(buyers.map((r, i) => [r.entry.id, i + 1]))
+}
+
+/** The earliest event in the season is the one that deals tags. */
+export function isOpeningTagNight(
+  events: { id: string; event_date: string; created_at?: string | null }[],
+  eventId: string,
+): boolean {
+  if (events.length === 0) return false
+  const first = [...events].sort((a, b) =>
+    a.event_date.localeCompare(b.event_date)
+    || (a.created_at ?? '').localeCompare(b.created_at ?? '')
+    || a.id.localeCompare(b.id),
+  )[0]
+  return first.id === eventId
 }

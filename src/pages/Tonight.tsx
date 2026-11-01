@@ -25,7 +25,7 @@ import {
   type Player,
   type PPEvent,
 } from '../lib/types'
-import { byEntryOrder, cents, effectiveCut, MAX_18, MAX_FINAL, qualifiers, suggestedCut, totals, type Ranked } from '../lib/scoring'
+import { byEntryOrder, cents, effectiveCut, isOpeningTagNight, MAX_18, MAX_FINAL, qualifiers, suggestedCut, totals, type Ranked } from '../lib/scoring'
 import { balances, displayedPerfectRound, divisionResult, eventLedgerPosted, effectiveBar, eventMoney, nightBonusCost, payoutPool, suggestedPaidPlaces, suggestedPayouts } from '../lib/money'
 import { duplicateName, friendlyError, normalizeName, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../lib/validation'
 import { Dialog, DivisionSeg, Menu, MoneyInput, PageHead, ScoreInput, Stat, money, ordinal } from '../components/ui'
@@ -114,6 +114,7 @@ export default function Tonight() {
     [division, event?.payouts_men, event?.payouts_women],
   )
 
+  const inTags = (playerId: string) => playerById.get(playerId)?.in_tags === true
   const result = useMemo(() => divisionResult({
     division,
     entries: divEntries,
@@ -122,7 +123,9 @@ export default function Tonight() {
     balances: priorBalances,
     barMatch: barAmount,
     priorRecord: records[division],
-  }), [division, divEntries, payoutsList, settings, priorBalances, barAmount, records])
+    tagPlan: event && isOpeningTagNight(events, event.id) ? 'opening' : 'redistribute',
+    inTags: (playerId) => playerById.get(playerId)?.in_tags === true,
+  }), [division, divEntries, payoutsList, settings, priorBalances, barAmount, records, event, events, playerById])
 
   const rankedById = useMemo(() => new Map(result.ranked.map(r => [r.entry.id, r])), [result])
 
@@ -319,13 +322,14 @@ export default function Tonight() {
     if (entries.some(e => e.event_id === event.id && e.player_id === pId)) return
     checkingIn.current.add(pId)
     try {
-      const currentTag = tags.find(t => t.player_id === pId)?.tag_number ?? null
+      const player = players.find(p => p.id === pId)
+      const held = tags.find(t => t.player_id === pId)?.tag_number ?? null
       const { error } = await supabase.from('pp_entries').upsert({
         event_id: event.id,
         player_id: pId,
         division: pDiv,
         paid: true,
-        tag_in: currentTag,
+        tag_in: player?.in_tags ? held : null,
         awards: [],
       }, { onConflict: 'event_id,player_id', ignoreDuplicates: true })
       if (error) {
@@ -351,7 +355,7 @@ export default function Tonight() {
     setCreateError('')
     try {
       const created = await must(
-        supabase.from('pp_players').insert({ name: clean, division: pDiv, active: true }).select().single(),
+        supabase.from('pp_players').insert({ name: clean, division: pDiv, active: true, in_tags: false }).select().single(),
       )
       await handleCheckinPlayer(created.id, pDiv)
     } catch (err) {
@@ -489,6 +493,8 @@ export default function Tonight() {
           balances: balances(ledger.filter(r => r.event_id !== event.id), d),
           barMatch: barOf(event, d),
           priorRecord: records[d],
+          tagPlan: isOpeningTagNight(events, event.id) ? 'opening' : 'redistribute',
+          inTags,
         })
       })
       plans.forEach((plan, i) => {
@@ -513,21 +519,22 @@ export default function Tonight() {
         const plan = plans[i]
         for (const r of plan.ranked) {
           const ent = r.entry
-          const tagOut = plan.tagsOut.get(ent.id) ?? ent.tag_in
+          const tagOut = plan.tagsOut.get(ent.id) ?? null
           await must(supabase.from('pp_entries').update({
             place: r.place > 0 ? r.place : null,
             payout: plan.payouts.get(ent.id) ?? 0,
             points: plan.points.get(ent.id) ?? 0,
             tag_out: tagOut,
           }).eq('id', ent.id))
-          if (tagOut != null && season) {
-            const { error } = await supabase.from('pp_tags').upsert(
-              { season_id: season.id, player_id: ent.player_id, tag_number: tagOut },
-              { onConflict: 'season_id,player_id' },
-            )
-            if (error) {
-              console.error(error.message)
-              reportError(friendlyError(error.message))
+          if (season) {
+            if (tagOut != null) {
+              await must(supabase.from('pp_tags').upsert(
+                { season_id: season.id, player_id: ent.player_id, tag_number: tagOut },
+                { onConflict: 'season_id,player_id' },
+              ))
+            } else if (!inTags(ent.player_id)) {
+              // A released tag used to stay on the old holder and come back at the next check-in.
+              await must(supabase.from('pp_tags').delete().eq('season_id', season.id).eq('player_id', ent.player_id))
             }
           }
         }
@@ -664,6 +671,7 @@ export default function Tonight() {
                               entry={ent}
                               name={p?.name ?? 'player'}
                               siblings={nightEntries}
+                              inTags={p?.in_tags === true}
                               onCommit={tag => patchEntry(ent.id, { tag_in: tag })}
                             />
                           </td>
@@ -831,7 +839,7 @@ export default function Tonight() {
                       const t = r.totals
                       const payoutAmt = result.payouts.get(ent.id) ?? 0
                       const pts = result.points.get(ent.id) ?? 0
-                      const tagOut = result.tagsOut.get(ent.id) ?? ent.tag_in
+                      const tagOut = result.tagsOut.get(ent.id)
                       return (
                         <tr key={ent.id} className={r.place === 1 ? 'leader' : ''} onContextMenu={e => handleContextMenu(e, ent)}>
                           <td className="place">{r.place > 0 ? ordinal(r.place) : '—'}</td>
@@ -853,7 +861,11 @@ export default function Tonight() {
                             {pts > 0 ? `+${pts}` : '—'}
                           </td>
                           <td className="c bl faint">
-                            {ent.tag_in != null ? <span>#{ent.tag_in} → <strong style={{ color: 'var(--text)' }}>#{tagOut}</strong></span> : 'No tag'}
+                            {tagOut == null
+                              ? 'No tag'
+                              : ent.tag_in != null
+                                ? <span>#{ent.tag_in} → <strong style={{ color: 'var(--text)' }}>#{tagOut}</strong></span>
+                                : <strong style={{ color: 'var(--text)' }}>#{tagOut}</strong>}
                           </td>
                         </tr>
                       )
@@ -944,9 +956,9 @@ export default function Tonight() {
       {contextMenu && (
         <Menu x={contextMenu.x} y={contextMenu.y} onClose={() => setContextMenu(null)}>
           <div className="menu-label eyebrow">Award Bonuses: {playerById.get(contextMenu.entry.player_id)?.name}</div>
-          {contextMenu.entry.tag_in == null && (
-            <div className="menu-note muted" style={{ color: 'var(--danger)', fontSize: 11, padding: '4px 10px' }}>
-              Player does not hold a tag (ineligible for bonuses per rules).
+          {playerById.get(contextMenu.entry.player_id)?.in_tags !== true && (
+            <div className="menu-note muted" style={{ fontSize: 11, padding: '4px 10px' }}>
+              Not in tags. Bonuses still count; no tag is assigned.
             </div>
           )}
           {AWARDS.map(a => {
@@ -1037,15 +1049,28 @@ function StartEventDialog({ name, date, onName, onDate, onClose, onCreate }: {
   )
 }
 
-function TagInCell({ entry, name, siblings, onCommit }: {
+function TagInCell({ entry, name, siblings, inTags, onCommit }: {
   entry: Entry
   name: string
   siblings: Entry[]
+  inTags: boolean
   onCommit: (tag: number | null) => void
 }) {
   const [draft, setDraft] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const shown = draft ?? (entry.tag_in ?? '')
+  if (!inTags) {
+    return (
+      <input
+        className="score"
+        style={{ width: 72 }}
+        disabled
+        readOnly
+        aria-label={`Tag in for ${name}`}
+        value="No tag"
+      />
+    )
+  }
   return (
     <div>
       <input
@@ -1139,7 +1164,7 @@ function ScoreTable({ rows, rankedById, playerById, mode, onContextMenu, onScore
                         <span className="chips">{ent.awards.map(a => <span key={a} className="chip chip-teal">{AWARD_SHORT[a]}</span>)}</span>
                       )}
                     </td>
-                    <td className="c faint">{ent.tag_in ? `#${ent.tag_in}` : '—'}</td>
+                    <td className="c faint">{p?.in_tags && ent.tag_in ? `#${ent.tag_in}` : 'No tag'}</td>
                     <td className="c bl"><ScoreInput value={t.t18} max={MAX_18} onCommit={n => onScore(ent.id, { score_18: n })} /></td>
                     <td className="c bl">
                       <button className="btn btn-ghost btn-sm" style={{ fontSize: 11 }} onClick={e => onContextMenu(e, ent)}>

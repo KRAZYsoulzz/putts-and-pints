@@ -28,6 +28,7 @@ export default function Players() {
   const [newName, setNewName] = useState('')
   const [newDivision, setNewDivision] = useState<Division>('M')
   const [initialTag, setInitialTag] = useState('')
+  const [addInTags, setAddInTags] = useState(false)
   const [addError, setAddError] = useState('')
 
   // Edit Player Profile State
@@ -36,6 +37,7 @@ export default function Players() {
   const [editDivision, setEditDivision] = useState<Division>('M')
   const [editActive, setEditActive] = useState(true)
   const [editTag, setEditTag] = useState('')
+  const [editInTags, setEditInTags] = useState(false)
   const [editError, setEditError] = useState('')
 
   // Edit Historical Event Entry State
@@ -92,9 +94,23 @@ export default function Players() {
     setEditName(p.name)
     setEditDivision(p.division)
     setEditActive(p.active)
+    setEditInTags(p.in_tags === true)
     const curTag = tags.find((t) => t.player_id === p.id)?.tag_number
     setEditTag(curTag ? String(curTag) : '')
     setEditError('')
+  }
+
+  const setInTagsChoice = async (on: boolean) => {
+    if (!on && editTag.trim()) {
+      const ok = await askConfirm(`Remove Tag #${editTag.trim()}?`, {
+        title: 'Remove tag',
+        confirmLabel: 'Remove tag',
+        danger: true,
+      })
+      if (!ok) return
+    }
+    if (!on) setEditTag('')
+    setEditInTags(on)
   }
 
   // Save Player Profile Edits
@@ -106,7 +122,7 @@ export default function Players() {
       setEditError(`“${clean}” is already on the roster.`)
       return
     }
-    const parsed = parseTag(editTag)
+    const parsed = editInTags ? parseTag(editTag) : { ok: true as const, value: null }
     if (!parsed.ok) { setEditError(parsed.error); return }
     if (parsed.value != null && tagTakenOnRoster(parsed.value, tags, players, editDivision, editPlayer.id)) {
       setEditError(`Tag #${parsed.value} is already held in this division.`)
@@ -126,12 +142,13 @@ export default function Players() {
             name: clean,
             division: editDivision,
             active: editActive,
+            in_tags: editInTags,
           })
           .eq('id', editPlayer.id),
       )
 
       if (season && (parsed.value != null || tags.some(t => t.player_id === editPlayer.id))) {
-        await saveTag(editPlayer.id, parsed.value)
+        await saveTag(editPlayer.id, editInTags ? parsed.value : null)
       }
     } catch (err) {
       setEditError(messageOf(err))
@@ -145,6 +162,7 @@ export default function Players() {
         name: clean,
         division: editDivision,
         active: editActive,
+        in_tags: editInTags,
       })
     }
     reload()
@@ -242,7 +260,7 @@ export default function Players() {
     const clean = normalizeName(newName)
     if (!clean) { setAddError('Enter a player name.'); return }
     if (duplicateName(clean, players)) { setAddError(`“${clean}” is already on the roster.`); return }
-    const parsed = parseTag(initialTag)
+    const parsed = addInTags ? parseTag(initialTag) : { ok: true as const, value: null }
     if (!parsed.ok) { setAddError(parsed.error); return }
     if (parsed.value != null && tagTakenOnRoster(parsed.value, tags, players, newDivision)) {
       setAddError(`Tag #${parsed.value} is already held in this division.`)
@@ -255,7 +273,7 @@ export default function Players() {
     setAddError('')
     try {
       const created = await must(
-        supabase.from('pp_players').insert({ name: clean, division: newDivision, active: true }).select().single(),
+        supabase.from('pp_players').insert({ name: clean, division: newDivision, active: true, in_tags: addInTags }).select().single(),
       )
       if (parsed.value != null) await saveTag(created.id, parsed.value)
     } catch (err) {
@@ -265,6 +283,7 @@ export default function Players() {
     setAddModal(false)
     setNewName('')
     setInitialTag('')
+    setAddInTags(false)
     reload()
   }
 
@@ -274,7 +293,7 @@ export default function Players() {
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           <DivisionSeg value={division} onChange={setDivision} />
           {isAdmin && (
-            <button className="btn btn-primary" onClick={() => { setAddError(''); setAddModal(true) }}>
+            <button className="btn btn-primary" onClick={() => { setAddError(''); setAddInTags(false); setInitialTag(''); setAddModal(true) }}>
               <Plus size={16} /> Add Player
             </button>
           )}
@@ -302,7 +321,7 @@ export default function Players() {
               <tr>
                 <th style={{ width: 45 }}>#</th>
                 <th>Name</th>
-                <th className="c" style={{ width: 90 }}>Tag</th>
+                <th className="c" style={{ width: 140 }}>Tag</th>
                 <th className="c" style={{ width: 90 }}>Events</th>
                 <th className="r bl" style={{ width: 110 }}>Total Winnings</th>
                 <th className="c bl" style={{ width: 160 }}>Action</th>
@@ -333,7 +352,8 @@ export default function Players() {
                         {!p.active && <span className="chip chip-danger" style={{ marginLeft: 6 }}>Inactive</span>}
                       </td>
                       <td className="c">
-                        {currentTag != null ? <span className="chip chip-tag">#{currentTag}</span> : <span className="faint">—</span>}
+                        {currentTag != null && p.in_tags ? <span className="chip chip-tag">#{currentTag}</span> : <span className="faint">—</span>}
+                        {p.in_tags && <span className="chip" style={{ marginLeft: 6 }}>In tags</span>}
                       </td>
                       <td className="c faint">{playerEntries.length}</td>
                       <td className="r bl num strong" style={{ color: totalWon > 0 ? 'var(--teal)' : 'var(--text-3)' }}>
@@ -371,7 +391,8 @@ export default function Players() {
             <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
               <div className="row" style={{ gap: 8 }}>
                 <span className="chip chip-orange">{DIVISION_LABEL[selectedPlayer.division]}</span>
-                {profileStats.currentTag != null && (
+                <span className="chip">{selectedPlayer.in_tags ? 'In tags' : 'No tag'}</span>
+                {selectedPlayer.in_tags && profileStats.currentTag != null && (
                   <span className="chip chip-tag">Holding Tag #{profileStats.currentTag}</span>
                 )}
                 {!selectedPlayer.active && <span className="chip chip-danger">Inactive</span>}
@@ -522,11 +543,13 @@ export default function Players() {
               <span>Current Tag Number (Leave blank for no tag)</span>
               <input
                 className="input"
-                type="number"
-                placeholder="e.g. 5"
-                value={editTag}
+                type={editInTags ? 'number' : 'text'}
+                placeholder={editInTags ? 'e.g. 5' : 'No tag'}
+                value={editInTags ? editTag : 'No tag'}
+                disabled={!editInTags}
                 onChange={(e) => setEditTag(e.target.value)}
               />
+              {!editInTags && <small className="muted">Turn on In tags to assign a number.</small>}
             </div>
 
             <div className="row" style={{ justifyContent: 'space-between', padding: '6px 0' }}>
@@ -535,6 +558,14 @@ export default function Players() {
                 <div className="muted" style={{ fontSize: 11 }}>Visible in active roster and check-in</div>
               </div>
               <Toggle on={editActive} onChange={setEditActive} label="Active Status" />
+            </div>
+
+            <div className="row" style={{ justifyContent: 'space-between', padding: '6px 0' }}>
+              <div>
+                <span style={{ fontSize: 13, fontWeight: 500 }}>In tags</span>
+                <div className="muted" style={{ fontSize: 11 }}>Bought a tag this season</div>
+              </div>
+              <Toggle on={editInTags} onChange={setInTagsChoice} label="In tags" />
             </div>
 
             {editError && <small className="field-error">{editError}</small>}
@@ -755,15 +786,25 @@ export default function Players() {
               </div>
             </div>
 
+            <div className="row" style={{ justifyContent: 'space-between', padding: '6px 0' }}>
+              <div>
+                <span style={{ fontSize: 13, fontWeight: 500 }}>In tags</span>
+                <div className="muted" style={{ fontSize: 11 }}>Bought a tag this season</div>
+              </div>
+              <Toggle on={addInTags} onChange={setAddInTags} label="In tags" />
+            </div>
+
             <div className="field">
               <span>Starting Tag Number (Optional)</span>
               <input
                 className="input"
-                type="number"
-                placeholder="e.g. 12"
-                value={initialTag}
+                type={addInTags ? 'number' : 'text'}
+                placeholder={addInTags ? 'e.g. 12' : 'No tag'}
+                value={addInTags ? initialTag : 'No tag'}
+                disabled={!addInTags}
                 onChange={(e) => setInitialTag(e.target.value)}
               />
+              {!addInTags && <small className="muted">Turn on In tags to assign a number.</small>}
             </div>
 
             {addError && <small className="field-error">{addError}</small>}
