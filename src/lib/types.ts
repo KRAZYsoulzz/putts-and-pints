@@ -89,6 +89,8 @@ export interface Player {
   name: string
   division: Division
   active: boolean
+  /** Bought a tag for the current season. Resets when a new season starts. */
+  in_tags: boolean
 }
 
 export interface Tag {

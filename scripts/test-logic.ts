@@ -1,7 +1,7 @@
 // Quick sanity checks for the rules engine. Run: npx tsx scripts/test-logic.ts
 import assert from 'node:assert/strict'
 import { DEFAULT_SETTINGS as S } from '../src/lib/settings'
-import { bestTotal, clampScore, effectiveCut, qualifiers, rank18, rankFinal, suggestedCut, totals } from '../src/lib/scoring'
+import { bestTotal, clampScore, effectiveCut, initialTagAssignment, isOpeningTagNight, qualifiers, rank18, rankFinal, redistributeTags, suggestedCut, totals } from '../src/lib/scoring'
 import { balances, displayedPerfectRound, divisionResult, effectiveBar, eventLedgerPosted, eventMoney, nightBonusCost, payoutPool, splitEvenly, suggestedPaidPlaces, suggestedPayouts } from '../src/lib/money'
 import { duplicateName, friendlyError, parseMoney, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../src/lib/validation'
 import type { Entry } from '../src/lib/types'
@@ -316,5 +316,102 @@ assert.deepEqual(parseMoney('-'), { ok: false, error: 'Amount can’t be negativ
 assert.deepEqual(parseMoney(''), { ok: true, value: 0 })
 assert.deepEqual(parseMoney('12.5'), { ok: true, value: 12.5 })
 assert.equal(parseMoney('-3', true).ok, true)
+
+// Tags: only opted-in players move, and the first finalized night deals 1..N.
+const tagIn = (id: string) => id.startsWith('in')
+const optedOut = e({ player_id: 'out', score_18: 99, tag_in: 3, created_at: '1' })
+const holderLow = e({ player_id: 'in-low', score_18: 70, tag_in: 5, created_at: '2' })
+const holderHigh = e({ player_id: 'in-high', score_18: 80, tag_in: 2, created_at: '3' })
+const tagged = rankFinal([optedOut, holderLow, holderHigh], S)
+const reshuffled = redistributeTags(tagged, tagIn)
+assert.equal(reshuffled.has(optedOut.id), false, 'a typed tag on someone not in tags is ignored')
+assert.equal(reshuffled.get(holderHigh.id), 2, 'best opted-in finish takes the lowest carried number')
+assert.equal(reshuffled.get(holderLow.id), 5)
+assert.deepEqual([...reshuffled.values()].sort((a, b) => a - b), [2, 5], 'holders keep the same set of numbers')
+
+const bareLeader = e({ player_id: 'out-first', score_18: 100, tag_in: null, created_at: '1' })
+const stillTagged = redistributeTags(rankFinal([bareLeader, holderHigh, holderLow], S), tagIn)
+assert.equal(stillTagged.has(bareLeader.id), false, 'a non-tag leader does not take a tag')
+assert.equal(stillTagged.get(holderHigh.id), 2)
+assert.equal(stillTagged.get(holderLow.id), 5)
+
+const openBest = e({ player_id: 'in-best', score_18: 88, created_at: '2' })
+const openTiedLater = e({ player_id: 'in-tie', score_18: 88, created_at: '3' })
+const openThird = e({ player_id: 'in-third', score_18: 40, created_at: '1' })
+const openBlank = e({ player_id: 'in-blank', created_at: '4' })
+const openOut = e({ player_id: 'out-best', score_18: 150, tag_in: 7, created_at: '0' })
+const dealt = initialTagAssignment(rankFinal([openOut, openThird, openBest, openTiedLater, openBlank], S), tagIn)
+assert.equal(dealt.has(openOut.id), false, 'opening night skips anyone not in tags')
+assert.equal(dealt.get(openBest.id), 1, 'best finish, check-in order on a tie, gets tag 1')
+assert.equal(dealt.get(openTiedLater.id), 2, 'same score later in check-in gets the next tag')
+assert.equal(dealt.get(openThird.id), 3)
+assert.equal(dealt.get(openBlank.id), 4, 'unfinished opted-in players sort last')
+assert.deepEqual([...dealt.values()].sort((a, b) => a - b), [1, 2, 3, 4])
+
+const tagCb = { ...S, ties: { ...S.ties, placement: 'countback' as const } }
+const lowBasket = e({ player_id: 'in-a', score_18: 80, r2_b1: 10, r2_b2: 10, created_at: '1' })
+const highBasket = e({ player_id: 'in-b', score_18: 80, r2_b1: 20, r2_b2: 0, created_at: '9' })
+const byCountback = initialTagAssignment(rankFinal([lowBasket, highBasket], tagCb), tagIn)
+assert.equal(byCountback.get(highBasket.id), 1, 'countback, not check-in order, picks tag 1')
+assert.equal(byCountback.get(lowBasket.id), 2)
+
+const opened = divisionResult({
+  division: 'M',
+  entries: [openOut, openBest, openThird],
+  payoutPlaces: [],
+  settings: S,
+  balances: { ...zero },
+  priorRecord: null,
+  tagPlan: 'opening',
+  inTags: tagIn,
+})
+assert.equal(opened.tagsOut.get(openBest.id), 1)
+assert.equal(opened.tagsOut.get(openThird.id), 2)
+assert.equal(opened.tagsOut.has(openOut.id), false)
+assert.equal(opened.bonuses.length, 0)
+
+const later = divisionResult({
+  division: 'M',
+  entries: [openOut, holderHigh, holderLow],
+  payoutPlaces: [],
+  settings: S,
+  balances: { ...zero },
+  priorRecord: 50,
+  tagPlan: 'redistribute',
+  inTags: tagIn,
+})
+assert.equal(later.tagsOut.has(openOut.id), false)
+assert.equal(later.tagsOut.get(holderHigh.id), 2)
+assert.equal(later.tagsOut.get(holderLow.id), 5)
+
+const noTagWinner = e({ player_id: 'out-bonus', tag_in: null, awards: ['perfect5', 'perfect4', 'high_score', 'perfect_round'], score_18: 100 })
+const stillPaid = divisionResult({
+  division: 'M',
+  entries: [noTagWinner],
+  payoutPlaces: [],
+  settings: S,
+  balances: { ...zero, perfect_round: 10 },
+  priorRecord: null,
+  tagPlan: 'redistribute',
+  inTags: tagIn,
+})
+assert.deepEqual(stillPaid.bonuses.map(b => b.type), ['perfect_round', 'perfect5', 'perfect4', 'high_score'])
+assert.equal(stillPaid.tagsOut.size, 0, 'bonuses do not hand out a tag')
+
+assert.equal(isOpeningTagNight([
+  { id: 'a', event_date: '2026-11-05' },
+  { id: 'b', event_date: '2026-11-19' },
+], 'a'), true)
+assert.equal(isOpeningTagNight([
+  { id: 'a', event_date: '2026-11-05' },
+], 'a'), true, 're-finalizing the first night still deals tags')
+assert.equal(isOpeningTagNight([
+  { id: 'week2', event_date: '2026-11-19' },
+  { id: 'week1', event_date: '2026-11-05' },
+], 'week2'), false, 'a later night reshuffles instead of dealing 1..N')
+assert.equal(isOpeningTagNight([
+  { id: 'late', event_date: '2026-11-05', created_at: '2026-10-02' },
+  { id: 'early', event_date: '2026-11-05', created_at: '2026-10-01' },
+], 'early'), true, 'same date: the earlier-created event is first')
 
 console.log('All rules checks passed ✔')

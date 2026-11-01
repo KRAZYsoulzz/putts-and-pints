@@ -1,4 +1,4 @@
-import { cents, distribute, rankFinal, redistributeTags, totals, type Ranked } from './scoring'
+import { cents, distribute, initialTagAssignment, rankFinal, redistributeTags, totals, type Ranked } from './scoring'
 import { AWARD_LABEL, AWARDS } from './types'
 import type { Award, Division, Entry, Fund, LedgerKind, LedgerRow, PPEvent, Settings } from './types'
 
@@ -163,6 +163,13 @@ interface ResultInput {
   barMatch?: number
   /** best 27-hole total from earlier completed events this season (null = first event) */
   priorRecord: number | null
+  /**
+   * opening = the season's first event deals tag 1..N to opted-in players.
+   * redistribute (default) = later nights reshuffle the numbers people carried in.
+   */
+  tagPlan?: 'opening' | 'redistribute'
+  /** Bought a tag this season. When omitted, every carried tag stays eligible. */
+  inTags?: (playerId: string) => boolean
 }
 
 export function divisionResult(i: ResultInput): DivisionResult {
@@ -232,7 +239,9 @@ export function divisionResult(i: ResultInput): DivisionResult {
     ranked,
     payouts,
     points: distribute(ranked, s.points),
-    tagsOut: redistributeTags(ranked),
+    tagsOut: i.tagPlan === 'opening'
+      ? initialTagAssignment(ranked, i.inTags ?? (() => true))
+      : redistributeTags(ranked, i.inTags),
     bonuses,
     newRecord,
     potAfterEntries,
