@@ -145,13 +145,14 @@ export function nightBonusCost(entries: Entry[], s: Settings, opts?: { payHighSc
 
 /**
  * Split a pool across `places` in a declining ratio (2 places → 2/3 + 1/3, and so on).
- * The first place absorbs rounding so the suggestions add up to the pool exactly.
+ * Each share rounds to the nearest dollar. First place absorbs whatever is left
+ * so the checks add up to the pool exactly. A whole-dollar pool stays all whole dollars.
  */
 export function suggestedPayouts(pool: number, places: number): number[] {
   if (places <= 0 || pool <= 0) return []
   const weights = Array.from({ length: places }, (_, i) => places - i)
   const sumW = weights.reduce((a, b) => a + b, 0)
-  const raw = weights.map(w => cents((pool * w) / sumW))
+  const raw = weights.map(w => Math.round((pool * w) / sumW))
   raw[0] = cents(raw[0] + (pool - raw.reduce((a, b) => a + b, 0)))
   return raw
 }

@@ -171,19 +171,29 @@ assert.match(payoutRejectMessage([100], 45) ?? '', /\$100/)
 assert.match(payoutRejectMessage([100], 45) ?? '', /more than the \$45 pool/)
 assert.equal(payoutRejectMessage([-1], 45), 'Payouts can’t be negative.')
 const split = suggestedPayouts(52, 3)
+assert.deepEqual(split, [26, 17, 9], 'whole dollars, still a 3:2:1 split')
 assert.equal(split.reduce((a, b) => a + b, 0), 52)
 
-// $55 across 1, 2, or 3 paid places is a declining split, not 55/0/0.
+// Suggested checks are whole dollars in the same declining ratio, and they add back to the pool.
 assert.deepEqual(suggestedPayouts(55, 1), [55])
 const twoPlaces = suggestedPayouts(55, 2)
 const threePlaces = suggestedPayouts(55, 3)
-assert.deepEqual(twoPlaces, [36.67, 18.33])
-assert.deepEqual(threePlaces, [27.5, 18.33, 9.17])
+assert.deepEqual(twoPlaces, [37, 18])
+assert.deepEqual(threePlaces, [28, 18, 9])
+assert.ok(twoPlaces.every(Number.isInteger) && threePlaces.every(Number.isInteger))
 assert.ok(twoPlaces[0] > twoPlaces[1])
 assert.ok(threePlaces[0] > threePlaces[1] && threePlaces[1] > threePlaces[2])
 assert.equal(twoPlaces.reduce((a, b) => a + b, 0), 55)
 assert.equal(threePlaces.reduce((a, b) => a + b, 0), 55)
 assert.notDeepEqual(threePlaces, [55, 0, 0])
+assert.deepEqual(suggestedPayouts(104, 2), [69, 35])
+assert.deepEqual(suggestedPayouts(104, 3), [52, 35, 17])
+assert.equal(suggestedPayouts(104, 2).reduce((a, b) => a + b, 0), 104)
+assert.equal(suggestedPayouts(104, 3).reduce((a, b) => a + b, 0), 104)
+// A pool that is not a whole dollar still totals exactly. The odd cents stay on first.
+const withCents = suggestedPayouts(10.4, 2)
+assert.deepEqual(withCents, [7.4, 3])
+assert.equal(withCents.reduce((a, b) => a + b, 0), 10.4)
 
 // Ledger: purse is funded by the $8 share and the bar, bonuses are funded before they are paid,
 // and place checks leave a row. Perfect 5 nets to zero instead of −$10.
