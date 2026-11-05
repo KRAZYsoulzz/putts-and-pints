@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { DEFAULT_SETTINGS as S } from '../src/lib/settings'
 import { bestTotal, clampScore, effectiveCut, initialTagAssignment, isOpeningTagNight, qualifiers, rank18, rankFinal, redistributeTags, suggestedCut, totals } from '../src/lib/scoring'
-import { balances, displayedPerfectRound, divisionResult, effectiveBar, eventLedgerPosted, eventMoney, nightBonusCost, payoutPool, splitEvenly, suggestedPaidPlaces, suggestedPayouts } from '../src/lib/money'
+import { balances, clampPaidPlaces, displayedPerfectRound, divisionResult, effectiveBar, eventLedgerPosted, eventMoney, nightBonusCost, paidPlaceCount, payoutPool, payoutsForPlaceCount, splitEvenly, suggestedPaidPlaces, suggestedPayouts } from '../src/lib/money'
 import { duplicateName, friendlyError, parseMoney, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../src/lib/validation'
 import type { Entry } from '../src/lib/types'
 
@@ -117,7 +117,7 @@ const a = e({ r1_b1: 30, r1_b2: 10, r2_b1: 10, r2_b2: 10, tag_in: 1, awards: ['p
 const b = e({ r1_b1: 30, r1_b2: 10, r2_b1: 10, r2_b2: 10, tag_in: 3, awards: ['perfect5', 'high_score'] })
 const c = e({ r1_b1: 30, r1_b2: 10, r2_b1: 10, r2_b2: 10, tag_in: 4, awards: ['perfect_round'] })
 const aw = divisionResult({ division: 'M', entries: [a, b, c], payoutPlaces: [], settings: S,
-  balances: { ...zero, perfect_round: 100, backup: 30 }, priorRecord: null })
+  balances: { ...zero, perfect_round: 100, backup: 30 }, priorRecord: null, openingNight: false })
 assert.deepEqual(aw.bonuses, [
   { type: 'perfect_round', entryIds: [c.id], each: 106, amounts: [106] },
   { type: 'perfect5', entryIds: [a.id, b.id], each: 5, amounts: [5, 5] },
@@ -392,6 +392,7 @@ const stillPaid = divisionResult({
   settings: S,
   balances: { ...zero, perfect_round: 10 },
   priorRecord: null,
+  openingNight: false,
   tagPlan: 'redistribute',
   inTags: tagIn,
 })
@@ -413,5 +414,69 @@ assert.equal(isOpeningTagNight([
   { id: 'late', event_date: '2026-11-05', created_at: '2026-10-02' },
   { id: 'early', event_date: '2026-11-05', created_at: '2026-10-01' },
 ], 'early'), true, 'same date: the earlier-created event is first')
+
+// Season default stays 1 paid place per 5 players. The director can pick another count for tonight.
+assert.equal(suggestedPaidPlaces(0, S), 0)
+assert.equal(suggestedPaidPlaces(1, S), 1)
+assert.equal(suggestedPaidPlaces(5, S), 1, '5 players → 1 place')
+assert.equal(suggestedPaidPlaces(7, S), 1, 'round(7/5) is still 1')
+assert.equal(suggestedPaidPlaces(8, S), 2, 'round(8/5) is 2')
+assert.equal(suggestedPaidPlaces(14, S), 3)
+assert.equal(paidPlaceCount(0, 4, S), 0, 'no players, no paid places')
+assert.equal(paidPlaceCount(9, 0, S), suggestedPaidPlaces(9, S), 'empty payout list uses the season suggestion')
+assert.equal(paidPlaceCount(9, 4, S), 4, 'a saved count is tonight’s choice')
+assert.equal(paidPlaceCount(4, 8, S), 4, 'cannot pay more places than the field')
+assert.equal(paidPlaceCount(6, 1, S), 1, 'at least one place when anyone played')
+assert.equal(clampPaidPlaces(8, 0), 1, 'stepping down from one place stays at one')
+assert.equal(clampPaidPlaces(8, 9), 8, 'stepping up stops at the field')
+assert.equal(clampPaidPlaces(0, 2), 0)
+const rebuilt = payoutsForPlaceCount(55, 3)
+assert.deepEqual(rebuilt, suggestedPayouts(55, 3), 'changing the count re-splits the pool')
+assert.equal(rebuilt.length, 3)
+assert.equal(rebuilt.reduce((a, b) => a + b, 0), 55)
+assert.deepEqual(payoutsForPlaceCount(0, 2), [0, 0], 'a zero pool still keeps the place count')
+
+// First night of the season: High Score sets the record and does not come out of the purse.
+// Perfect 5 still pays. A later night pays the flat high-score bonus when it is awarded.
+const hsPlayer = e({ awards: ['high_score', 'perfect5'], score_18: 88, player_id: 'hs-open' })
+const openingHs = divisionResult({
+  division: 'M', entries: [hsPlayer], payoutPlaces: [], settings: S,
+  balances: { ...zero }, barMatch: 0, priorRecord: null,
+})
+assert.equal(openingHs.newRecord, 88, 'the opening score becomes the record')
+assert.equal(openingHs.bonuses.find(b => b.type === 'high_score')?.each, 0)
+assert.equal(openingHs.bonuses.find(b => b.type === 'perfect5')?.each, 10, 'Perfect 5 is unchanged on night 1')
+assert.ok(!openingHs.ledger.some(r => r.fund === 'high_score'), 'no high-score ledger hit')
+assert.ok(!openingHs.ledger.some(r => r.fund === 'purse' && r.note.includes('High Score')))
+assert.ok(openingHs.ledger.some(r => r.fund === 'purse' && r.amount === -10 && r.note.includes('Perfect 5')))
+assert.equal(nightBonusCost([hsPlayer], S, { payHighScore: false }), 10, 'purse preview drops Perfect 5 only')
+
+const openingDespiteLater = divisionResult({
+  division: 'M',
+  entries: [e({ awards: ['high_score'], score_18: 100, player_id: 'hs-first' })],
+  payoutPlaces: [], settings: S, balances: { ...zero }, priorRecord: 90, openingNight: true,
+})
+assert.equal(openingDespiteLater.bonuses.find(b => b.type === 'high_score')?.each, 0, 'the first event does not pay even if another night already has a score')
+assert.equal(openingDespiteLater.newRecord, 100)
+assert.ok(!openingDespiteLater.ledger.some(r => r.kind === 'bonus_payout' && r.fund === 'high_score'))
+
+const laterHs = divisionResult({
+  division: 'M',
+  entries: [e({ awards: ['high_score'], score_18: 96, player_id: 'hs-later' })],
+  payoutPlaces: [], settings: S, balances: { ...zero }, priorRecord: 88, openingNight: false,
+})
+assert.equal(laterHs.bonuses.find(b => b.type === 'high_score')?.each, 10)
+assert.equal(laterHs.newRecord, 96)
+assert.ok(laterHs.ledger.some(r => r.fund === 'purse' && r.kind === 'transfer' && r.amount === -10 && r.note.includes('High Score')))
+assert.ok(laterHs.ledger.some(r => r.fund === 'high_score' && r.kind === 'bonus_payout' && r.amount === -10))
+assert.equal(nightBonusCost([e({ awards: ['high_score'] })], S, { payHighScore: true }), 10)
+
+const laterNoRecordYet = divisionResult({
+  division: 'W',
+  entries: [e({ division: 'W', awards: ['high_score'], score_18: 70, player_id: 'hs-w' })],
+  payoutPlaces: [], settings: S, balances: { ...zero }, priorRecord: null, openingNight: false,
+})
+assert.equal(laterNoRecordYet.bonuses.find(b => b.type === 'high_score')?.each, 10, 'a later night still pays when high score is awarded')
+assert.ok(laterNoRecordYet.ledger.some(r => r.fund === 'high_score' && r.kind === 'bonus_payout'))
 
 console.log('All rules checks passed ✔')

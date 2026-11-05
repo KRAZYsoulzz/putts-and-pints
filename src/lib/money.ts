@@ -69,6 +69,35 @@ export function payoutPool(count: number, barMatch: number, s: Settings, bonuses
 export const suggestedPaidPlaces = (count: number, s: Settings) =>
   count ? Math.max(1, Math.round(count / s.paidEvery)) : 0
 
+/** Keep a chosen place count inside 1..field. An empty field stays at 0. */
+export function clampPaidPlaces(field: number, places: number): number {
+  if (field <= 0) return 0
+  const n = Math.floor(places)
+  if (!Number.isFinite(n) || n < 1) return 1
+  return Math.min(field, n)
+}
+
+/**
+ * Paid places for one division tonight. A saved payout list wins; otherwise the
+ * season suggestion (1 per `paidEvery`). At least 1 when anyone played, never
+ * more than the field.
+ */
+export function paidPlaceCount(field: number, stored: number, s: Settings): number {
+  if (field <= 0) return 0
+  return clampPaidPlaces(field, stored > 0 ? stored : suggestedPaidPlaces(field, s))
+}
+
+/**
+ * Rebuild place checks for a new count. The declining split is `suggestedPayouts`.
+ * A pool that cannot be split still keeps `places` entries so the count sticks.
+ */
+export function payoutsForPlaceCount(pool: number, places: number): number[] {
+  if (places <= 0) return []
+  const split = suggestedPayouts(pool, places)
+  if (split.length === places) return split
+  return Array.from({ length: places }, () => 0)
+}
+
 /** This night already has ledger rows. Reopen keeps them until the next finalize. */
 export function eventLedgerPosted(rows: { event_id: string | null }[], eventId: string): boolean {
   return rows.some(r => r.event_id === eventId)
@@ -95,12 +124,16 @@ export function splitEvenly(total: number, n: number): number[] {
   return Array.from({ length: n }, (_, i) => (base + (i < extra ? 1 : 0)) / 100)
 }
 
-/** What the awarded night bonuses cost the purse: the flat amount, once per award with any winner. */
-export function nightBonusCost(entries: Entry[], s: Settings): number {
+/**
+ * What the awarded night bonuses cost the purse: the flat amount, once per award with any winner.
+ * High Score is free on the season's first event (`payHighScore: false`); it only sets the record.
+ */
+export function nightBonusCost(entries: Entry[], s: Settings, opts?: { payHighScore?: boolean }): number {
+  const payHighScore = opts?.payHighScore !== false
   const amounts: Record<(typeof NIGHT_BONUSES)[number], number> = {
     perfect5: s.bonus.perfect5,
     perfect4: s.bonus.perfect4,
-    high_score: s.bonus.highScore,
+    high_score: payHighScore ? s.bonus.highScore : 0,
   }
   let total = 0
   for (const type of NIGHT_BONUSES) {
@@ -164,6 +197,12 @@ interface ResultInput {
   /** best 27-hole total from earlier completed events this season (null = first event) */
   priorRecord: number | null
   /**
+   * Season's first event: an awarded High Score sets the record and pays nothing.
+   * Later nights pay the flat bonus when it is awarded.
+   * When omitted, a null prior record is treated as that first night.
+   */
+  openingNight?: boolean
+  /**
    * opening = the season's first event deals tag 1..N to opted-in players.
    * redistribute (default) = later nights reshuffle the numbers people carried in.
    */
@@ -196,14 +235,16 @@ export function divisionResult(i: ResultInput): DivisionResult {
   // Bonuses: awarded by hand (right-click). Perfect 5, Perfect 4 and Perfect Round are shared pots:
   // everyone who hits one splits the whole pot evenly. Perfect 5 / Perfect 4 pots are the
   // pot balance plus the flat night bonus, which is funded from the purse when someone wins.
-  // High Score stays a flat bonus (split on ties).
+  // High Score stays a flat bonus (split on ties), except the season's first event, which
+  // only sets the record.
   // Fund the pot first so the payout does not drive it negative.
   const bonuses: BonusWin[] = []
+  const openingNight = i.openingNight ?? i.priorRecord == null
   const amounts: Record<Award, number> = {
     perfect_round: potAfterEntries,
     perfect5: s.bonus.perfect5,
     perfect4: s.bonus.perfect4,
-    high_score: s.bonus.highScore,
+    high_score: openingNight ? 0 : s.bonus.highScore,
   }
   for (const type of AWARDS) {
     const winners = entries.filter(e => e.awards?.includes(type))

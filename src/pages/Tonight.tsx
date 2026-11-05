@@ -26,7 +26,7 @@ import {
   type PPEvent,
 } from '../lib/types'
 import { byEntryOrder, cents, effectiveCut, isOpeningTagNight, MAX_18, MAX_FINAL, qualifiers, suggestedCut, totals, type Ranked } from '../lib/scoring'
-import { balances, displayedPerfectRound, divisionResult, eventLedgerPosted, effectiveBar, eventMoney, nightBonusCost, payoutPool, suggestedPaidPlaces, suggestedPayouts } from '../lib/money'
+import { balances, clampPaidPlaces, displayedPerfectRound, divisionResult, eventLedgerPosted, effectiveBar, eventMoney, nightBonusCost, paidPlaceCount, payoutPool, payoutsForPlaceCount, suggestedPaidPlaces } from '../lib/money'
 import { duplicateName, friendlyError, normalizeName, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../lib/validation'
 import { Dialog, DivisionSeg, Menu, MoneyInput, PageHead, ScoreInput, Stat, money, ordinal } from '../components/ui'
 
@@ -62,13 +62,13 @@ export default function Tonight() {
   const [eventDate, setEventDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [barError, setBarError] = useState('')
   const [payoutNote, setPayoutNote] = useState<{ scope: string; text: string } | null>(null)
-  const [extraPlaces, setExtraPlaces] = useState<{ key: string; n: number }>({ key: '', n: 0 })
   const [cutOverride, setCutOverride] = useState<{ key: string; value: number } | null>(null)
 
   const checkingIn = useRef(new Set<string>())
   const prefilled = useRef(new Set<string>())
   const defaultedCut = useRef(new Set<string>())
   const cutRef = useRef<Partial<Record<Division, number>>>({})
+  const paidCountRef = useRef<{ key: string; n: number }>({ key: '', n: 0 })
   const queue = useRef(Promise.resolve())
   const entriesRef = useRef(entries)
   const settingsRef = useRef(settings)
@@ -98,7 +98,12 @@ export default function Tonight() {
     return effectiveBar(ev, d, { M: mine.filter(e => e.division === 'M').length, W: mine.filter(e => e.division === 'W').length }, settings)
   }
   const barAmount = event ? barOf(event, division) : 0
-  const bonusCost = useMemo(() => nightBonusCost(divEntries, settings), [divEntries, settings])
+  // First event of the season sets the high-score record and does not pay it.
+  const openingNight = Boolean(event && isOpeningTagNight(events, event.id))
+  const bonusCost = useMemo(
+    () => nightBonusCost(divEntries, settings, { payHighScore: !openingNight }),
+    [divEntries, settings, openingNight],
+  )
   const pool = useMemo(
     () => payoutPool(counts[division], barAmount, settings, bonusCost),
     [counts, division, barAmount, settings, bonusCost],
@@ -123,14 +128,14 @@ export default function Tonight() {
     balances: priorBalances,
     barMatch: barAmount,
     priorRecord: records[division],
+    openingNight,
     tagPlan: event && isOpeningTagNight(events, event.id) ? 'opening' : 'redistribute',
     inTags: (playerId) => playerById.get(playerId)?.in_tags === true,
-  }), [division, divEntries, payoutsList, settings, priorBalances, barAmount, records, event, events, playerById])
+  }), [division, divEntries, payoutsList, settings, priorBalances, barAmount, records, event, events, playerById, openingNight])
 
   const rankedById = useMemo(() => new Map(result.ranked.map(r => [r.entry.id, r])), [result])
 
   const placeKey = `${event?.id ?? ''}|${division}`
-  const extraCount = extraPlaces.key === placeKey ? extraPlaces.n : 0
 
   // Suggest payouts the first time a night reaches results, instead of leaving every place at $0.
   useEffect(() => {
@@ -146,13 +151,13 @@ export default function Tonight() {
       const list = d === 'M' ? event.payouts_men : event.payouts_women
       if (list && list.length > 0) continue
       const group = entries.filter(e => e.event_id === event.id && e.division === d)
-      const net = payoutPool(group.length, barOf(event, d), settings, nightBonusCost(group, settings))
-      const next = suggestedPayouts(net, suggestedPaidPlaces(group.length, settings))
+      const net = payoutPool(group.length, barOf(event, d), settings, nightBonusCost(group, settings, { payHighScore: !isOpeningTagNight(events, event.id) }))
+      const next = payoutsForPlaceCount(net, suggestedPaidPlaces(group.length, settings))
       if (d === 'M') patch.payouts_men = next
       else patch.payouts_women = next
     }
     if (patch.payouts_men || patch.payouts_women) void patchEvent(event.id, patch)
-  }, [event, entries, isAdmin, settings, patchEvent])
+  }, [event, entries, events, isAdmin, settings, patchEvent])
 
   // A women's cut saved as 0 (empty field at the time, or half of one player
   // rounded down) stays 0 after players arrive, so nobody makes the final.
@@ -299,7 +304,7 @@ export default function Tonight() {
 
   const nightEntries = entries.filter(e => e.event_id === event.id)
   const suggestedPlaces = suggestedPaidPlaces(counts[division], settings)
-  const placeRows = Math.max(payoutsList.length, suggestedPlaces, extraCount, counts[division] ? 1 : 0)
+  const paidPlaces = paidPlaceCount(counts[division], payoutsList.length, settings)
   const allocated = cents(payoutsList.reduce((a, b) => a + Number(b), 0))
   const overPool = payoutIssue(payoutsList, pool) === 'over'
 
@@ -442,28 +447,59 @@ export default function Tonight() {
       return
     }
     clearPayoutNote()
+    paidCountRef.current = { key: placeKey, n: next.length }
     void patchEvent(event.id, division === 'M' ? { payouts_men: next } : { payouts_women: next })
   }
 
-  const useSuggested = () => {
-    // Split across the place rows on screen, not the default "one per five".
+  const stepPaidPlaces = (delta: number) => {
+    const field = counts[division]
+    if (field <= 0) return
+    const base = paidCountRef.current.key === placeKey ? paidCountRef.current.n : paidPlaces
+    const nextN = clampPaidPlaces(field, base + delta)
+    if (nextN === base && payoutsList.length === nextN) return
+    paidCountRef.current = { key: placeKey, n: nextN }
     clearPayoutNote()
-    const next = suggestedPayouts(pool, placeRows)
-    void patchEvent(event.id, division === 'M' ? { payouts_men: next } : { payouts_women: next })
+    const amounts = payoutsForPlaceCount(pool, nextN)
+    const div = division
+    const eventId = event.id
+    const key = placeKey
+    queue.current = queue.current.then(async () => {
+      // A later click on this same division replaces this one. Switching divisions must still save.
+      if (paidCountRef.current.key === key && paidCountRef.current.n !== nextN) return
+      await patchEvent(eventId, div === 'M' ? { payouts_men: amounts } : { payouts_women: amounts })
+    }).catch(() => { /* patchEvent already reported the failure */ })
+  }
+
+  const useSuggested = () => {
+    // Re-split the current pool across the place count on screen.
+    clearPayoutNote()
+    const amounts = payoutsForPlaceCount(pool, paidPlaces)
+    const key = placeKey
+    const div = division
+    const eventId = event.id
+    paidCountRef.current = { key, n: amounts.length }
+    queue.current = queue.current.then(async () => {
+      if (paidCountRef.current.key === key && paidCountRef.current.n !== amounts.length) return
+      await patchEvent(eventId, div === 'M' ? { payouts_men: amounts } : { payouts_women: amounts })
+    }).catch(() => { /* patchEvent already reported the failure */ })
   }
 
   const divisionPayouts = (ev: PPEvent, d: Division) => {
     const stored = d === 'M' ? ev.payouts_men ?? [] : ev.payouts_women ?? []
     if (stored.length > 0) return stored.map(n => Number(n))
     const group = entries.filter(e => e.event_id === ev.id && e.division === d)
-    return suggestedPayouts(payoutPool(group.length, barOf(ev, d), settings, nightBonusCost(group, settings)), suggestedPaidPlaces(group.length, settings))
+    const payHighScore = !isOpeningTagNight(events, ev.id)
+    return payoutsForPlaceCount(
+      payoutPool(group.length, barOf(ev, d), settings, nightBonusCost(group, settings, { payHighScore })),
+      suggestedPaidPlaces(group.length, settings),
+    )
   }
 
   const handleFinalize = async () => {
     for (const d of DIVS) {
       const group = entries.filter(e => e.event_id === event.id && e.division === d)
       const list = divisionPayouts(event, d)
-      const net = payoutPool(group.length, barOf(event, d), settings, nightBonusCost(group, settings))
+      const net = payoutPool(group.length, barOf(event, d), settings, nightBonusCost(group, settings, { payHighScore: !openingNight }))
       if (payoutIssue(list, net)) {
         reportError(`${d === 'M' ? "Men's" : "Women's"} payouts are over the pool or include a negative. Fix them before finalizing.`)
         return
@@ -493,6 +529,7 @@ export default function Tonight() {
           balances: balances(ledger.filter(r => r.event_id !== event.id), d),
           barMatch: barOf(event, d),
           priorRecord: records[d],
+          openingNight,
           tagPlan: isOpeningTagNight(events, event.id) ? 'opening' : 'redistribute',
           inTags,
         })
@@ -611,7 +648,9 @@ export default function Tonight() {
         <Stat
           label="Score To Beat"
           value={records[division] != null ? `${records[division]} pts` : 'No record yet'}
-          sub="Beating this wins the high-score bonus"
+          sub={openingNight
+            ? 'Tonight sets the bar. High score pays $0.'
+            : 'Beating this wins the high-score bonus'}
         />
       </div>
 
@@ -807,6 +846,7 @@ export default function Tonight() {
               </h2>
               <p className="muted" style={{ fontSize: 13, marginTop: 4 }}>
                 Placements, prize checks, tag moves, and season points. Unfinished rows stay unplaced.
+                {openingNight && ' High score on this first night sets the season record and pays $0.'}
               </p>
             </div>
             {isAdmin && event.status !== 'complete' && (
@@ -889,12 +929,31 @@ export default function Tonight() {
 
               {isAdmin && event.status !== 'complete' && (
                 <div style={{ marginTop: 8 }}>
+                  {paidPlaces > 0 && (
+                    <>
+                      <div className="row" role="group" aria-labelledby="paid-places-label" style={{ background: 'var(--surface-1)', padding: '4px 10px', borderRadius: 6, border: '1px solid var(--line)', marginBottom: 6 }}>
+                        <span id="paid-places-label" className="eyebrow" style={{ marginRight: 6 }}>Paid places</span>
+                        <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Fewer paid places" onClick={() => stepPaidPlaces(-1)} disabled={paidPlaces <= 1}>
+                          <Minus size={14} />
+                        </button>
+                        <span className="num strong" style={{ margin: '0 8px', fontSize: 16, minWidth: 16, textAlign: 'center' }} aria-live="polite" aria-atomic="true">
+                          {paidPlaces}
+                        </span>
+                        <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="More paid places" onClick={() => stepPaidPlaces(1)} disabled={paidPlaces >= counts[division]}>
+                          <Plus size={14} />
+                        </button>
+                      </div>
+                      <p className="muted" style={{ fontSize: 12, margin: '0 0 8px' }}>
+                        Season default is {suggestedPlaces} for {counts[division]} players (1 per {settings.paidEvery}). Changing the count re-splits this pool.
+                      </p>
+                    </>
+                  )}
                   <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
                     <span style={{ fontSize: 12, color: 'var(--text-2)' }}>Place payout amounts</span>
-                    <button type="button" className="btn btn-ghost btn-sm" onClick={useSuggested}>Use suggested</button>
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={useSuggested} disabled={paidPlaces <= 0}>Use suggested</button>
                   </div>
                   <div className="stack" style={{ gap: 6 }}>
-                    {Array.from({ length: placeRows }, (_, idx) => (
+                    {Array.from({ length: paidPlaces }, (_, idx) => (
                       <div key={idx} className="row" style={{ justifyContent: 'space-between' }}>
                         <span className="muted" style={{ fontSize: 12 }}>{ordinal(idx + 1)} place</span>
                         <div style={{ width: 120 }}>
@@ -909,11 +968,6 @@ export default function Tonight() {
                       </div>
                     ))}
                   </div>
-                  {counts[division] > placeRows && (
-                    <button type="button" className="btn btn-ghost btn-sm" style={{ marginTop: 8 }} onClick={() => setExtraPlaces({ key: placeKey, n: placeRows + 1 })}>
-                      <Plus size={14} /> Add a paid place
-                    </button>
-                  )}
                   {overPool && (
                     <small className="field-error">
                       Payouts add up to {money(allocated)}, which is more than the {money(pool)} pool.
@@ -929,21 +983,22 @@ export default function Tonight() {
                   <p className="muted" style={{ fontSize: 12 }}>No bonus awards assigned tonight.</p>
                 ) : result.bonuses.map(b => {
                   // A posted night shows what the ledger actually paid, not today's pot.
+                  const recorded = recordedPayout(b.type)
                   const each = b.type === 'perfect_round'
                     ? nightPosted
                       ? cents((recordedPerfectRound || curBalances.perfect_round) / Math.max(1, b.entryIds.length))
                       : b.each
-                    : nightPosted && recordedPayout(b.type) > 0
-                      ? cents(recordedPayout(b.type) / Math.max(1, b.entryIds.length))
+                    : nightPosted && recorded > 0
+                      ? cents(recorded / Math.max(1, b.entryIds.length))
                       : b.each
+                  const setsBar = b.type === 'high_score' && openingNight && !(nightPosted && recorded > 0)
+                  const detail = setsBar
+                    ? `Sets the bar${b.entryIds.length > 1 ? ` (${b.entryIds.length} tied)` : ''}`
+                    : `${money(each)}${b.type === 'perfect_round' || b.type === 'perfect5' || b.type === 'perfect4' ? ' from the pot' : ''}${b.entryIds.length > 1 ? ` (${b.entryIds.length} split)` : ''}`
                   return (
                   <div key={b.type} className="kv">
                     <dt>{AWARD_LABEL[b.type]}</dt>
-                    <dd style={{ color: 'var(--orange)' }}>
-                      {money(each)}
-                      {b.type === 'perfect_round' || b.type === 'perfect5' || b.type === 'perfect4' ? ' from the pot' : ''}
-                      {b.entryIds.length > 1 ? ` (${b.entryIds.length} split)` : ''}
-                    </dd>
+                    <dd style={{ color: 'var(--orange)' }}>{detail}</dd>
                   </div>
                   )
                 })}
@@ -961,6 +1016,9 @@ export default function Tonight() {
               Not in tags. Bonuses still count; no tag is assigned.
             </div>
           )}
+          {openingNight && (
+            <div className="note">First night sets the high-score record and pays $0.</div>
+          )}
           {AWARDS.map(a => {
             const has = contextMenu.entry.awards?.includes(a)
             return (
@@ -969,7 +1027,7 @@ export default function Tonight() {
                 <span>{AWARD_LABEL[a]}</span>
                 <span className="hint">
                   {a === 'perfect_round' ? money(perfectRoundShown)
-                    : a === 'high_score' ? money(settings.bonus.highScore)
+                    : a === 'high_score' ? (openingNight ? 'Sets the bar' : money(settings.bonus.highScore))
                     : a === 'perfect5' ? money(cents(priorBalances.perfect5 + settings.bonus.perfect5))
                     : money(cents(priorBalances.perfect4 + settings.bonus.perfect4))}
                 </span>
