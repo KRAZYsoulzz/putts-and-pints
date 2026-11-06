@@ -27,8 +27,8 @@ interface Data {
   openEvent: (id: string | null) => void
   /** Best 27-hole total from completed events, per division */
   records: Record<Division, number | null>
-  reload: () => Promise<void>
-  patchEntry: (id: string, patch: Partial<Entry>) => Promise<void>
+  reload: () => Promise<'applied' | 'busy' | 'error'>
+  patchEntry: (id: string, patch: Partial<Entry>) => Promise<boolean>
   patchEvent: (id: string, patch: Partial<PPEvent>) => Promise<void>
   /** Write the season tag immediately and show it on the roster without waiting for an event. */
   saveTag: (playerId: string, tagNumber: number | null) => Promise<void>
@@ -174,14 +174,15 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const seasonsRef = useRef(seasons)
   useEffect(() => { seasonsRef.current = seasons }, [seasons])
 
-  const reload = useCallback(async () => {
-    if (writes.current > 0) { reloadQueued.current = true; return }
+  const reload = useCallback(async (): Promise<'applied' | 'busy' | 'error'> => {
+    if (writes.current > 0) { reloadQueued.current = true; return 'busy' }
     const gen = ++reloadGen.current
     const [s, p] = await Promise.all([
       supabase.from('pp_seasons').select('*').order('created_at'),
       supabase.from('pp_players').select('*').order('name'),
     ])
-    if (gen !== reloadGen.current) return
+    if (s.error || p.error) { setLoading(false); return 'error' }
+    if (gen !== reloadGen.current) return 'busy'
     const allSeasons = (s.data ?? []) as Season[]
     const allPlayers = (p.data ?? []) as Player[]
     const active = allSeasons.find(x => x.active)
@@ -196,17 +197,19 @@ export function DataProvider({ children }: { children: ReactNode }) {
         supabase.from('pp_events').select('*').eq('season_id', active.id).order('event_date').order('created_at'),
         supabase.from('pp_ledger').select('*').eq('season_id', active.id).order('created_at'),
       ])
+      if (t.error || ev.error || l.error) { setLoading(false); return 'error' }
       const evs = (ev.data ?? []) as PPEvent[]
       const en = evs.length
         ? await supabase.from('pp_entries').select('*').in('event_id', evs.map(e => e.id)).order('created_at')
-        : { data: [] }
+        : { data: [] as Entry[] | null, error: null }
+      if (en.error) { setLoading(false); return 'error' }
       nextTags = (t.data ?? []) as Tag[]
       nextEvents = evs.map(normalizeEvent)
       nextEntries = (en.data ?? []) as Entry[]
       nextLedger = (l.data ?? []) as LedgerRow[]
     }
-    if (gen !== reloadGen.current) return
-    if (writes.current > 0) { reloadQueued.current = true; return }
+    if (gen !== reloadGen.current) return 'busy'
+    if (writes.current > 0) { reloadQueued.current = true; return 'busy' }
 
     setSeasons(allSeasons)
     setPlayers(allPlayers)
@@ -215,6 +218,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     setEntries(nextEntries)
     setLedger(nextLedger)
     setLoading(false)
+    return 'applied'
   }, [])
 
   const finishWrite = useCallback((failed: boolean) => {
@@ -248,7 +252,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
   }, [reload])
 
   const patchEntry = useCallback(async (id: string, patch: Partial<Entry>) => {
-    if (!isAdmin) return
+    if (!isAdmin) return false
     writes.current += 1
     setEntries(prev => prev.map(e => (e.id === id ? { ...e, ...patch } : e)))
     const { error } = await supabase.from('pp_entries').update(patch).eq('id', id)
@@ -257,6 +261,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       reportError(friendlyError(error.message))
     }
     finishWrite(!!error)
+    return !error
   }, [isAdmin, finishWrite])
 
   const patchEvent = useCallback(async (id: string, patch: Partial<PPEvent>) => {

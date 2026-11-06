@@ -1,7 +1,9 @@
 // Quick sanity checks for the rules engine. Run: npx tsx scripts/test-logic.ts
 import assert from 'node:assert/strict'
 import { DEFAULT_SETTINGS as S } from '../src/lib/settings'
-import { bestTotal, cents, clampScore, effectiveCut, initialTagAssignment, isOpeningTagNight, qualifiers, rank18, rankFinal, redistributeTags, suggestedCut, totals } from '../src/lib/scoring'
+import { bestTotal, byEntryOrder, cents, clampScore, effectiveCut, eighteenGridRows, initialTagAssignment, isOpeningTagNight, qualifiers, rank18, rankFinal, redistributeTags, suggestedCut, totals } from '../src/lib/scoring'
+import { applyScoreEdit, draftAfterScoreSave, runScoreEdit } from '../src/lib/score-edit'
+import { completeRefresh, requestRefresh } from '../src/lib/score-refresh'
 import { balances, clampPaidPlaces, displayedPerfectRound, displayedSharedPot, divisionResult, effectiveBar, eventLedgerPosted, eventMoney, nightBonusCost, otherDivisionNights, paidPlaceCount, payoutPool, payoutsForPlaceCount, postedBonusCost, splitEvenly, suggestedPaidPlaces, suggestedPayouts, type DivisionNight } from '../src/lib/money'
 import { duplicateName, friendlyError, parseMoney, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../src/lib/validation'
 import { buyingTagAfter, checkinTagIn, freshBuyingTag, newPlayerInsert } from '../src/lib/newPlayer'
@@ -742,5 +744,113 @@ assert.equal(previewCohort.length, 1)
 assert.equal(previewCohort[0].division, 'W')
 assert.deepEqual(previewCohort[0].entries.map(entry => entry.player_id), ['preview-w'])
 assert.equal(previewCohort[0].balances.perfect5, 5, 'tonight’s posted Perfect 5 is not carryover for the preview or the next finalize')
+
+// Initial 18 score entry ranks the completed 18, including after the cut.
+// Check-in order stays put. A blank is unplaced. A typed 0 is a real score.
+// Different Final 9 totals change the night result and do not change this grid.
+const gridZero = e({ id: 'zero', score_18: 0, made_final: false, created_at: '0' })
+const gridHi = e({ id: 'hi', score_18: 50, made_final: true, score_final: 20, created_at: '1' })
+const gridB = e({ id: 'b36', score_18: 36, made_final: true, score_final: 10, created_at: '2' })
+const gridA = e({ id: 'a36', score_18: 36, made_final: true, score_final: 12, created_at: '3' })
+const gridCut = e({ id: 'cut', score_18: 40, made_final: false, created_at: '4' })
+const gridBlank = e({ id: 'blank', score_18: null, created_at: '5' })
+const gridField = [gridCut, gridA, gridB, gridHi, gridBlank, gridZero]
+const grid = eighteenGridRows(gridField, S)
+const gridPlace = new Map(grid.map(row => [row.id, row.place]))
+assert.deepEqual(grid.map(row => row.id), ['zero', 'hi', 'b36', 'a36', 'cut', 'blank'], '18 grid stays in check-in order')
+assert.deepEqual([...gridField].sort(byEntryOrder).map(row => row.id), grid.map(row => row.id), 'row order is check-in order, not score order')
+assert.equal(gridPlace.get('a36'), gridPlace.get('b36'), 'tied 36s share a place on the 18 grid after finalists are set')
+assert.equal(gridPlace.get('blank'), 0, 'a blank 18 is unplaced')
+assert.ok((gridPlace.get('zero') ?? 0) > 0, 'a finished 0 is a real 18')
+const nightPlace = new Map(rankFinal(gridField, S).map(row => [row.entry.id, row.place]))
+assert.notEqual(nightPlace.get('a36'), nightPlace.get('b36'), 'final ranking still separates 36+12 from 36+10')
+assert.equal(gridPlace.get('a36'), gridPlace.get('b36'), 'that Final 9 gap does not change the 18-grid place')
+const published = divisionResult({
+  division: 'M',
+  entries: [gridHi, gridA, gridB],
+  payoutPlaces: [],
+  settings: S,
+  balances: { ...zero },
+  barMatch: 0,
+  priorRecord: null,
+})
+const publishedPlace = new Map(published.ranked.map(row => [row.entry.id, row.place]))
+assert.notEqual(publishedPlace.get('a36'), publishedPlace.get('b36'), 'public results still follow the Final 9 total')
+const same18 = [
+  e({ id: 'lead', score_18: 80, made_final: true, score_final: 10, created_at: '1' }),
+  e({ id: 'fin', score_18: 36, made_final: true, score_final: null, created_at: '2' }),
+  e({ id: 'out', score_18: 36, made_final: false, created_at: '3' }),
+]
+const same18Grid = new Map(eighteenGridRows(same18, S).map(row => [row.id, row.place]))
+const same18Night = new Map(rankFinal(same18, S).map(row => [row.entry.id, row.place]))
+assert.equal(same18Grid.get('fin'), same18Grid.get('out'), 'a finalist and a cut player with the same 18 share the 18-grid place')
+assert.notEqual(same18Night.get('fin'), same18Night.get('out'), 'night ranking still puts the finalist ahead of the same 18')
+const backLow = e({ id: 'back-low', score_18: 36, r2_b1: 10, r2_b2: 0, r1_b1: 10, r1_b2: 16, created_at: '1' })
+const backHigh = e({ id: 'back-high', score_18: 36, r2_b1: 20, r2_b2: 0, r1_b1: 10, r1_b2: 6, created_at: '2' })
+const sharedCut = eighteenGridRows([backLow, backHigh], S)
+assert.equal(sharedCut[0].place, sharedCut[1].place, 'default cut rule still shares an equal 18')
+const brokenCut = eighteenGridRows([backLow, backHigh], { ...S, ties: { ...S.ties, cut: 'countback' } })
+const brokenPlace = new Map(brokenCut.map(row => [row.id, row.place]))
+assert.notEqual(brokenPlace.get('back-high'), brokenPlace.get('back-low'), '18 grid still honors the cut tie setting')
+assert.ok((brokenPlace.get('back-high') ?? 99) < (brokenPlace.get('back-low') ?? 0), 'countback still prefers the better back 9')
+
+// Enter saves the way blur does, once. The blur that follows Enter must not save again.
+assert.deepEqual(runScoreEdit(null, 100, [{ type: 'focus' }, { type: 'change', raw: '36' }, { type: 'blur' }]), [36], 'blur saves a new score')
+assert.deepEqual(runScoreEdit(null, 100, [{ type: 'focus' }, { type: 'change', raw: '36' }, { type: 'enter' }]), [36], 'Enter saves a new score')
+assert.deepEqual(runScoreEdit(null, 100, [{ type: 'focus' }, { type: 'change', raw: '36' }, { type: 'enter' }, { type: 'blur' }]), [36], 'Enter then blur saves once')
+assert.deepEqual(runScoreEdit(36, 100, [{ type: 'focus' }, { type: 'change', raw: '' }, { type: 'blur' }]), [null], 'blur still clears a score')
+assert.deepEqual(runScoreEdit(36, 100, [{ type: 'focus' }, { type: 'change', raw: '' }, { type: 'enter' }, { type: 'blur' }]), [null], 'Enter clears a score once')
+assert.deepEqual(runScoreEdit(null, 100, [{ type: 'focus' }, { type: 'change', raw: '' }, { type: 'blur' }]), [], 'a blank that was already blank does not save')
+assert.deepEqual(runScoreEdit(null, 100, [{ type: 'focus' }, { type: 'change', raw: '0' }, { type: 'blur' }]), [0], '0 is saved')
+assert.deepEqual(runScoreEdit(36, 100, [{ type: 'focus' }, { type: 'change', raw: '36' }, { type: 'enter' }, { type: 'blur' }]), [], 'an unchanged score does not save')
+assert.deepEqual(runScoreEdit(10, 100, [{ type: 'focus' }, { type: 'change', raw: 'nope' }, { type: 'blur' }]), [], 'text that is not a score does not save')
+assert.deepEqual(runScoreEdit(10, 100, [{ type: 'focus' }, { type: 'change', raw: '150' }, { type: 'blur' }]), [100], 'a score above the max is clamped on save')
+assert.deepEqual(runScoreEdit(10, 100, [{ type: 'focus' }, { type: 'change', raw: '-3' }, { type: 'enter' }, { type: 'blur' }]), [0], 'a negative is clamped once')
+assert.throws(
+  () => applyScoreEdit({ draft: '36', enterAlreadySaved: false }, null, 100, 'blur', () => { throw new Error('save failed') }),
+  /save failed/,
+  'a save error is not swallowed',
+)
+const rejectedSave = applyScoreEdit(
+  { draft: '36', enterAlreadySaved: false },
+  null,
+  100,
+  'blur',
+  () => Promise.reject(new Error('save failed')),
+)
+await assert.rejects(rejectedSave.pending, /save failed/, 'a failed save promise is not swallowed')
+assert.equal(draftAfterScoreSave('36', true), null, 'a saved score leaves the box showing the stored value')
+assert.equal(draftAfterScoreSave('36', false), '36', 'a failed save keeps what was typed')
+assert.equal(draftAfterScoreSave('', false), '', 'a failed clear keeps the box blank')
+
+// Refresh reads the server again. It does not save, and it does not replace a score
+// that is still being typed or still on its way to the server.
+const scoreBoard = { server: { ada: null, grace: 10 }, local: { ada: null, grace: 10 } }
+const typing = requestRefresh({ ...scoreBoard, draft: { id: 'ada', raw: '36' }, savesInFlight: 0, refreshing: false })
+assert.equal(typing.fetch, false, 'a pending score blocks refresh')
+assert.equal(typing.board.draft?.raw, '36', 'refresh does not discard the typed score')
+assert.deepEqual(typing.board.local, scoreBoard.local, 'refresh does not replace local scores while typing')
+assert.match(typing.board.status ?? '', /typing/)
+const saving = requestRefresh({ ...scoreBoard, local: { ada: 36, grace: 10 }, draft: null, savesInFlight: 1, refreshing: false })
+assert.equal(saving.fetch, false, 'an in-flight save blocks refresh')
+assert.equal(saving.board.local.ada, 36, 'a blocked refresh keeps the optimistic score')
+assert.match(saving.board.status ?? '', /Saving/)
+const started = requestRefresh({ ...scoreBoard, draft: null, savesInFlight: 0, refreshing: false })
+assert.equal(started.fetch, true)
+assert.match(started.board.status ?? '', /Refreshing/)
+const again = requestRefresh(started.board)
+assert.equal(again.fetch, false, 'a second refresh waits for the first')
+const refreshed = completeRefresh(started.board, { ada: 36, grace: 12 })
+assert.deepEqual(refreshed.local, { ada: 36, grace: 12 })
+assert.deepEqual(refreshed.server, { ada: 36, grace: 12 })
+assert.equal(refreshed.status, 'Scores refreshed.')
+assert.doesNotMatch(refreshed.status ?? '', /saved/i, 'refresh does not claim it saved a score')
+const failed = completeRefresh(started.board, { error: "Couldn't refresh scores." })
+assert.deepEqual(failed.local, scoreBoard.local, 'a failed refresh leaves local scores alone')
+assert.equal(failed.draft, null)
+assert.equal(failed.status, "Couldn't refresh scores.")
+const raced = completeRefresh({ ...started.board, local: { ada: 36, grace: 10 }, savesInFlight: 1 }, { ada: null, grace: 10 })
+assert.equal(raced.local.ada, 36, 'a stale reload does not cover an in-flight score')
+assert.notEqual(raced.status, 'Scores refreshed.')
 
 console.log('All rules checks passed ✔')
