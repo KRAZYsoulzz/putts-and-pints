@@ -26,7 +26,7 @@ import {
   type PPEvent,
 } from '../lib/types'
 import { byEntryOrder, cents, effectiveCut, isOpeningTagNight, MAX_18, MAX_FINAL, qualifiers, suggestedCut, totals, type Ranked } from '../lib/scoring'
-import { balances, clampPaidPlaces, displayedPerfectRound, displayedSharedPot, divisionResult, eventLedgerPosted, effectiveBar, eventMoney, nightBonusCost, otherDivisionNights, paidPlaceCount, payoutPool, payoutsForPlaceCount, placeBudget, placeRemainder, postedBonusCost, postedPlaceRemainder, suggestedPaidPlaces } from '../lib/money'
+import { balances, clampPaidPlaces, displayedPerfectRound, displayedSharedPot, divisionResult, eventLedgerPosted, effectiveBar, eventMoney, nightBonusCost, otherDivisionNights, paidPlaceCount, payoutPool, payoutsForPlaceCount, placeBudget, placeRemainder, postedBonusCost, postedPlaceRemainder, postedRemainderBackup, suggestedPaidPlaces } from '../lib/money'
 import { duplicateName, friendlyError, normalizeName, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../lib/validation'
 import { buyingTagAfter, checkinTagIn, freshBuyingTag, newPlayerInsert } from '../lib/newPlayer'
 import { Dialog, DivisionSeg, Menu, MoneyInput, PageHead, ScoreInput, Stat, Toggle, money, ordinal } from '../components/ui'
@@ -321,11 +321,15 @@ export default function Tonight() {
   const suggestedPlaces = suggestedPaidPlaces(counts[division], settings)
   const paidPlaces = paidPlaceCount(counts[division], payoutsList.length, settings)
   const allocated = cents(payoutsList.reduce((a, b) => a + Number(b), 0))
-  const hsRemainder = event.status === 'complete'
+  const toPerfectRound = event.status === 'complete'
     ? postedPlaceRemainder(ledger, event.id, division)
-    : placeRemainder(pool)
-  const purseLeft = cents(pool - allocated - hsRemainder)
-  const overPool = payoutIssue(payoutsList, placeBudget(pool)) === 'over'
+    : result.placeRemainderToPot
+  const toBackup = event.status === 'complete'
+    ? postedRemainderBackup(ledger, event.id, division)
+    : result.placeRemainderToBackup
+  const purseLeft = cents(pool - allocated - toPerfectRound - toBackup)
+  const payoutProblem = payoutIssue(payoutsList, placeBudget(pool))
+  const overPool = payoutProblem != null
 
   const handleContextMenu = (e: MouseEvent, entry: Entry) => {
     if (!isAdmin || event.status === 'complete') return
@@ -533,7 +537,10 @@ export default function Tonight() {
         cohort: otherDivisionNights(d, event.id, entries, ledger),
       }))
       if (payoutIssue(list, placeBudget(net))) {
-        reportError(`${d === 'M' ? "Men's" : "Women's"} place checks are over the $5 payout budget or include a negative. ${money(placeRemainder(net))} goes to the High Score pot.`)
+        const name = d === 'M' ? "Men's" : "Women's"
+        reportError(payoutIssue(list, placeBudget(net)) === 'increment'
+          ? `${name} place checks have to be multiples of $5.`
+          : `${name} place checks are over the $5 payout budget or include a negative. ${money(placeRemainder(net))} goes to the Perfect Round pot.`)
         return
       }
     }
@@ -961,7 +968,10 @@ export default function Tonight() {
               <div className="kv"><dt>Bonuses awarded</dt><dd>{bonusCost ? `−${money(bonusCost)}` : money(0)}</dd></div>
               <div className="kv"><dt>Available pool</dt><dd style={{ color: 'var(--teal)' }}>{money(pool)}</dd></div>
               <div className="kv"><dt>Allocated</dt><dd>{money(allocated)}</dd></div>
-              <div className="kv"><dt>High Score pot</dt><dd>+{money(hsRemainder)}</dd></div>
+              <div className="kv"><dt>Perfect Round pot</dt><dd>+{money(toPerfectRound)}</dd></div>
+              {toBackup > 0 && (
+                <div className="kv"><dt>Backup pot</dt><dd>+{money(toBackup)} over the cap</dd></div>
+              )}
               <div className="kv">
                 <dt>Left in the purse</dt>
                 <dd style={{ color: purseLeft < -0.001 ? 'var(--danger)' : 'var(--text)' }}>{money(purseLeft)}</dd>
@@ -984,7 +994,7 @@ export default function Tonight() {
                         </button>
                       </div>
                       <p className="muted" style={{ fontSize: 12, margin: '0 0 8px' }}>
-                        Season default is {suggestedPlaces} for {counts[division]} players (1 per {settings.paidEvery}). Suggested checks step by $5. {money(placeRemainder(pool))} goes to the High Score pot.
+                        Season default is {suggestedPlaces} for {counts[division]} players (1 per {settings.paidEvery}). Suggested checks step by $5. {money(placeRemainder(pool))} goes to the Perfect Round pot.
                       </p>
                     </>
                   )}
@@ -1008,10 +1018,16 @@ export default function Tonight() {
                       </div>
                     ))}
                   </div>
-                  {overPool && (
+                  {payoutProblem === 'increment' && (
+                    <small className="field-error">Place checks have to be multiples of $5.</small>
+                  )}
+                  {payoutProblem === 'over' && (
                     <small className="field-error">
-                      Place checks add up to {money(allocated)}, which is more than the {money(placeBudget(pool))} that can be paid in $5 steps. {money(placeRemainder(pool))} goes to the High Score pot.
+                      Place checks add up to {money(allocated)}, which is more than the {money(placeBudget(pool))} that can be paid in $5 steps. {money(placeRemainder(pool))} goes to the Perfect Round pot.
                     </small>
+                  )}
+                  {payoutProblem === 'negative' && (
+                    <small className="field-error">Payouts can’t be negative.</small>
                   )}
                   {!overPool && payoutNoteText && <small className="field-error">{payoutNoteText}</small>}
                 </div>

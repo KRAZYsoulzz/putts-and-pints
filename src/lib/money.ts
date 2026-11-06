@@ -263,14 +263,25 @@ export function postedBonusCost(
   return cents(0 - spent)
 }
 
-/** High Score deposit already posted for one division. A finished night shows this instead of a new calculation. */
+/** Perfect Round deposit already posted for one division. A finished night shows this instead of a new calculation. */
 export function postedPlaceRemainder(
   rows: { event_id: string | null; division: Division | null; fund: string; kind: string; amount: number; note?: string | null }[],
   eventId: string,
   division: Division,
 ): number {
   return cents(rows
-    .filter(r => r.event_id === eventId && r.division === division && r.fund === 'high_score' && r.kind === 'transfer' && r.note === PLACE_REMAINDER_NOTE)
+    .filter(r => r.event_id === eventId && r.division === division && r.fund === 'perfect_round' && r.kind === 'transfer' && r.note === PLACE_REMAINDER_NOTE)
+    .reduce((sum, r) => sum + Number(r.amount), 0))
+}
+
+/** Remainder that overflowed from a full Perfect Round pot on an already posted night. */
+export function postedRemainderBackup(
+  rows: { event_id: string | null; division: Division | null; fund: string; kind: string; amount: number; note?: string | null }[],
+  eventId: string,
+  division: Division,
+): number {
+  return cents(rows
+    .filter(r => r.event_id === eventId && r.division === division && r.fund === 'backup' && r.kind === 'overflow' && r.note === PLACE_REMAINDER_BACKUP_NOTE)
     .reduce((sum, r) => sum + Number(r.amount), 0))
 }
 
@@ -280,19 +291,28 @@ export function placeBudget(pool: number): number {
   return Math.floor(Math.round(pool * 100) / 500) * 5
 }
 
-/** Pool money that is not a $5 step. It is deposited to that division's High Score pot. */
+/** Pool money that is not a $5 step. It is deposited to that division's Perfect Round pot. */
 export function placeRemainder(pool: number): number {
   if (!(pool > 0)) return 0
   return cents(pool - placeBudget(pool))
 }
 
-export const PLACE_REMAINDER_NOTE = 'Place payout remainder to the High Score pot'
+export const PLACE_REMAINDER_NOTE = 'Place payout remainder to the Perfect Round pot'
+export const PLACE_REMAINDER_BACKUP_NOTE = 'Place payout remainder over the Perfect Round cap'
+
+/** How much of `amount` fits in the Perfect Round pot, and how much overflows to Backup. */
+export function perfectRoundRoom(balance: number, cap: number, amount: number): { pot: number; backup: number } {
+  if (!(amount > 0)) return { pot: 0, backup: 0 }
+  const room = Math.max(0, cents(cap - balance))
+  const pot = Math.min(room, amount)
+  return { pot: cents(pot), backup: cents(amount - pot) }
+}
 
 /**
  * Split a pool across `places` in a declining ratio (2 places → 2/3 + 1/3, and so on).
  * Every check is a multiple of $5 and the checks stay within the pool. Extra $5 bills
  * go to the places with the largest leftover fraction, earlier places first on a tie.
- * The part of the pool under $5 is not included; `placeRemainder` sends it to High Score.
+ * The part of the pool under $5 is not included; `placeRemainder` sends it to Perfect Round.
  */
 export function suggestedPayouts(pool: number, places: number): number[] {
   if (places <= 0 || pool <= 0) return []
@@ -314,7 +334,11 @@ export function suggestedPayouts(pool: number, places: number): number[] {
   return base.map(u => u * 5)
 }
 
-/** Tied players share place money in whole dollars. The earlier player gets a leftover dollar. */
+/**
+ * Tied players share place money in $5 steps when the places add up to a $5 total.
+ * The earlier player in the existing rank order gets each extra $5.
+ * A total that is not a $5 step is split to the cent instead of being rewritten.
+ */
 function distributePlaceChecks(ranked: Ranked[], values: number[]): Map<string, number> {
   const out = new Map<string, number>()
   const byPlace = new Map<number, Ranked[]>()
@@ -323,19 +347,19 @@ function distributePlaceChecks(ranked: Ranked[], values: number[]): Map<string, 
     if (place < 1 || group.length === 0) continue
     const total = cents(values.slice(place - 1, place - 1 + group.length).reduce((a, b) => a + (Number(b) || 0), 0))
     const totalCents = Math.round(total * 100)
-    if (totalCents % 100 !== 0) {
-      const shares = splitEvenly(total, group.length)
-      group.forEach((r, i) => out.set(r.entry.id, shares[i]))
+    if (totalCents % 500 === 0) {
+      const units = totalCents / 500
+      const base = Math.floor(units / group.length)
+      let extra = units - base * group.length
+      group.forEach(r => {
+        const pay = (base + (extra > 0 ? 1 : 0)) * 5
+        if (extra > 0) extra -= 1
+        out.set(r.entry.id, pay)
+      })
       continue
     }
-    const dollars = totalCents / 100
-    const base = Math.floor(dollars / group.length)
-    let extra = dollars - base * group.length
-    group.forEach(r => {
-      const pay = base + (extra > 0 ? 1 : 0)
-      if (extra > 0) extra -= 1
-      out.set(r.entry.id, pay)
-    })
+    const shares = splitEvenly(total, group.length)
+    group.forEach((r, i) => out.set(r.entry.id, shares[i]))
   }
   return out
 }
@@ -369,6 +393,10 @@ export interface DivisionResult {
   newRecord: number | null
   /** pot balance after tonight's $2s, before any win */
   potAfterEntries: number
+  /** Place-pool remainder that fits in this division's Perfect Round pot. */
+  placeRemainderToPot: number
+  /** Place-pool remainder that overflows into Backup because the pot is full. */
+  placeRemainderToBackup: number
   ledger: Omit<LedgerRow, 'id' | 'created_at' | 'season_id' | 'event_id'>[]
 }
 
@@ -422,6 +450,7 @@ export function divisionResult(i: ResultInput): DivisionResult {
   row('perfect_round', 'entry', toPot, `${entries.length} entries × $${s.perfectRoundShare}`)
   row('backup', 'overflow', contribution - toPot, 'Over the cap')
   const potAfterEntries = cents(i.balances.perfect_round + toPot)
+  let perfectRoundBalance = potAfterEntries
 
   // Bonuses: awarded by hand (right-click). Perfect Round is this division's pot.
   // Perfect 5 and Perfect 4 are one pot each for the event: both divisions' carryover
@@ -480,6 +509,7 @@ export function divisionResult(i: ResultInput): DivisionResult {
     winners.forEach((w, k) => row(type, 'bonus_payout', -shares[k], AWARD_LABEL[type], w.player_id))
     if (type === 'perfect_round') {
       const roll = Math.min(i.balances.backup + (contribution - toPot), s.perfectRoundCap)
+      perfectRoundBalance = cents(roll)
       row('backup', 'rollover', -roll, 'Backup becomes the Perfect Round pot')
       row('perfect_round', 'rollover', roll, 'From backup pot')
     }
@@ -491,9 +521,11 @@ export function divisionResult(i: ResultInput): DivisionResult {
     .filter(r => r.fund === 'purse' && r.kind === 'transfer')
     .reduce((sum, r) => sum - r.amount, 0))
   const pool = cents(entries.length * entryShare + (i.barMatch ?? 0) - bonusOut)
-  const toHighScore = Math.max(0, Math.min(placeRemainder(pool), cents(pool - allocated)))
-  row('purse', 'transfer', -toHighScore, PLACE_REMAINDER_NOTE)
-  row('high_score', 'transfer', toHighScore, PLACE_REMAINDER_NOTE)
+  const remainder = Math.max(0, Math.min(placeRemainder(pool), cents(pool - allocated)))
+  const remainderSplit = perfectRoundRoom(perfectRoundBalance, s.perfectRoundCap, remainder)
+  row('purse', 'transfer', -remainder, PLACE_REMAINDER_NOTE)
+  row('perfect_round', 'transfer', remainderSplit.pot, PLACE_REMAINDER_NOTE)
+  row('backup', 'overflow', remainderSplit.backup, PLACE_REMAINDER_BACKUP_NOTE)
   for (const r of ranked) {
     const pay = payouts.get(r.entry.id) ?? 0
     if (pay) row('purse', 'place_payout', -pay, placeNote(r.place), r.entry.player_id)
@@ -514,6 +546,8 @@ export function divisionResult(i: ResultInput): DivisionResult {
     bonuses,
     newRecord,
     potAfterEntries,
+    placeRemainderToPot: remainderSplit.pot,
+    placeRemainderToBackup: remainderSplit.backup,
     ledger,
   }
 }

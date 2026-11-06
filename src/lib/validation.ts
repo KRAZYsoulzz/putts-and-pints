@@ -56,11 +56,12 @@ export function parseMoney(raw: string, allowNegative = false): MoneyParse {
   return { ok: true, value: Math.round(n * 100) / 100 }
 }
 
-export type PayoutIssue = 'negative' | 'over' | null
+export type PayoutIssue = 'negative' | 'over' | 'increment' | null
 
-/** Place checks can't be negative, and together they can't exceed the night's pool. */
+/** Place checks are multiples of $5, never negative, and together they can't exceed the spendable pool. */
 export function payoutIssue(amounts: number[], pool: number): PayoutIssue {
   if (amounts.some(n => !Number.isFinite(n) || n < 0)) return 'negative'
+  if (amounts.some(n => n > 0 && Math.round(n * 100) % 500 !== 0)) return 'increment'
   const sum = cents(amounts.reduce((a, b) => a + (b || 0), 0))
   if (sum - pool > 0.001) return 'over'
   return null
@@ -76,9 +77,10 @@ export function payoutRejectMessage(amounts: number[], pool: number, reserved = 
   const issue = payoutIssue(amounts, spendable)
   if (!issue) return null
   if (issue === 'negative') return 'Payouts can’t be negative.'
+  if (issue === 'increment') return 'Place checks have to be multiples of $5.'
   const sum = cents(amounts.reduce((a, b) => a + (Number(b) || 0), 0))
   if (hold > 0.001) {
-    return `Those payouts add up to ${dollar(sum)}, which is more than the ${dollar(spendable)} place checks can use. ${dollar(hold)} goes to the High Score pot.`
+    return `Those payouts add up to ${dollar(sum)}, which is more than the ${dollar(spendable)} place checks can use. ${dollar(hold)} goes to the Perfect Round pot.`
   }
   return `Those payouts add up to ${dollar(sum)}, which is more than the ${dollar(pool)} pool.`
 }
