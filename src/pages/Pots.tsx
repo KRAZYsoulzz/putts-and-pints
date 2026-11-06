@@ -4,6 +4,7 @@ import { messageOf } from '../lib/notify'
 import { useData, must } from '../lib/store'
 import { supabase } from '../lib/supabase'
 import { balances } from '../lib/money'
+import { cents } from '../lib/scoring'
 import {
   FUND_LABEL,
   KIND_LABEL,
@@ -26,7 +27,11 @@ export default function Pots() {
   const [note, setNote] = useState('')
   const [adjustError, setAdjustError] = useState('')
 
-  const curBalances = useMemo(() => balances(ledger, division), [ledger, division])
+  const menBalances = useMemo(() => balances(ledger, 'M'), [ledger])
+  const womenBalances = useMemo(() => balances(ledger, 'W'), [ledger])
+  const curBalances = division === 'M' ? menBalances : womenBalances
+  const sharedPerfect5 = cents(menBalances.perfect5 + womenBalances.perfect5)
+  const sharedPerfect4 = cents(menBalances.perfect4 + womenBalances.perfect4)
   const inTagsCount = players.filter(p => p.in_tags).length
 
   // Filtered ledger history
@@ -122,12 +127,12 @@ export default function Pots() {
         {/* Perfect 5 Pot Card */}
         {settings.potsVisibility?.perfect5 !== false && (
           <div className="panel panel-pad stack">
-            <div className="eyebrow">Perfect 5 Pot</div>
+            <div className="eyebrow">Perfect 5 Pot · Men's &amp; Women's</div>
             <div className="display" style={{ fontSize: 38 }}>
-              {money(curBalances.perfect5)}
+              {money(sharedPerfect5)}
             </div>
             <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-              $10 bonus for hitting all 5 stations on Basket 1. Multiple winners split.
+              One pot for both divisions. Men's {money(menBalances.perfect5)} + Women's {money(womenBalances.perfect5)}. A win adds {money(settings.bonus.perfect5)} once, split across everyone who hits it.
             </p>
           </div>
         )}
@@ -135,12 +140,12 @@ export default function Pots() {
         {/* Perfect 4 Pot Card */}
         {settings.potsVisibility?.perfect4 !== false && (
           <div className="panel panel-pad stack">
-            <div className="eyebrow">Perfect 4 Pot</div>
+            <div className="eyebrow">Perfect 4 Pot · Men's &amp; Women's</div>
             <div className="display" style={{ fontSize: 38 }}>
-              {money(curBalances.perfect4)}
+              {money(sharedPerfect4)}
             </div>
             <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-              $10 bonus for hitting all 4 stations on Basket 2. Multiple winners split.
+              One pot for both divisions. Men's {money(menBalances.perfect4)} + Women's {money(womenBalances.perfect4)}. A win adds {money(settings.bonus.perfect4)} once, split across everyone who hits it.
             </p>
           </div>
         )}

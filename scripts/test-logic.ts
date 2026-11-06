@@ -1,8 +1,8 @@
 // Quick sanity checks for the rules engine. Run: npx tsx scripts/test-logic.ts
 import assert from 'node:assert/strict'
 import { DEFAULT_SETTINGS as S } from '../src/lib/settings'
-import { bestTotal, clampScore, effectiveCut, initialTagAssignment, isOpeningTagNight, qualifiers, rank18, rankFinal, redistributeTags, suggestedCut, totals } from '../src/lib/scoring'
-import { balances, clampPaidPlaces, displayedPerfectRound, divisionResult, effectiveBar, eventLedgerPosted, eventMoney, nightBonusCost, paidPlaceCount, payoutPool, payoutsForPlaceCount, splitEvenly, suggestedPaidPlaces, suggestedPayouts } from '../src/lib/money'
+import { bestTotal, cents, clampScore, effectiveCut, initialTagAssignment, isOpeningTagNight, qualifiers, rank18, rankFinal, redistributeTags, suggestedCut, totals } from '../src/lib/scoring'
+import { balances, clampPaidPlaces, displayedPerfectRound, displayedSharedPot, divisionResult, effectiveBar, eventLedgerPosted, eventMoney, nightBonusCost, otherDivisionNights, paidPlaceCount, payoutPool, payoutsForPlaceCount, postedBonusCost, splitEvenly, suggestedPaidPlaces, suggestedPayouts, type DivisionNight } from '../src/lib/money'
 import { duplicateName, friendlyError, parseMoney, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../src/lib/validation'
 import { buyingTagAfter, checkinTagIn, freshBuyingTag, newPlayerInsert } from '../src/lib/newPlayer'
 import type { Entry } from '../src/lib/types'
@@ -513,5 +513,234 @@ assert.equal(buyingTagAfter(true, 'cancel'), false)
 assert.equal(buyingTagAfter(true, 'success'), false)
 assert.equal(buyingTagAfter(true, 'open'), false, 'the next player starts off')
 assert.equal(buyingTagAfter(true, 'next-player'), false, 'clearing the name starts the next player off')
+
+// Perfect 4 and Perfect 5 are one event pot each, shared by both divisions.
+// The flat $10 is funded once. Shares across M and W add up to that pot exactly.
+const sumMoney = (xs: number[]) => cents(xs.reduce((a, b) => a + b, 0))
+const awardAmounts = (res: { bonuses: { type: string; amounts: number[] }[] }, type: string) =>
+  res.bonuses.find(b => b.type === type)?.amounts ?? []
+const purseHit = (res: { ledger: { fund: string; kind: string; amount: number; note: string }[] }, label: string) =>
+  cents(res.ledger.filter(r => r.fund === 'purse' && r.kind === 'transfer' && r.note.includes(label)).reduce((a, r) => a + r.amount, 0))
+const fundNet = (res: { ledger: { fund: string; amount: number }[] }, fund: string) =>
+  cents(res.ledger.filter(r => r.fund === fund).reduce((a, r) => a + r.amount, 0))
+
+function bothDivisions(
+  men: Entry[],
+  women: Entry[],
+  menBalances: DivisionNight['balances'] = { ...zero },
+  womenBalances: DivisionNight['balances'] = { ...zero },
+  extra: { barMatch?: number; payoutPlaces?: number[]; openingNight?: boolean; priorRecord?: number | null; tagPlan?: 'opening' | 'redistribute'; inTags?: (id: string) => boolean } = {},
+) {
+  const menNight: DivisionNight = { division: 'M', entries: men, balances: menBalances }
+  const womenNight: DivisionNight = { division: 'W', entries: women, balances: womenBalances }
+  const base = { payoutPlaces: [] as number[], settings: S, barMatch: 0, priorRecord: null as number | null, ...extra }
+  return {
+    men: divisionResult({ ...base, division: 'M', entries: men, balances: menBalances, cohort: [womenNight] }),
+    women: divisionResult({ ...base, division: 'W', entries: women, balances: womenBalances, cohort: [menNight] }),
+  }
+}
+
+const manOnlyA = e({ awards: ['perfect5'], player_id: 'm-only-a', created_at: '1' })
+const manOnlyB = e({ awards: ['perfect5'], player_id: 'm-only-b', created_at: '2' })
+const womanIdle = e({ division: 'W', player_id: 'w-idle', created_at: '3' })
+const menOnly = bothDivisions([manOnlyA, manOnlyB], [womanIdle])
+assert.deepEqual(awardAmounts(menOnly.men, 'perfect5'), [5, 5], 'two men split the one $10')
+assert.deepEqual(awardAmounts(menOnly.women, 'perfect5'), [], 'a division with no winner has no Perfect 5 share')
+assert.equal(sumMoney([...awardAmounts(menOnly.men, 'perfect5'), ...awardAmounts(menOnly.women, 'perfect5')]), 10)
+assert.equal(purseHit(menOnly.men, 'Perfect 5'), -10, 'the division that has every winner funds the whole $10')
+assert.equal(purseHit(menOnly.women, 'Perfect 5'), 0)
+assert.equal(nightBonusCost([manOnlyA, manOnlyB], S, { division: 'M', cohort: [{ division: 'W', entries: [womanIdle], balances: { ...zero } }] }), 10)
+assert.equal(nightBonusCost([womanIdle], S, { division: 'W', cohort: [{ division: 'M', entries: [manOnlyA, manOnlyB], balances: { ...zero } }] }), 0)
+
+const manP5 = e({ awards: ['perfect5'], player_id: 'm-p5', division: 'M', created_at: '1' })
+const womanP5 = e({ awards: ['perfect5'], player_id: 'w-p5', division: 'W', created_at: '2' })
+const mixedP5 = bothDivisions([manP5], [womanP5])
+assert.deepEqual(awardAmounts(mixedP5.men, 'perfect5'), [5])
+assert.deepEqual(awardAmounts(mixedP5.women, 'perfect5'), [5])
+assert.equal(sumMoney([...awardAmounts(mixedP5.men, 'perfect5'), ...awardAmounts(mixedP5.women, 'perfect5')]), 10, 'mixed winners still share $10, not $20')
+assert.equal(purseHit(mixedP5.men, 'Perfect 5') + purseHit(mixedP5.women, 'Perfect 5'), -10)
+assert.equal(nightBonusCost([manP5], S, { division: 'M', cohort: [{ division: 'W', entries: [womanP5], balances: { ...zero } }] }), 5)
+assert.equal(nightBonusCost([womanP5], S, { division: 'W', cohort: [{ division: 'M', entries: [manP5], balances: { ...zero } }] }), 5)
+assert.equal(mixedP5.men.bonuses.find(b => b.type === 'perfect5')?.splitAmong, 2)
+assert.deepEqual(manP5.awards, ['perfect5'], 'computing the pot does not change a director award')
+assert.deepEqual(womanP5.awards, ['perfect5'])
+
+// Separate award types. Each is $10 once, even when the winners sit in different divisions.
+const manP4 = e({ awards: ['perfect4'], player_id: 'm-p4', created_at: '1' })
+const womanP4only = e({ division: 'W', awards: ['perfect5'], player_id: 'w-p5b', created_at: '2' })
+const splitTypes = bothDivisions([manP4], [womanP4only])
+assert.equal(sumMoney(awardAmounts(splitTypes.men, 'perfect4').concat(awardAmounts(splitTypes.women, 'perfect4'))), 10)
+assert.equal(sumMoney(awardAmounts(splitTypes.men, 'perfect5').concat(awardAmounts(splitTypes.women, 'perfect5'))), 10)
+assert.equal(purseHit(splitTypes.men, 'Perfect 4'), -10)
+assert.equal(purseHit(splitTypes.men, 'Perfect 5'), 0)
+assert.equal(purseHit(splitTypes.women, 'Perfect 5'), -10)
+assert.equal(purseHit(splitTypes.women, 'Perfect 4'), 0)
+
+// Uneven field: leftover cents stay inside the $10, and each purse pays only its players' flat share.
+const manCent = e({ awards: ['perfect5', 'perfect4'], player_id: 'm-cent', created_at: '1' })
+const womanCentA = e({ division: 'W', awards: ['perfect5', 'perfect4'], player_id: 'w-cent-a', created_at: '2' })
+const womanCentB = e({ division: 'W', awards: ['perfect4'], player_id: 'w-cent-b', created_at: '3' })
+const uneven = bothDivisions([manCent], [womanCentA, womanCentB])
+const p5Shares = [...awardAmounts(uneven.men, 'perfect5'), ...awardAmounts(uneven.women, 'perfect5')]
+const p4Shares = [...awardAmounts(uneven.men, 'perfect4'), ...awardAmounts(uneven.women, 'perfect4')]
+assert.deepEqual(p5Shares, [5, 5])
+assert.deepEqual(p4Shares, [3.34, 3.33, 3.33])
+assert.equal(sumMoney(p5Shares), 10)
+assert.equal(sumMoney(p4Shares), 10)
+assert.equal(cents(purseHit(uneven.men, 'Perfect 5') + purseHit(uneven.women, 'Perfect 5')), -10)
+assert.equal(cents(purseHit(uneven.men, 'Perfect 4') + purseHit(uneven.women, 'Perfect 4')), -10)
+assert.equal(purseHit(uneven.men, 'Perfect 4'), -3.34, 'first check-in gets the extra cent, and that purse pays it')
+assert.equal(purseHit(uneven.women, 'Perfect 4'), -6.66)
+assert.equal(
+  nightBonusCost([manCent], S, { division: 'M', cohort: [{ division: 'W', entries: [womanCentA, womanCentB], balances: { ...zero } }] }),
+  cents(3.34 + 5),
+)
+assert.equal(
+  nightBonusCost([womanCentA, womanCentB], S, { division: 'W', cohort: [{ division: 'M', entries: [manCent], balances: { ...zero } }] }),
+  cents(6.66 + 5),
+)
+
+// Nobody hit it: carryover stays put and neither purse pays.
+const noHitMen = e({ player_id: 'm-none' })
+const noHitWomen = e({ division: 'W', player_id: 'w-none' })
+const quietBalances = { ...zero, perfect5: 15, perfect4: 4 }
+const quiet = bothDivisions([noHitMen], [noHitWomen], quietBalances, { ...zero, perfect5: 7 })
+assert.equal(quiet.men.bonuses.length, 0)
+assert.equal(quiet.women.bonuses.length, 0)
+assert.equal(purseHit(quiet.men, 'Perfect 5') + purseHit(quiet.women, 'Perfect 5') + purseHit(quiet.men, 'Perfect 4') + purseHit(quiet.women, 'Perfect 4'), 0)
+assert.ok(!quiet.men.ledger.some(r => r.fund === 'perfect5' || r.fund === 'perfect4'))
+assert.ok(!quiet.women.ledger.some(r => r.fund === 'perfect5' || r.fund === 'perfect4'))
+assert.equal(nightBonusCost([noHitMen], S, { division: 'M', cohort: [{ division: 'W', entries: [noHitWomen], balances: { ...zero, perfect5: 7 } }] }), 0)
+assert.equal(displayedSharedPot('perfect5', [
+  { division: 'M', entries: [noHitMen], balances: quietBalances },
+  { division: 'W', entries: [noHitWomen], balances: { ...zero, perfect5: 7 } },
+], S), 32, 'the card shows both carryovers plus the one $10, before anyone is awarded')
+assert.equal(displayedSharedPot('perfect4', [
+  { division: 'M', entries: [noHitMen], balances: quietBalances },
+  { division: 'W', entries: [noHitWomen], balances: { ...zero } },
+], S), 14)
+
+// Carryover from both divisions is one pot, plus the flat $10 once. Purses still pay only the $10.
+const carryMan = e({ awards: ['perfect5'], player_id: 'm-carry', created_at: '1' })
+const carryWoman = e({ division: 'W', awards: ['perfect5'], player_id: 'w-carry', created_at: '2' })
+const carried = bothDivisions(
+  [carryMan],
+  [carryWoman],
+  { ...zero, perfect5: 40 },
+  { ...zero, perfect5: 5 },
+)
+assert.deepEqual([...awardAmounts(carried.men, 'perfect5'), ...awardAmounts(carried.women, 'perfect5')], [27.5, 27.5])
+assert.equal(sumMoney([...awardAmounts(carried.men, 'perfect5'), ...awardAmounts(carried.women, 'perfect5')]), 55)
+assert.equal(purseHit(carried.men, 'Perfect 5') + purseHit(carried.women, 'Perfect 5'), -10, 'carryover is already in the pot; purses add $10 once')
+assert.equal(fundNet(carried.men, 'perfect5'), -40, 'men’s pot is paid down to zero')
+assert.equal(fundNet(carried.women, 'perfect5'), -5, 'women’s pot is paid down to zero')
+
+// Finalizing, reopening, and finalizing again replaces the night. It does not stack another $10.
+const postedRows = [...carried.men.ledger, ...carried.women.ledger].map((r, i) => ({
+  ...r, id: `post${i}`, season_id: 's', event_id: 'night', created_at: '',
+}))
+const priorMen = balances(postedRows.filter(r => r.event_id !== 'night'), 'M')
+const priorWomen = balances(postedRows.filter(r => r.event_id !== 'night'), 'W')
+assert.equal(priorMen.perfect5, 0)
+assert.equal(priorWomen.perfect5, 0)
+const refinal = bothDivisions([carryMan], [carryWoman], priorMen, priorWomen)
+const repostedP5 = cents(
+  [...awardAmounts(refinal.men, 'perfect5'), ...awardAmounts(refinal.women, 'perfect5')].reduce((a, b) => a + b, 0),
+)
+assert.equal(repostedP5, 10, 'after the pots were paid out, a second finalize shares only the new $10')
+assert.equal(purseHit(refinal.men, 'Perfect 5') + purseHit(refinal.women, 'Perfect 5'), -10)
+const replaced = [...refinal.men.ledger, ...refinal.women.ledger]
+const combinedLedger = [...postedRows, ...replaced.map((r, i) => ({ ...r, id: `new${i}`, season_id: 's', event_id: 'night', created_at: '' }))]
+assert.equal(
+  cents(combinedLedger.filter(r => r.fund === 'perfect5' && r.kind === 'bonus_payout').reduce((a, r) => a + r.amount, 0)),
+  -65,
+  'stacking the new rows on the old ones double-pays; finalize must delete this event first',
+)
+assert.equal(
+  cents(replaced.filter(r => r.fund === 'perfect5' && r.kind === 'bonus_payout').reduce((a, r) => a + r.amount, 0)),
+  -10,
+)
+assert.equal(postedBonusCost(postedRows, 'night', 'M'), 5)
+assert.equal(postedBonusCost(postedRows, 'night', 'W'), 5)
+assert.equal(postedBonusCost(postedRows, 'other-night', 'M'), 0)
+
+// Women's Perfect Round stays her own pot. High score stays per division, and the first night pays $0.
+const prMan = e({ player_id: 'm-pr' })
+const prWoman = e({ division: 'W', awards: ['perfect_round', 'perfect5'], player_id: 'w-pr', created_at: '2' })
+const prShared = bothDivisions(
+  [prMan],
+  [prWoman],
+  { ...zero, perfect_round: 100 },
+  { ...zero, perfect_round: 20 },
+)
+assert.equal(prShared.women.bonuses.find(b => b.type === 'perfect_round')?.each, 22, 'her $20 plus her $2, not the men’s $100')
+assert.equal(awardAmounts(prShared.women, 'perfect5').concat(awardAmounts(prShared.men, 'perfect5')).reduce((a, b) => a + b, 0), 10)
+assert.ok(prShared.men.ledger.every(r => r.division === 'M'))
+assert.ok(prShared.women.ledger.every(r => r.division === 'W'))
+
+const hsMan = e({ awards: ['high_score', 'perfect5'], score_18: 90, player_id: 'm-hs', created_at: '1' })
+const hsWoman = e({ division: 'W', awards: ['perfect5'], score_18: 70, player_id: 'w-hs', created_at: '2' })
+const openingShared = bothDivisions([hsMan], [hsWoman], { ...zero }, { ...zero }, { openingNight: true, tagPlan: 'opening', inTags: id => id.startsWith('m-hs') || id.startsWith('w-hs') })
+assert.equal(openingShared.men.bonuses.find(b => b.type === 'high_score')?.each, 0, 'first night high score still sets the bar for $0')
+assert.ok(!openingShared.men.ledger.some(r => r.fund === 'high_score' || (r.fund === 'purse' && r.note.includes('High Score'))))
+assert.equal(sumMoney(awardAmounts(openingShared.men, 'perfect5').concat(awardAmounts(openingShared.women, 'perfect5'))), 10)
+assert.equal(openingShared.men.tagsOut.get(hsMan.id), 1, 'shared pots do not change opening tag assignment')
+assert.equal(nightBonusCost([hsMan], S, {
+  payHighScore: false,
+  division: 'M',
+  cohort: [{ division: 'W', entries: [hsWoman], balances: { ...zero } }],
+}), 5, 'opening-night purse preview drops high score and only this division’s Perfect 5 share')
+
+const laterShared = bothDivisions(
+  [e({ awards: ['high_score'], score_18: 99, player_id: 'm-hs2' })],
+  [e({ division: 'W', awards: ['high_score'], score_18: 80, player_id: 'w-hs2' })],
+  { ...zero },
+  { ...zero },
+  { openingNight: false, priorRecord: 70 },
+)
+assert.equal(laterShared.men.bonuses.find(b => b.type === 'high_score')?.each, 10)
+assert.equal(laterShared.women.bonuses.find(b => b.type === 'high_score')?.each, 10, 'each division still pays its own high score')
+assert.equal(purseHit(laterShared.men, 'High Score'), -10)
+assert.equal(purseHit(laterShared.women, 'High Score'), -10)
+
+// Place checks stay whole dollars out of the purse that remains after this division’s share of the bonus.
+const placeMen = [
+  e({ awards: ['perfect5'], player_id: 'm-place', created_at: '1', score_18: 80 }),
+  e({ player_id: 'm-place-2', score_18: 70 }),
+  e({ player_id: 'm-place-3', score_18: 60 }),
+  e({ player_id: 'm-place-4', score_18: 50 }),
+]
+const placeWoman = e({ division: 'W', awards: ['perfect5'], player_id: 'w-place', created_at: '2' })
+const menBonus = nightBonusCost(placeMen, S, { division: 'M', cohort: [{ division: 'W', entries: [placeWoman], balances: { ...zero } }] })
+assert.equal(menBonus, 5)
+const placePool = payoutPool(4, 20, S, menBonus)
+assert.equal(placePool, 47, '4×$8 + $20 bar − $5 shared Perfect 5')
+assert.deepEqual(suggestedPayouts(placePool, 1), [47])
+assert.ok(suggestedPayouts(placePool, 2).every(n => Number.isInteger(n)))
+assert.equal(suggestedPayouts(placePool, 2).reduce((a, b) => a + b, 0), 47)
+const placedNight = bothDivisions(placeMen, [placeWoman], { ...zero }, { ...zero }, { barMatch: 20, payoutPlaces: [47] })
+assert.equal(fundNet(placedNight.men, 'purse'), 0, 'men’s purse: 32 + 20 − 5 − 47')
+
+// The pots page adds both divisions’ Perfect 5 balances into the one pot it shows.
+const potLedger = [
+  { id: 'p1', season_id: 's', event_id: null, player_id: null, division: 'M' as const, fund: 'perfect5' as const, kind: 'carryover' as const, amount: 40, note: null, created_at: '' },
+  { id: 'p2', season_id: 's', event_id: null, player_id: null, division: 'W' as const, fund: 'perfect5' as const, kind: 'carryover' as const, amount: 5, note: null, created_at: '' },
+  { id: 'p3', season_id: 's', event_id: null, player_id: null, division: 'M' as const, fund: 'perfect_round' as const, kind: 'carryover' as const, amount: 100, note: null, created_at: '' },
+  { id: 'p4', season_id: 's', event_id: null, player_id: null, division: 'W' as const, fund: 'perfect_round' as const, kind: 'carryover' as const, amount: 20, note: null, created_at: '' },
+]
+assert.equal(cents(balances(potLedger, 'M').perfect5 + balances(potLedger, 'W').perfect5), 45)
+assert.equal(balances(potLedger, 'W').perfect_round, 20, 'Perfect Round stays a women’s pot')
+const previewCohort = otherDivisionNights('M', 'night', [
+  e({ event_id: 'night', division: 'M', awards: ['perfect5'], player_id: 'preview-m' }),
+  e({ event_id: 'night', division: 'W', awards: ['perfect5'], player_id: 'preview-w' }),
+  e({ event_id: 'other', division: 'W', awards: ['perfect5'], player_id: 'old-w' }),
+], [
+  ...potLedger,
+  { id: 'tonight', season_id: 's', event_id: 'night', player_id: null, division: 'W', fund: 'perfect5', kind: 'bonus_payout', amount: -10, note: null, created_at: '' },
+])
+assert.equal(previewCohort.length, 1)
+assert.equal(previewCohort[0].division, 'W')
+assert.deepEqual(previewCohort[0].entries.map(entry => entry.player_id), ['preview-w'])
+assert.equal(previewCohort[0].balances.perfect5, 5, 'tonight’s posted Perfect 5 is not carryover for the preview or the next finalize')
 
 console.log('All rules checks passed ✔')
