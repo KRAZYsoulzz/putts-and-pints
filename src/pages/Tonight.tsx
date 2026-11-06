@@ -28,7 +28,8 @@ import {
 import { byEntryOrder, cents, effectiveCut, isOpeningTagNight, MAX_18, MAX_FINAL, qualifiers, suggestedCut, totals, type Ranked } from '../lib/scoring'
 import { balances, clampPaidPlaces, displayedPerfectRound, divisionResult, eventLedgerPosted, effectiveBar, eventMoney, nightBonusCost, paidPlaceCount, payoutPool, payoutsForPlaceCount, suggestedPaidPlaces } from '../lib/money'
 import { duplicateName, friendlyError, normalizeName, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../lib/validation'
-import { Dialog, DivisionSeg, Menu, MoneyInput, PageHead, ScoreInput, Stat, money, ordinal } from '../components/ui'
+import { buyingTagAfter, checkinTagIn, freshBuyingTag, newPlayerInsert } from '../lib/newPlayer'
+import { Dialog, DivisionSeg, Menu, MoneyInput, PageHead, ScoreInput, Stat, Toggle, money, ordinal } from '../components/ui'
 
 const STEPS: { status: EventStatus; label: string }[] = [
   { status: 'checkin', label: '1. Check-in' },
@@ -55,6 +56,7 @@ export default function Tonight() {
   const [upEditId, setUpEditId] = useState<string | null>(null)
   const [addPlayerOpen, setAddPlayerOpen] = useState(false)
   const [searchName, setSearchName] = useState('')
+  const [buyingTag, setBuyingTag] = useState(freshBuyingTag)
   const [createError, setCreateError] = useState('')
   const [isFinalizing, setIsFinalizing] = useState(false)
   const [startOpen, setStartOpen] = useState(false)
@@ -322,19 +324,20 @@ export default function Tonight() {
     setContextMenu(null)
   }
 
-  const handleCheckinPlayer = async (pId: string, pDiv: Division) => {
-    if (checkingIn.current.has(pId)) return
-    if (entries.some(e => e.event_id === event.id && e.player_id === pId)) return
+  const handleCheckinPlayer = async (pId: string, pDiv: Division, known?: { in_tags?: boolean }) => {
+    if (checkingIn.current.has(pId)) return false
+    if (entries.some(e => e.event_id === event.id && e.player_id === pId)) return false
     checkingIn.current.add(pId)
     try {
       const player = players.find(p => p.id === pId)
       const held = tags.find(t => t.player_id === pId)?.tag_number ?? null
+      const inTags = (known?.in_tags ?? player?.in_tags) === true
       const { error } = await supabase.from('pp_entries').upsert({
         event_id: event.id,
         player_id: pId,
         division: pDiv,
         paid: true,
-        tag_in: player?.in_tags ? held : null,
+        tag_in: checkinTagIn(inTags, held),
         awards: [],
       }, { onConflict: 'event_id,player_id', ignoreDuplicates: true })
       if (error) {
@@ -342,12 +345,14 @@ export default function Tonight() {
         const message = friendlyError(error.message)
         reportError(message)
         setCreateError(message)
-        return
+        return false
       }
       setAddPlayerOpen(false)
       setSearchName('')
       setCreateError('')
+      setBuyingTag(current => buyingTagAfter(current, 'success'))
       await reload()
+      return true
     } finally {
       checkingIn.current.delete(pId)
     }
@@ -360,11 +365,13 @@ export default function Tonight() {
     setCreateError('')
     try {
       const created = await must(
-        supabase.from('pp_players').insert({ name: clean, division: pDiv, active: true, in_tags: false }).select().single(),
+        supabase.from('pp_players').insert(newPlayerInsert(clean, pDiv, buyingTag)).select().single(),
       )
-      await handleCheckinPlayer(created.id, pDiv)
+      const checkedIn = await handleCheckinPlayer(created.id, pDiv, created)
+      if (!checkedIn) setBuyingTag(current => buyingTagAfter(current, 'save-failure'))
     } catch (err) {
       setCreateError(messageOf(err))
+      setBuyingTag(current => buyingTagAfter(current, 'save-failure'))
     }
   }
 
@@ -674,7 +681,7 @@ export default function Tonight() {
                 Check players into the {division === 'M' ? "Men's" : "Women's"} division, record tag numbers, and set the bar match.
               </p>
             </div>
-            <button className="btn btn-primary" onClick={() => { setCreateError(''); setAddPlayerOpen(true) }}>
+            <button className="btn btn-primary" onClick={() => { setCreateError(''); setBuyingTag(current => buyingTagAfter(current, 'open')); setAddPlayerOpen(true) }}>
               <UserPlus size={16} /> Check In Player
             </button>
           </div>
@@ -1038,11 +1045,16 @@ export default function Tonight() {
       )}
 
       {addPlayerOpen && (
-        <Dialog title="Check In Player" onClose={() => { setAddPlayerOpen(false); setCreateError('') }}>
+        <Dialog title="Check In Player" onClose={() => { setAddPlayerOpen(false); setCreateError(''); setBuyingTag(current => buyingTagAfter(current, 'cancel')) }}>
           <div className="stack">
             <div className="field">
               <span>Search Roster</span>
-              <input className="input" type="text" placeholder="Type player name..." autoFocus value={searchName} onChange={e => { setSearchName(e.target.value); setCreateError('') }} />
+              <input className="input" type="text" placeholder="Type player name..." autoFocus value={searchName} onChange={e => {
+                const next = e.target.value
+                setSearchName(next)
+                setCreateError('')
+                if (!normalizeName(next)) setBuyingTag(current => buyingTagAfter(current, 'next-player'))
+              }} />
             </div>
             <div style={{ maxHeight: 200, overflowY: 'auto' }} className="stack">
               {players
@@ -1059,9 +1071,18 @@ export default function Tonight() {
             </div>
             {createError && <small className="field-error">{createError}</small>}
             {searchName.trim() && !duplicateName(searchName, players) && (
-              <button className="btn btn-primary btn-block" onClick={() => handleCreateAndCheckin(searchName, division)}>
-                <Plus size={14} /> Create &amp; Check In "{normalizeName(searchName)}"
-              </button>
+              <>
+                <div className="row" style={{ justifyContent: 'space-between', padding: '6px 0' }}>
+                  <div>
+                    <span style={{ fontSize: 13, fontWeight: 500 }}>Buying a tag</span>
+                    <div className="muted" style={{ fontSize: 11 }}>Bought a tag this season</div>
+                  </div>
+                  <Toggle on={buyingTag} onChange={setBuyingTag} label="Buying a tag" />
+                </div>
+                <button className="btn btn-primary btn-block" onClick={() => handleCreateAndCheckin(searchName, division)}>
+                  <Plus size={14} /> Create &amp; Check In "{normalizeName(searchName)}"
+                </button>
+              </>
             )}
             {searchName.trim() && duplicateName(searchName, players) && !players.some(p => p.division === division && normalizeName(p.name).toLowerCase() === normalizeName(searchName).toLowerCase()) && (
               <small className="field-error">That name is already on the roster.</small>
