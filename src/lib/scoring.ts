@@ -127,6 +127,15 @@ export function rankFinal(entries: Entry[], s: Settings): Ranked[] {
   })
 }
 
+/**
+ * Places on the initial 18 score-entry grid, in check-in order.
+ * Uses the completed 18 only, including after the cut. Final 9 does not move these places.
+ */
+export function eighteenGridRows(entries: Entry[], s: Settings): { id: string; place: number }[] {
+  const places = new Map(rank18(entries, s).map(row => [row.entry.id, row.place]))
+  return [...entries].sort(byEntryOrder).map(ent => ({ id: ent.id, place: places.get(ent.id) ?? 0 }))
+}
+
 /** Ranking after the 18 (used for the cut). */
 export function rank18(entries: Entry[], s: Settings): Ranked[] {
   const cutMode: Record<CutTieMode, TieMode> = { include: 'split', playoff: 'playoff', countback: 'countback' }

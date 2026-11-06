@@ -25,7 +25,8 @@ import {
   type Player,
   type PPEvent,
 } from '../lib/types'
-import { byEntryOrder, cents, effectiveCut, isOpeningTagNight, MAX_18, MAX_FINAL, qualifiers, suggestedCut, totals, type Ranked } from '../lib/scoring'
+import { byEntryOrder, cents, effectiveCut, eighteenGridRows, isOpeningTagNight, MAX_18, MAX_FINAL, qualifiers, suggestedCut, totals, type Ranked } from '../lib/scoring'
+import { completeRefresh, requestRefresh, type ScoreBoard } from '../lib/score-refresh'
 import { balances, clampPaidPlaces, displayedPerfectRound, displayedSharedPot, divisionResult, eventLedgerPosted, effectiveBar, eventMoney, nightBonusCost, otherDivisionNights, paidPlaceCount, payoutPool, payoutsForPlaceCount, placeBudget, placeRemainder, postedBonusCost, postedPlaceRemainder, postedRemainderBackup, suggestedPaidPlaces } from '../lib/money'
 import { duplicateName, friendlyError, normalizeName, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../lib/validation'
 import { buyingTagAfter, checkinTagIn, freshBuyingTag, newPlayerInsert } from '../lib/newPlayer'
@@ -65,8 +66,14 @@ export default function Tonight() {
   const [barError, setBarError] = useState('')
   const [payoutNote, setPayoutNote] = useState<{ scope: string; text: string } | null>(null)
   const [cutOverride, setCutOverride] = useState<{ key: string; value: number } | null>(null)
+  const [scoreSaveCount, setScoreSaveCount] = useState(0)
+  const [scoreDirtyCount, setScoreDirtyCount] = useState(0)
+  const [refreshStatus, setRefreshStatus] = useState<string | null>(null)
 
   const checkingIn = useRef(new Set<string>())
+  const dirtyScores = useRef(new Set<string>())
+  const scoreSaves = useRef(0)
+  const refreshLock = useRef(false)
   const prefilled = useRef(new Set<string>())
   const defaultedCut = useRef(new Set<string>())
   const cutRef = useRef<Partial<Record<Division, number>>>({})
@@ -78,6 +85,54 @@ export default function Tonight() {
   useEffect(() => { entriesRef.current = entries }, [entries])
   useEffect(() => () => window.clearTimeout(payoutNoteTimer.current), [])
   useEffect(() => { settingsRef.current = settings }, [settings])
+
+  const scoreBoard = (): ScoreBoard => ({
+    server: {},
+    local: {},
+    draft: dirtyScores.current.size > 0 ? { id: 'open', raw: 'pending' } : null,
+    savesInFlight: scoreSaves.current,
+    refreshing: refreshLock.current,
+    status: refreshStatus,
+  })
+
+  const markScoreDirty = (id: string, dirty: boolean) => {
+    if (dirty) dirtyScores.current.add(id)
+    else dirtyScores.current.delete(id)
+    setScoreDirtyCount(dirtyScores.current.size)
+  }
+
+  const saveScore = (id: string, patch: Partial<Entry>) => {
+    scoreSaves.current += 1
+    setScoreSaveCount(scoreSaves.current)
+    return patchEntry(id, patch).finally(() => {
+      scoreSaves.current = Math.max(0, scoreSaves.current - 1)
+      setScoreSaveCount(scoreSaves.current)
+    })
+  }
+
+  const refreshScores = async () => {
+    const decision = requestRefresh(scoreBoard())
+    setRefreshStatus(decision.board.status)
+    if (!decision.fetch) return
+    refreshLock.current = true
+    try {
+      const result = await reload()
+      const finished = completeRefresh(
+        {
+          ...scoreBoard(),
+          refreshing: true,
+          savesInFlight: result === 'busy' ? Math.max(scoreSaves.current, 1) : scoreSaves.current,
+        },
+        result === 'applied' ? {} : { error: result === 'busy' ? 'Saving score…' : "Couldn't refresh scores." },
+      )
+      setRefreshStatus(finished.status)
+    } catch (err) {
+      console.error(err)
+      setRefreshStatus("Couldn't refresh scores.")
+    } finally {
+      refreshLock.current = false
+    }
+  }
 
   const divEntries = useMemo(
     () => entries.filter(e => e.event_id === event?.id && e.division === division),
@@ -829,17 +884,26 @@ export default function Tonight() {
                 Basket 1 is 0–30, Basket 2 is 0–20. Rows stay in check-in order while you type. Right-click a player to award a bonus.
               </p>
             </div>
-            <button className="btn btn-primary" onClick={applyCutAndProceed}>
-              Go to The Cut & Final 9 <ChevronRight size={16} />
-            </button>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+              <RefreshScores
+                blocked={() => scoreDirtyCount > 0 || scoreSaveCount > 0 || dirtyScores.current.size > 0 || scoreSaves.current > 0 || refreshLock.current}
+                status={refreshStatus}
+                onRefresh={refreshScores}
+              />
+              <button className="btn btn-primary" onClick={applyCutAndProceed}>
+                Go to The Cut & Final 9 <ChevronRight size={16} />
+              </button>
+            </div>
           </div>
           <ScoreTable
             rows={orderedEntries}
             rankedById={rankedById}
             playerById={playerById}
+            settings={settings}
             mode="18"
             onContextMenu={handleContextMenu}
-            onScore={(id, patch) => patchEntry(id, patch)}
+            onScore={saveScore}
+            onDirty={markScoreDirty}
           />
         </div>
       )}
@@ -854,6 +918,11 @@ export default function Tonight() {
               </p>
             </div>
             <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+              <RefreshScores
+                blocked={() => scoreDirtyCount > 0 || scoreSaveCount > 0 || dirtyScores.current.size > 0 || scoreSaves.current > 0 || refreshLock.current}
+                status={refreshStatus}
+                onRefresh={refreshScores}
+              />
               <div className="row" role="group" aria-labelledby="final-cut-label" style={{ background: 'var(--surface-1)', padding: '4px 10px', borderRadius: 6, border: '1px solid var(--line)' }}>
                 <span id="final-cut-label" className="eyebrow" style={{ marginRight: 6 }}>Qualifiers cut</span>
                 <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Fewer qualifiers" onClick={() => stepCut(-1)} disabled={shownCut <= 1}>
@@ -875,10 +944,12 @@ export default function Tonight() {
             rows={orderedEntries}
             rankedById={rankedById}
             playerById={playerById}
+            settings={settings}
             mode="final"
             onContextMenu={handleContextMenu}
-            onScore={(id, patch) => patchEntry(id, patch)}
+            onScore={saveScore}
             onToggleFinal={entry => patchEntry(entry.id, { made_final: !entry.made_final })}
+            onDirty={markScoreDirty}
           />
         </div>
       )}
@@ -1231,15 +1302,42 @@ function TagInCell({ entry, name, siblings, inTags, onCommit }: {
   )
 }
 
-function ScoreTable({ rows, rankedById, playerById, mode, onContextMenu, onScore, onToggleFinal }: {
+function RefreshScores({ blocked, status, onRefresh }: {
+  blocked: () => boolean
+  status: string | null
+  onRefresh: () => Promise<void>
+}) {
+  const hold = blocked()
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+      <button
+        type="button"
+        className="btn btn-ghost btn-sm"
+        aria-disabled={hold}
+        onMouseDown={e => { if (blocked()) e.preventDefault() }}
+        onClick={() => { void onRefresh() }}
+      >
+        Refresh scores
+      </button>
+      {status && <span className="muted" role="status" style={{ fontSize: 12, maxWidth: 220, textAlign: 'right' }}>{status}</span>}
+    </div>
+  )
+}
+
+function ScoreTable({ rows, rankedById, playerById, settings, mode, onContextMenu, onScore, onToggleFinal, onDirty }: {
   rows: Entry[]
   rankedById: Map<string, Ranked>
   playerById: Map<string, Player>
+  settings: ReturnType<typeof useData>['settings']
   mode: '18' | 'final'
   onContextMenu: (e: MouseEvent, entry: Entry) => void
-  onScore: (id: string, patch: Partial<Entry>) => void
+  onScore: (id: string, patch: Partial<Entry>) => Promise<boolean>
   onToggleFinal?: (entry: Entry) => void
+  onDirty: (id: string, dirty: boolean) => void
 }) {
+  const eighteenPlace = mode === '18'
+    ? new Map(eighteenGridRows(rows, settings).map(row => [row.id, row.place]))
+    : null
   return (
     <div className="panel">
       <div className="table-wrap">
@@ -1283,7 +1381,10 @@ function ScoreTable({ rows, rankedById, playerById, mode, onContextMenu, onScore
             {rows.map(ent => {
               const ranked = rankedById.get(ent.id)
               const t = ranked?.totals ?? totals(ent)
-              const place = ranked && ranked.place > 0 ? ranked.place : null
+              const from18 = eighteenPlace?.get(ent.id) ?? 0
+              const place = mode === '18'
+                ? (from18 > 0 ? from18 : null)
+                : (ranked && ranked.place > 0 ? ranked.place : null)
               const p = playerById.get(ent.player_id)
               if (mode === '18') {
                 return (
@@ -1296,7 +1397,7 @@ function ScoreTable({ rows, rankedById, playerById, mode, onContextMenu, onScore
                       )}
                     </td>
                     <td className="c faint">{p?.in_tags && ent.tag_in ? `#${ent.tag_in}` : 'No tag'}</td>
-                    <td className="c bl"><ScoreInput value={t.t18} max={MAX_18} onCommit={n => onScore(ent.id, { score_18: n })} /></td>
+                    <td className="c bl"><ScoreInput value={t.t18} max={MAX_18} onDirty={dirty => onDirty(ent.id, dirty)} onCommit={n => onScore(ent.id, { score_18: n })} /></td>
                     <td className="c bl">
                       <button className="btn btn-ghost btn-sm" style={{ fontSize: 11 }} onClick={e => onContextMenu(e, ent)}>
                         <Sparkles size={12} /> Awards
@@ -1315,7 +1416,7 @@ function ScoreTable({ rows, rankedById, playerById, mode, onContextMenu, onScore
                     </button>
                   </td>
                   <td className="c bl strong">{t.t18 ?? '—'}</td>
-                  <td className="c bl"><ScoreInput value={ent.made_final ? t.f : null} max={MAX_FINAL} disabled={!ent.made_final} onCommit={n => onScore(ent.id, { score_final: n })} /></td>
+                  <td className="c bl"><ScoreInput value={ent.made_final ? t.f : null} max={MAX_FINAL} disabled={!ent.made_final} onDirty={dirty => onDirty(ent.id, dirty)} onCommit={n => onScore(ent.id, { score_final: n })} /></td>
                   <td className="c bl big" style={{ color: t.total != null ? 'var(--orange)' : 'var(--text-3)' }}>{t.total ?? '—'}</td>
                 </tr>
               )

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { X } from 'lucide-react'
-import { clampScore } from '../lib/scoring'
+import { draftAfterScoreSave, commitScoreEdit, type ScoreEdit } from '../lib/score-edit'
 import { parseMoney } from '../lib/validation'
 import { DIVISION_LABEL, DIVISIONS, type Division } from '../lib/types'
 
@@ -177,15 +177,53 @@ export function MoneyInput({ value, onChange, onReject, onEdit, allowNegative = 
   )
 }
 
-/** Score cell. Draft while focused; clamped into 0..max on blur so a negative never hits the database. */
-export function ScoreInput({ value, max, disabled, onCommit }: {
+/** Score cell. Draft while focused; clamped into 0..max on blur or Enter so a negative never hits the database. */
+export function ScoreInput({ value, max, disabled, onCommit, onDirty }: {
   value: number | null
   max: number
   disabled?: boolean
-  onCommit: (n: number | null) => void
+  onCommit: (n: number | null) => void | Promise<boolean | void>
+  onDirty?: (dirty: boolean) => void
 }) {
+  const editRef = useRef<ScoreEdit>({ draft: null, enterAlreadySaved: false })
   const [draft, setDraft] = useState<string | null>(null)
   const shown = draft ?? (value ?? '')
+  const savedText = value == null ? '' : String(value)
+
+  const publish = (edit: ScoreEdit, typed: string, commit: number | null | undefined) => {
+    editRef.current = edit
+    setDraft(edit.draft)
+    onDirty?.(edit.draft != null && edit.draft !== savedText)
+    if (commit === undefined) return
+    const restore = () => {
+      const next = { draft: draftAfterScoreSave(typed, false), enterAlreadySaved: false }
+      editRef.current = next
+      setDraft(next.draft)
+      onDirty?.(true)
+    }
+    let pending: void | Promise<boolean | void>
+    try {
+      pending = onCommit(commit)
+    } catch (err) {
+      restore()
+      throw err
+    }
+    if (pending && typeof (pending as Promise<boolean | void>).then === 'function') {
+      void (pending as Promise<boolean | void>).then(ok => {
+        if (ok === false) restore()
+      }, err => {
+        restore()
+        return Promise.reject(err)
+      })
+    }
+  }
+
+  const commitFrom = (source: 'enter' | 'blur') => {
+    const typed = editRef.current.draft ?? ''
+    const result = commitScoreEdit(editRef.current, value, max, source)
+    publish(result.edit, typed, result.commit)
+  }
+
   return (
     <input
       className={`score ${value === max ? 'perfect' : ''}`}
@@ -196,18 +234,25 @@ export function ScoreInput({ value, max, disabled, onCommit }: {
       disabled={disabled}
       aria-label={`Score, 0 to ${max}`}
       value={shown}
-      onFocus={e => { setDraft(value == null ? '' : String(value)); e.target.select() }}
-      onChange={e => setDraft(e.target.value)}
-      onBlur={() => {
-        const raw = draft ?? ''
-        setDraft(null)
-        if (raw.trim() === '') {
-          if (value !== null) onCommit(null)
-          return
-        }
-        const next = clampScore(raw, max)
-        if (next == null) return
-        if (next !== value) onCommit(next)
+      onFocus={e => {
+        const edit = { draft: savedText, enterAlreadySaved: false }
+        editRef.current = edit
+        setDraft(edit.draft)
+        onDirty?.(false)
+        e.target.select()
+      }}
+      onChange={e => {
+        const edit = { draft: e.target.value, enterAlreadySaved: false }
+        editRef.current = edit
+        setDraft(edit.draft)
+        onDirty?.(e.target.value !== savedText)
+      }}
+      onBlur={() => commitFrom('blur')}
+      onKeyDown={e => {
+        if (e.key !== 'Enter' || e.nativeEvent.isComposing) return
+        e.preventDefault()
+        commitFrom('enter')
+        e.currentTarget.blur()
       }}
     />
   )
