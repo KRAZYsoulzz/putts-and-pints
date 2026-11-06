@@ -4,6 +4,7 @@ import { DEFAULT_SETTINGS as S } from '../src/lib/settings'
 import { bestTotal, clampScore, effectiveCut, initialTagAssignment, isOpeningTagNight, qualifiers, rank18, rankFinal, redistributeTags, suggestedCut, totals } from '../src/lib/scoring'
 import { balances, clampPaidPlaces, displayedPerfectRound, divisionResult, effectiveBar, eventLedgerPosted, eventMoney, nightBonusCost, paidPlaceCount, payoutPool, payoutsForPlaceCount, splitEvenly, suggestedPaidPlaces, suggestedPayouts } from '../src/lib/money'
 import { duplicateName, friendlyError, parseMoney, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../src/lib/validation'
+import { buyingTagAfter, checkinTagIn, freshBuyingTag, newPlayerInsert } from '../src/lib/newPlayer'
 import type { Entry } from '../src/lib/types'
 
 let n = 0
@@ -488,5 +489,29 @@ const laterNoRecordYet = divisionResult({
 })
 assert.equal(laterNoRecordYet.bonuses.find(b => b.type === 'high_score')?.each, 10, 'a later night still pays when high score is awarded')
 assert.ok(laterNoRecordYet.ledger.some(r => r.fund === 'high_score' && r.kind === 'bonus_payout'))
+
+// Tonight → add a new player: Buying a tag is off until the director turns it on,
+// and that choice is the player's in_tags flag on the same insert.
+assert.equal(freshBuyingTag(), false, 'a new player is not buying a tag')
+assert.deepEqual(newPlayerInsert('Ada Lovelace', 'W', false), {
+  name: 'Ada Lovelace', division: 'W', active: true, in_tags: false,
+})
+assert.deepEqual(newPlayerInsert('Alan Turing', 'M', true), {
+  name: 'Alan Turing', division: 'M', active: true, in_tags: true,
+})
+assert.deepEqual(Object.keys(newPlayerInsert('Ada Lovelace', 'M', true)), ['name', 'division', 'active', 'in_tags'])
+assert.equal(checkinTagIn(false, 4), null, 'opted out: a held number is not eligible tonight')
+assert.equal(checkinTagIn(true, 4), 4, 'opted in: the held tag comes in with them')
+assert.equal(checkinTagIn(true, null), null, 'opted in with no number yet can still be in tags')
+assert.equal(checkinTagIn(false, null), null)
+
+let buying = freshBuyingTag()
+buying = true
+assert.equal(buyingTagAfter(buying, 'save-failure'), true, 'a failed save keeps Buying a tag on')
+assert.equal(buyingTagAfter(false, 'save-failure'), false, 'a failed save keeps Buying a tag off')
+assert.equal(buyingTagAfter(true, 'cancel'), false)
+assert.equal(buyingTagAfter(true, 'success'), false)
+assert.equal(buyingTagAfter(true, 'open'), false, 'the next player starts off')
+assert.equal(buyingTagAfter(true, 'next-player'), false, 'clearing the name starts the next player off')
 
 console.log('All rules checks passed ✔')
