@@ -163,7 +163,7 @@ assert.equal(nightBonusCost(bonusField, S), 10)
 assert.equal(payoutPool(4, 20, S, nightBonusCost(bonusField, S)), 42, '4×$8 + $20 bar − $10 bonus')
 assert.equal(suggestedPaidPlaces(4, S), 1)
 const suggested = suggestedPayouts(42, 1)
-assert.deepEqual(suggested, [42])
+assert.deepEqual(suggested, [40], '$42 pays a $40 check; $2 is not a $5 step')
 assert.equal(payoutIssue([500], 42), 'over')
 assert.equal(payoutIssue([-1], 42), 'negative')
 assert.equal(payoutIssue([30, 12], 42), null)
@@ -172,29 +172,23 @@ assert.match(payoutRejectMessage([100], 45) ?? '', /\$100/)
 assert.match(payoutRejectMessage([100], 45) ?? '', /more than the \$45 pool/)
 assert.equal(payoutRejectMessage([-1], 45), 'Payouts can’t be negative.')
 const split = suggestedPayouts(52, 3)
-assert.deepEqual(split, [26, 17, 9], 'whole dollars, still a 3:2:1 split')
-assert.equal(split.reduce((a, b) => a + b, 0), 52)
+assert.deepEqual(split, [25, 15, 10], '$5 steps of the $50 that fits; $2 is not a place check')
+assert.equal(split.reduce((a, b) => a + b, 0), 50)
 
-// Suggested checks are whole dollars in the same declining ratio, and they add back to the pool.
+// Suggested checks are $5 steps in the same declining ratio, and they stay inside the pool.
 assert.deepEqual(suggestedPayouts(55, 1), [55])
 const twoPlaces = suggestedPayouts(55, 2)
 const threePlaces = suggestedPayouts(55, 3)
-assert.deepEqual(twoPlaces, [37, 18])
-assert.deepEqual(threePlaces, [28, 18, 9])
-assert.ok(twoPlaces.every(Number.isInteger) && threePlaces.every(Number.isInteger))
+assert.deepEqual(twoPlaces, [35, 20])
+assert.deepEqual(threePlaces, [25, 20, 10])
+assert.ok(twoPlaces.every(n => n % 5 === 0) && threePlaces.every(n => n % 5 === 0))
 assert.ok(twoPlaces[0] > twoPlaces[1])
 assert.ok(threePlaces[0] > threePlaces[1] && threePlaces[1] > threePlaces[2])
 assert.equal(twoPlaces.reduce((a, b) => a + b, 0), 55)
 assert.equal(threePlaces.reduce((a, b) => a + b, 0), 55)
 assert.notDeepEqual(threePlaces, [55, 0, 0])
-assert.deepEqual(suggestedPayouts(104, 2), [69, 35])
-assert.deepEqual(suggestedPayouts(104, 3), [52, 35, 17])
-assert.equal(suggestedPayouts(104, 2).reduce((a, b) => a + b, 0), 104)
-assert.equal(suggestedPayouts(104, 3).reduce((a, b) => a + b, 0), 104)
-// A pool that is not a whole dollar still totals exactly. The odd cents stay on first.
-const withCents = suggestedPayouts(10.4, 2)
-assert.deepEqual(withCents, [7.4, 3])
-assert.equal(withCents.reduce((a, b) => a + b, 0), 10.4)
+assert.deepEqual(suggestedPayouts(10.4, 2), [5, 5])
+assert.equal(suggestedPayouts(10.4, 2).reduce((a, b) => a + b, 0), 10)
 
 // Ledger: purse is funded by the $8 share and the bar, bonuses are funded before they are paid,
 // and place checks leave a row. Perfect 5 nets to zero instead of −$10.
@@ -682,7 +676,8 @@ const hsMan = e({ awards: ['high_score', 'perfect5'], score_18: 90, player_id: '
 const hsWoman = e({ division: 'W', awards: ['perfect5'], score_18: 70, player_id: 'w-hs', created_at: '2' })
 const openingShared = bothDivisions([hsMan], [hsWoman], { ...zero }, { ...zero }, { openingNight: true, tagPlan: 'opening', inTags: id => id.startsWith('m-hs') || id.startsWith('w-hs') })
 assert.equal(openingShared.men.bonuses.find(b => b.type === 'high_score')?.each, 0, 'first night high score still sets the bar for $0')
-assert.ok(!openingShared.men.ledger.some(r => r.fund === 'high_score' || (r.fund === 'purse' && r.note.includes('High Score'))))
+assert.ok(!openingShared.men.ledger.some(r => r.kind === 'bonus_payout' && r.fund === 'high_score'), 'opening night does not pay the high-score bonus')
+assert.ok(!openingShared.men.ledger.some(r => r.note === 'High Score funded from the payout pool'))
 assert.equal(sumMoney(awardAmounts(openingShared.men, 'perfect5').concat(awardAmounts(openingShared.women, 'perfect5'))), 10)
 assert.equal(openingShared.men.tagsOut.get(hsMan.id), 1, 'shared pots do not change opening tag assignment')
 assert.equal(nightBonusCost([hsMan], S, {
@@ -715,9 +710,9 @@ const menBonus = nightBonusCost(placeMen, S, { division: 'M', cohort: [{ divisio
 assert.equal(menBonus, 5)
 const placePool = payoutPool(4, 20, S, menBonus)
 assert.equal(placePool, 47, '4×$8 + $20 bar − $5 shared Perfect 5')
-assert.deepEqual(suggestedPayouts(placePool, 1), [47])
-assert.ok(suggestedPayouts(placePool, 2).every(n => Number.isInteger(n)))
-assert.equal(suggestedPayouts(placePool, 2).reduce((a, b) => a + b, 0), 47)
+assert.deepEqual(suggestedPayouts(placePool, 1), [45])
+assert.ok(suggestedPayouts(placePool, 2).every(n => n % 5 === 0))
+assert.equal(suggestedPayouts(placePool, 2).reduce((a, b) => a + b, 0), 45)
 const placedNight = bothDivisions(placeMen, [placeWoman], { ...zero }, { ...zero }, { barMatch: 20, payoutPlaces: [47] })
 assert.equal(fundNet(placedNight.men, 'purse'), 0, 'men’s purse: 32 + 20 − 5 − 47')
 
@@ -742,5 +737,126 @@ assert.equal(previewCohort.length, 1)
 assert.equal(previewCohort[0].division, 'W')
 assert.deepEqual(previewCohort[0].entries.map(entry => entry.player_id), ['preview-w'])
 assert.equal(previewCohort[0].balances.perfect5, 5, 'tonight’s posted Perfect 5 is not carryover for the preview or the next finalize')
+
+// Bar split is whole dollars and still adds up to the capped bar. 30/40 of $150 is $112.50 today.
+const cappedSplit = eventMoney({ M: 30, W: 10 }, S)
+assert.equal(cappedSplit.barMatch, 150)
+assert.equal(cappedSplit.barSplit.M, 113)
+assert.equal(cappedSplit.barSplit.W, 37)
+assert.equal(cappedSplit.barSplit.M + cappedSplit.barSplit.W, 150)
+assert.ok(Number.isInteger(cappedSplit.barSplit.M) && Number.isInteger(cappedSplit.barSplit.W))
+const oddCap = eventMoney({ M: 31, W: 9 }, S)
+assert.equal(oddCap.barSplit.M, 116)
+assert.equal(oddCap.barSplit.W, 34)
+assert.equal(oddCap.barSplit.M + oddCap.barSplit.W, oddCap.barMatch)
+const noWomen = eventMoney({ M: 8, W: 0 }, S)
+assert.equal(noWomen.barSplit.W, 0)
+assert.equal(noWomen.barSplit.M, noWomen.barMatch)
+assert.ok(Number.isInteger(noWomen.barSplit.M))
+const noMen = eventMoney({ M: 0, W: 4 }, S)
+assert.equal(noMen.barSplit.M, 0)
+assert.equal(noMen.barSplit.W, noMen.barMatch)
+
+// Suggested place checks are $5 steps. What is not divisible by $5 is not forced onto first place.
+assert.deepEqual(suggestedPayouts(65, 3), [35, 20, 10], '5-player women’s pool, custom 3 places')
+assert.equal(suggestedPayouts(65, 3).reduce((a, b) => a + b, 0), 65)
+assert.deepEqual(payoutsForPlaceCount(65, 3), suggestedPayouts(65, 3), 'custom count and Use suggested share one split')
+assert.deepEqual(suggestedPayouts(104, 2), [65, 35])
+assert.deepEqual(suggestedPayouts(104, 3), [50, 35, 15])
+assert.equal(suggestedPayouts(104, 2).reduce((a, b) => a + b, 0), 100)
+assert.equal(104 - suggestedPayouts(104, 2).reduce((a, b) => a + b, 0), 4)
+assert.deepEqual(suggestedPayouts(78, 3), [40, 25, 10])
+assert.deepEqual(suggestedPayouts(117, 2), [75, 40])
+assert.deepEqual(suggestedPayouts(4, 1), [0], 'a pool under $5 pays no place check')
+assert.deepEqual(suggestedPayouts(4, 2), [0, 0])
+assert.ok(suggestedPayouts(117.5, 3).every(n => n % 5 === 0))
+assert.ok(suggestedPayouts(117.5, 3).reduce((a, b) => a + b, 0) <= 117.5)
+
+// Ties share a $5 place check in whole dollars. The earlier player gets the leftover dollar.
+const tieA = e({ division: 'W', score_18: 80, created_at: '1', player_id: 'tie-a' })
+const tieB = e({ division: 'W', score_18: 80, created_at: '2', player_id: 'tie-b' })
+const tieTwo = divisionResult({
+  division: 'W', entries: [tieA, tieB], payoutPlaces: [35], settings: S,
+  balances: { ...zero }, barMatch: 0, priorRecord: 50, openingNight: false,
+})
+assert.equal(tieTwo.payouts.get(tieA.id), 18)
+assert.equal(tieTwo.payouts.get(tieB.id), 17)
+assert.equal([...(tieTwo.payouts.values())].reduce((a, b) => a + b, 0), 35)
+const tieC = e({ division: 'W', score_18: 80, created_at: '3', player_id: 'tie-c' })
+const tieThree = divisionResult({
+  division: 'W', entries: [tieA, tieB, tieC], payoutPlaces: [35], settings: S,
+  balances: { ...zero }, barMatch: 0, priorRecord: 50, openingNight: false,
+})
+assert.deepEqual([tieA, tieB, tieC].map(ent => tieThree.payouts.get(ent.id)), [12, 12, 11])
+assert.ok([tieA, tieB, tieC].every(ent => Number.isInteger(tieThree.payouts.get(ent.id) ?? -1)))
+
+// The non-$5 remainder is one High Score deposit for that division. Replacing the night posts it once.
+const sixWomen = [90, 80, 70, 60, 50, 40].map((score, i) => e({
+  division: 'W', score_18: score, created_at: String(i), player_id: `w-rem-${i}`,
+}))
+const womenSuggested = suggestedPayouts(78, 3)
+const womenNight = divisionResult({
+  division: 'W', entries: sixWomen, payoutPlaces: womenSuggested, settings: S,
+  balances: { ...zero }, barMatch: 30, priorRecord: 40, openingNight: false,
+})
+const hsDeposits = (rows: { fund: string; kind: string; amount: number; note: string | null }[]) =>
+  rows.filter(r => r.fund === 'high_score' && r.kind === 'transfer' && r.amount > 0 && (r.note ?? '').includes('remainder'))
+assert.equal(womenNight.payouts.get(sixWomen[0].id), womenSuggested[0], 'a typed or saved place amount is what is paid')
+assert.deepEqual(hsDeposits(womenNight.ledger).map(r => r.amount), [3])
+assert.ok(womenNight.ledger.some(r => r.fund === 'purse' && r.kind === 'transfer' && r.amount === -3 && (r.note ?? '').includes('remainder')))
+const womenAgain = divisionResult({
+  division: 'W', entries: sixWomen, payoutPlaces: womenSuggested, settings: S,
+  balances: { ...zero, high_score: 10 }, barMatch: 30, priorRecord: 40, openingNight: false,
+})
+assert.deepEqual(hsDeposits(womenAgain.ledger).map(r => r.amount), [3], 'a second finalize replaces the night; it does not add another $3')
+const replacedHs = balances([
+  ...womenAgain.ledger.map((r, i) => ({ ...r, id: `n${i}`, season_id: 's', event_id: 'night', created_at: '', note: r.note })),
+  { id: 'prior', season_id: 's', event_id: null, player_id: null, division: 'W' as const, fund: 'high_score' as const, kind: 'carryover' as const, amount: 10, note: null, created_at: '' },
+], 'W')
+assert.equal(replacedHs.high_score, 13, 'prior $10 plus one $3 deposit')
+
+// Opening night still does not pay the High Score bonus. The place remainder is still deposited.
+const opener = e({ division: 'W', awards: ['high_score'], score_18: 88, player_id: 'open-hs', created_at: '1' })
+const openingRemainder = divisionResult({
+  division: 'W', entries: [opener], payoutPlaces: [5], settings: S,
+  balances: { ...zero }, barMatch: 0, priorRecord: null, openingNight: true,
+})
+assert.equal(openingRemainder.newRecord, 88)
+assert.equal(openingRemainder.bonuses.find(b => b.type === 'high_score')?.each, 0)
+assert.ok(!openingRemainder.ledger.some(r => r.kind === 'bonus_payout' && r.fund === 'high_score'))
+assert.deepEqual(hsDeposits(openingRemainder.ledger).map(r => r.amount), [3], '8 − $5 place check')
+
+// A later High Score win still pays $10. The remainder of the pool after that bonus stays in the pot.
+const laterField = [99, 80, 70, 60].map((score, i) => e({
+  division: 'M', awards: i === 0 ? ['high_score'] : [], score_18: score, player_id: `later-hs-${i}`, created_at: String(i),
+}))
+const laterRemainder = divisionResult({
+  division: 'M', entries: laterField, payoutPlaces: [20], settings: S,
+  balances: { ...zero }, barMatch: 0, priorRecord: 80, openingNight: false,
+})
+assert.equal(laterRemainder.bonuses.find(b => b.type === 'high_score')?.each, 10)
+assert.equal(laterRemainder.payouts.get(laterField[0].id), 20)
+assert.deepEqual(hsDeposits(laterRemainder.ledger).map(r => r.amount), [2], '4×$8 − $10 bonus = $22, so $2 is left after a $20 check')
+assert.equal(
+  laterRemainder.ledger.filter(r => r.fund === 'high_score').reduce((a, r) => a + r.amount, 0),
+  2,
+  '$10 in and $10 out, plus the $2 deposit',
+)
+
+// A hand-typed place list is paid as typed when it fits in the $5 budget. It is not snapped to the suggestion.
+const handed = divisionResult({
+  division: 'W', entries: sixWomen, payoutPlaces: [40, 25], settings: S,
+  balances: { ...zero }, barMatch: 30, priorRecord: 40, openingNight: false,
+})
+assert.equal(handed.payouts.get(sixWomen[0].id), 40)
+assert.equal(handed.payouts.get(sixWomen[1].id), 25)
+assert.notDeepEqual([40, 25], suggestedPayouts(78, 2))
+assert.deepEqual(hsDeposits(handed.ledger).map(r => r.amount), [3])
+
+// The High Score deposit is not a bonus, so a finished night does not subtract it from the pool twice.
+assert.equal(postedBonusCost([
+  { event_id: 'night', division: 'W', fund: 'purse', kind: 'transfer', amount: -5, note: 'Perfect 5 funded from the payout pool' },
+  { event_id: 'night', division: 'W', fund: 'purse', kind: 'transfer', amount: -3, note: 'Place payout remainder to the High Score pot' },
+], 'night', 'W'), 5)
 
 console.log('All rules checks passed ✔')
