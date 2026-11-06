@@ -2,8 +2,6 @@ import { cents, distribute, initialTagAssignment, rankFinal, redistributeTags, t
 import { AWARD_LABEL, AWARDS } from './types'
 import type { Award, Division, Entry, Fund, LedgerKind, LedgerRow, PPEvent, Settings } from './types'
 
-const NIGHT_BONUSES = ['perfect5', 'perfect4', 'high_score'] as const
-
 // ---------------------------------------------------------------------------
 // Pot balances
 // ---------------------------------------------------------------------------
@@ -124,23 +122,134 @@ export function splitEvenly(total: number, n: number): number[] {
   return Array.from({ length: n }, (_, i) => (base + (i < extra ? 1 : 0)) / 100)
 }
 
+/** One division's entries and the pot balances from before this event. */
+export interface DivisionNight {
+  division: Division
+  entries: Entry[]
+  balances: Balances
+}
+
+type SharedAward = 'perfect5' | 'perfect4'
+
+function eventNights(division: Division, entries: Entry[], potBalances: Balances, cohort?: DivisionNight[]): DivisionNight[] {
+  return [
+    { division, entries, balances: potBalances },
+    ...(cohort ?? []).filter(night => night.division !== division),
+  ]
+}
+
+function byCheckIn(a: Entry, b: Entry): number {
+  const ta = a.created_at ?? ''
+  const tb = b.created_at ?? ''
+  if (ta !== tb) return ta < tb ? -1 : 1
+  if (a.id !== b.id) return a.id < b.id ? -1 : 1
+  return 0
+}
+
+interface SharedShare {
+  entry: Entry
+  /** Division whose list this entry came from. That purse pays this winner's flat cents. */
+  division: Division
+  amount: number
+}
+
+interface SharedAwardPlan {
+  winners: SharedShare[]
+  shares: SharedShare[]
+  purseCharge: Record<Division, number>
+}
+
 /**
- * What the awarded night bonuses cost the purse: the flat amount, once per award with any winner.
- * High Score is free on the season's first event (`payHighScore: false`); it only sets the record.
+ * One Perfect 4 or Perfect 5 pot for the event.
+ * Available money is both divisions' carryover plus the flat bonus once.
+ * Player shares are one even split of that total, so they add up to it.
+ * Purse charges are a separate even split of only the flat bonus: carryover
+ * is already in the pot, and a division with no winner pays none of the $10.
+ * Check-in order (then id) decides who receives a leftover cent when both
+ * divisions are in the event. A single division keeps its list order.
  */
-export function nightBonusCost(entries: Entry[], s: Settings, opts?: { payHighScore?: boolean }): number {
+function sharedAwardPlan(nights: DivisionNight[], type: SharedAward, s: Settings): SharedAwardPlan {
+  const groups = nights.map(night => night.entries
+    .filter(entry => entry.awards?.includes(type))
+    .map(entry => ({ entry, division: night.division, amount: 0 })))
+  const tagged = nights.length < 2 ? (groups[0] ?? []) : groups.flat().sort((a, b) => byCheckIn(a.entry, b.entry))
+  const seen = new Set<string>()
+  const winners: SharedShare[] = []
+  for (const item of tagged) {
+    if (seen.has(item.entry.id)) continue
+    seen.add(item.entry.id)
+    winners.push(item)
+  }
+  const carry = cents(nights.reduce((sum, night) => sum + (night.balances[type] || 0), 0))
+  const flat = winners.length ? (type === 'perfect5' ? s.bonus.perfect5 : s.bonus.perfect4) : 0
+  const amounts = splitEvenly(winners.length ? cents(carry + flat) : 0, winners.length)
+  const flatParts = splitEvenly(flat, winners.length)
+  const purseCharge: Record<Division, number> = { M: 0, W: 0 }
+  winners.forEach((winner, index) => {
+    winner.amount = amounts[index]
+    purseCharge[winner.division] = cents(purseCharge[winner.division] + flatParts[index])
+  })
+  return { winners, shares: winners, purseCharge }
+}
+
+/** Combined carryover plus the one flat bonus. This is the pot a winner splits, before anyone is marked. */
+export function displayedSharedPot(type: SharedAward, nights: DivisionNight[], s: Settings): number {
+  const carry = cents(nights.reduce((sum, night) => sum + (night.balances[type] || 0), 0))
+  const flat = type === 'perfect5' ? s.bonus.perfect5 : s.bonus.perfect4
+  return cents(carry + flat)
+}
+
+/** The other division's entries and its pot balances from before this event. */
+export function otherDivisionNights(division: Division, eventId: string, entries: Entry[], ledger: LedgerRow[]): DivisionNight[] {
+  return (['M', 'W'] as Division[])
+    .filter(d => d !== division)
+    .map(d => ({
+      division: d,
+      entries: entries.filter(entry => entry.event_id === eventId && entry.division === d),
+      balances: balances(ledger.filter(row => row.event_id !== eventId), d),
+    }))
+}
+
+/**
+ * What the awarded night bonuses cost this division's purse.
+ * Perfect 5 and Perfect 4 are one flat bonus each for the whole event. Pass `cohort`
+ * (the other division) so that $10 is split across every winner and this purse pays
+ * only its players' cents. Without a cohort, this list is the whole event.
+ * High Score stays on this division, and is free on the season's first event
+ * (`payHighScore: false`); it only sets the record.
+ */
+export function nightBonusCost(entries: Entry[], s: Settings, opts?: {
+  payHighScore?: boolean
+  division?: Division
+  cohort?: DivisionNight[]
+}): number {
   const payHighScore = opts?.payHighScore !== false
-  const amounts: Record<(typeof NIGHT_BONUSES)[number], number> = {
-    perfect5: s.bonus.perfect5,
-    perfect4: s.bonus.perfect4,
-    high_score: payHighScore ? s.bonus.highScore : 0,
-  }
   let total = 0
-  for (const type of NIGHT_BONUSES) {
-    if (!entries.some(e => e.awards?.includes(type))) continue
-    total += amounts[type]
+  if (opts?.cohort && opts.division) {
+    const nights = eventNights(opts.division, entries, EMPTY, opts.cohort)
+    total += sharedAwardPlan(nights, 'perfect5', s).purseCharge[opts.division]
+    total += sharedAwardPlan(nights, 'perfect4', s).purseCharge[opts.division]
+  } else {
+    if (entries.some(e => e.awards?.includes('perfect5'))) total += s.bonus.perfect5
+    if (entries.some(e => e.awards?.includes('perfect4'))) total += s.bonus.perfect4
   }
+  if (payHighScore && entries.some(e => e.awards?.includes('high_score'))) total += s.bonus.highScore
   return cents(total)
+}
+
+/**
+ * Bonus cost already posted for one division. A finished night shows this so the
+ * pool stays on the ledger instead of a rule that changed after finalize.
+ */
+export function postedBonusCost(
+  rows: { event_id: string | null; division: Division | null; fund: string; kind: string; amount: number }[],
+  eventId: string,
+  division: Division,
+): number {
+  const spent = rows
+    .filter(r => r.event_id === eventId && r.division === division && r.fund === 'purse' && r.kind === 'transfer')
+    .reduce((sum, r) => sum + Number(r.amount), 0)
+  return cents(0 - spent)
 }
 
 /**
@@ -171,8 +280,10 @@ export interface BonusWin {
   entryIds: string[]
   /** The biggest share (shares differ by a cent when the pot does not divide evenly). */
   each: number
-  /** One share per winner, in entryIds order. Adds up to the whole pot. */
+  /** One share per winner, in entryIds order. Adds up to this division's part of the pot. */
   amounts: number[]
+  /** Winners in both divisions, when this list is only one division's share of a shared pot. */
+  splitAmong?: number
 }
 
 export interface DivisionResult {
@@ -197,6 +308,11 @@ interface ResultInput {
   barMatch?: number
   /** best 27-hole total from earlier completed events this season (null = first event) */
   priorRecord: number | null
+  /**
+   * The other division tonight. Perfect 4 and Perfect 5 then use one combined pot.
+   * Omit when this division is the whole event.
+   */
+  cohort?: DivisionNight[]
   /**
    * Season's first event: an awarded High Score sets the record and pays nothing.
    * Later nights pay the flat bonus when it is awarded.
@@ -233,14 +349,14 @@ export function divisionResult(i: ResultInput): DivisionResult {
   row('backup', 'overflow', contribution - toPot, 'Over the cap')
   const potAfterEntries = cents(i.balances.perfect_round + toPot)
 
-  // Bonuses: awarded by hand (right-click). Perfect 5, Perfect 4 and Perfect Round are shared pots:
-  // everyone who hits one splits the whole pot evenly. Perfect 5 / Perfect 4 pots are the
-  // pot balance plus the flat night bonus, which is funded from the purse when someone wins.
-  // High Score stays a flat bonus (split on ties), except the season's first event, which
-  // only sets the record.
+  // Bonuses: awarded by hand (right-click). Perfect Round is this division's pot.
+  // Perfect 5 and Perfect 4 are one pot each for the event: both divisions' carryover
+  // plus one flat bonus, split across everyone who hit it. High Score stays a flat
+  // per-division bonus, except the season's first event, which only sets the record.
   // Fund the pot first so the payout does not drive it negative.
   const bonuses: BonusWin[] = []
   const openingNight = i.openingNight ?? i.priorRecord == null
+  const nights = eventNights(division, entries, i.balances, i.cohort)
   const amounts: Record<Award, number> = {
     perfect_round: potAfterEntries,
     perfect5: s.bonus.perfect5,
@@ -248,10 +364,39 @@ export function divisionResult(i: ResultInput): DivisionResult {
     high_score: openingNight ? 0 : s.bonus.highScore,
   }
   for (const type of AWARDS) {
+    if (type === 'perfect5' || type === 'perfect4') {
+      const plan = sharedAwardPlan(nights, type, s)
+      if (!plan.winners.length) continue
+      const mine = plan.shares.filter(share => share.division === division)
+      if (mine.length) {
+        const shares = mine.map(share => share.amount)
+        bonuses.push({
+          type,
+          entryIds: mine.map(share => share.entry.id),
+          each: shares[0],
+          amounts: shares,
+          ...(plan.winners.length !== mine.length ? { splitAmong: plan.winners.length } : {}),
+        })
+      }
+      // The purse pays only this division's cents of the flat bonus. Carryover is already
+      // in the pot funds. The pot transfer makes this division's balance end at zero
+      // once anyone in the event has won, including when its carryover is paid to the
+      // other division.
+      const flatCharge = plan.purseCharge[division]
+      const payoutSum = cents(mine.reduce((sum, share) => sum + share.amount, 0))
+      const potTransfer = cents(payoutSum - i.balances[type])
+      if (flatCharge) row('purse', 'transfer', -flatCharge, `${AWARD_LABEL[type]} funded from the payout pool`)
+      if (potTransfer) {
+        const sameAsPurse = cents(potTransfer - flatCharge) === 0
+        row(type, 'transfer', potTransfer, sameAsPurse ? 'Funded from the payout pool' : `Shared ${AWARD_LABEL[type]} pot`)
+      }
+      for (const share of mine) row(type, 'bonus_payout', -share.amount, AWARD_LABEL[type], share.entry.player_id)
+      continue
+    }
     const winners = entries.filter(e => e.awards?.includes(type))
     if (!winners.length) continue
     const flat = type === 'perfect_round' ? 0 : amounts[type]
-    const pot = type === 'perfect5' || type === 'perfect4' ? cents(i.balances[type] + flat) : amounts[type]
+    const pot = amounts[type]
     const shares = splitEvenly(pot, winners.length)
     bonuses.push({ type, entryIds: winners.map(w => w.id), each: shares[0], amounts: shares })
     if (type !== 'perfect_round') {

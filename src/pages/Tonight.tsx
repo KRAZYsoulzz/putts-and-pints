@@ -26,7 +26,7 @@ import {
   type PPEvent,
 } from '../lib/types'
 import { byEntryOrder, cents, effectiveCut, isOpeningTagNight, MAX_18, MAX_FINAL, qualifiers, suggestedCut, totals, type Ranked } from '../lib/scoring'
-import { balances, clampPaidPlaces, displayedPerfectRound, divisionResult, eventLedgerPosted, effectiveBar, eventMoney, nightBonusCost, paidPlaceCount, payoutPool, payoutsForPlaceCount, suggestedPaidPlaces } from '../lib/money'
+import { balances, clampPaidPlaces, displayedPerfectRound, displayedSharedPot, divisionResult, eventLedgerPosted, effectiveBar, eventMoney, nightBonusCost, otherDivisionNights, paidPlaceCount, payoutPool, payoutsForPlaceCount, postedBonusCost, suggestedPaidPlaces } from '../lib/money'
 import { duplicateName, friendlyError, normalizeName, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../lib/validation'
 import { buyingTagAfter, checkinTagIn, freshBuyingTag, newPlayerInsert } from '../lib/newPlayer'
 import { Dialog, DivisionSeg, Menu, MoneyInput, PageHead, ScoreInput, Stat, Toggle, money, ordinal } from '../components/ui'
@@ -102,10 +102,18 @@ export default function Tonight() {
   const barAmount = event ? barOf(event, division) : 0
   // First event of the season sets the high-score record and does not pay it.
   const openingNight = Boolean(event && isOpeningTagNight(events, event.id))
-  const bonusCost = useMemo(
-    () => nightBonusCost(divEntries, settings, { payHighScore: !openingNight }),
-    [divEntries, settings, openingNight],
-  )
+  const liveBonusCost = useMemo(() => {
+    if (!event) return 0
+    return nightBonusCost(divEntries, settings, {
+      payHighScore: !openingNight,
+      division,
+      cohort: otherDivisionNights(division, event.id, entries, ledger),
+    })
+  }, [divEntries, settings, openingNight, division, event, entries, ledger])
+  // A finished night keeps the bonus that was posted. Reopening previews the shared pot.
+  const bonusCost = event?.status === 'complete'
+    ? postedBonusCost(ledger, event.id, division)
+    : liveBonusCost
   const pool = useMemo(
     () => payoutPool(counts[division], barAmount, settings, bonusCost),
     [counts, division, barAmount, settings, bonusCost],
@@ -131,9 +139,10 @@ export default function Tonight() {
     barMatch: barAmount,
     priorRecord: records[division],
     openingNight,
+    cohort: event ? otherDivisionNights(division, event.id, entries, ledger) : [],
     tagPlan: event && isOpeningTagNight(events, event.id) ? 'opening' : 'redistribute',
     inTags: (playerId) => playerById.get(playerId)?.in_tags === true,
-  }), [division, divEntries, payoutsList, settings, priorBalances, barAmount, records, event, events, playerById, openingNight])
+  }), [division, divEntries, payoutsList, settings, priorBalances, barAmount, records, event, events, entries, ledger, playerById, openingNight])
 
   const rankedById = useMemo(() => new Map(result.ranked.map(r => [r.entry.id, r])), [result])
 
@@ -153,13 +162,17 @@ export default function Tonight() {
       const list = d === 'M' ? event.payouts_men : event.payouts_women
       if (list && list.length > 0) continue
       const group = entries.filter(e => e.event_id === event.id && e.division === d)
-      const net = payoutPool(group.length, barOf(event, d), settings, nightBonusCost(group, settings, { payHighScore: !isOpeningTagNight(events, event.id) }))
+      const net = payoutPool(group.length, barOf(event, d), settings, nightBonusCost(group, settings, {
+        payHighScore: !isOpeningTagNight(events, event.id),
+        division: d,
+        cohort: otherDivisionNights(d, event.id, entries, ledger),
+      }))
       const next = payoutsForPlaceCount(net, suggestedPaidPlaces(group.length, settings))
       if (d === 'M') patch.payouts_men = next
       else patch.payouts_women = next
     }
     if (patch.payouts_men || patch.payouts_women) void patchEvent(event.id, patch)
-  }, [event, entries, events, isAdmin, settings, patchEvent])
+  }, [event, entries, events, ledger, isAdmin, settings, patchEvent])
 
   // A women's cut saved as 0 (empty field at the time, or half of one player
   // rounded down) stays 0 after players arrive, so nobody makes the final.
@@ -497,7 +510,11 @@ export default function Tonight() {
     const group = entries.filter(e => e.event_id === ev.id && e.division === d)
     const payHighScore = !isOpeningTagNight(events, ev.id)
     return payoutsForPlaceCount(
-      payoutPool(group.length, barOf(ev, d), settings, nightBonusCost(group, settings, { payHighScore })),
+      payoutPool(group.length, barOf(ev, d), settings, nightBonusCost(group, settings, {
+        payHighScore,
+        division: d,
+        cohort: otherDivisionNights(d, ev.id, entries, ledger),
+      })),
       suggestedPaidPlaces(group.length, settings),
     )
   }
@@ -506,7 +523,11 @@ export default function Tonight() {
     for (const d of DIVS) {
       const group = entries.filter(e => e.event_id === event.id && e.division === d)
       const list = divisionPayouts(event, d)
-      const net = payoutPool(group.length, barOf(event, d), settings, nightBonusCost(group, settings, { payHighScore: !openingNight }))
+      const net = payoutPool(group.length, barOf(event, d), settings, nightBonusCost(group, settings, {
+        payHighScore: !openingNight,
+        division: d,
+        cohort: otherDivisionNights(d, event.id, entries, ledger),
+      }))
       if (payoutIssue(list, net)) {
         reportError(`${d === 'M' ? "Men's" : "Women's"} payouts are over the pool or include a negative. Fix them before finalizing.`)
         return
@@ -537,6 +558,7 @@ export default function Tonight() {
           barMatch: barOf(event, d),
           priorRecord: records[d],
           openingNight,
+          cohort: otherDivisionNights(d, event.id, entries, ledger),
           tagPlan: isOpeningTagNight(events, event.id) ? 'opening' : 'redistribute',
           inTags,
         })
@@ -607,6 +629,12 @@ export default function Tonight() {
     .filter(r => r.event_id === event.id && r.fund === fund && r.kind === 'bonus_payout' && r.division === division)
     .reduce((sum, r) => sum + Math.abs(Number(r.amount)), 0))
   const recordedPerfectRound = recordedPayout('perfect_round')
+  const sharedPotNights = [
+    { division, entries: divEntries, balances: priorBalances },
+    ...otherDivisionNights(division, event.id, entries, ledger),
+  ]
+  const perfect5Pot = displayedSharedPot('perfect5', sharedPotNights, settings)
+  const perfect4Pot = displayedSharedPot('perfect4', sharedPotNights, settings)
 
   const viewingOther = viewEventId != null && liveEvent != null && viewEventId !== liveEvent.id
   const eventLabel = event.name?.trim() || 'Tonight’s Tournament'
@@ -990,18 +1018,21 @@ export default function Tonight() {
                   <p className="muted" style={{ fontSize: 12 }}>No bonus awards assigned tonight.</p>
                 ) : result.bonuses.map(b => {
                   // A posted night shows what the ledger actually paid, not today's pot.
+                  // Reopening previews the next finalize. Perfect Round stays on the posted pot.
                   const recorded = recordedPayout(b.type)
+                  const showRecorded = event.status === 'complete' && nightPosted && recorded > 0
                   const each = b.type === 'perfect_round'
                     ? nightPosted
                       ? cents((recordedPerfectRound || curBalances.perfect_round) / Math.max(1, b.entryIds.length))
                       : b.each
-                    : nightPosted && recorded > 0
+                    : showRecorded
                       ? cents(recorded / Math.max(1, b.entryIds.length))
                       : b.each
+                  const splitCount = b.splitAmong ?? b.entryIds.length
                   const setsBar = b.type === 'high_score' && openingNight && !(nightPosted && recorded > 0)
                   const detail = setsBar
                     ? `Sets the bar${b.entryIds.length > 1 ? ` (${b.entryIds.length} tied)` : ''}`
-                    : `${money(each)}${b.type === 'perfect_round' || b.type === 'perfect5' || b.type === 'perfect4' ? ' from the pot' : ''}${b.entryIds.length > 1 ? ` (${b.entryIds.length} split)` : ''}`
+                    : `${money(each)}${b.type === 'perfect_round' || b.type === 'perfect5' || b.type === 'perfect4' ? ' from the pot' : ''}${splitCount > 1 ? ` (${splitCount} split)` : ''}`
                   return (
                   <div key={b.type} className="kv">
                     <dt>{AWARD_LABEL[b.type]}</dt>
@@ -1035,8 +1066,8 @@ export default function Tonight() {
                 <span className="hint">
                   {a === 'perfect_round' ? money(perfectRoundShown)
                     : a === 'high_score' ? (openingNight ? 'Sets the bar' : money(settings.bonus.highScore))
-                    : a === 'perfect5' ? money(cents(priorBalances.perfect5 + settings.bonus.perfect5))
-                    : money(cents(priorBalances.perfect4 + settings.bonus.perfect4))}
+                    : a === 'perfect5' ? money(perfect5Pot)
+                    : money(perfect4Pot)}
                 </span>
               </button>
             )

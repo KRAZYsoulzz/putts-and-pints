@@ -17,8 +17,8 @@ Built with **React**, **TypeScript**, **Vite**, **Supabase**, and **VitePWA**.
 - **Scoring:** scorers enter two totals per player, the 18-hole total (max 100) and, for finalists, the Final 9 total (max 50). Per-basket scores are not tracked, so Perfect 5 / Perfect 4 / Perfect Round are awarded by hand. Making all 10 Basket 1 discs is a **Perfect 5**; all 8 Basket 2 discs is a **Perfect 4**.
 - **The Cut & Final 9:** Top half of the field qualifies for the Final 9. Final 9 points are added to 18-hole totals (Max: 150 pts).
 - **Bonuses:**
-  - Perfect 5: shared pot (carryover + $10 added when someone wins), split evenly among everyone who hits it
-  - Perfect 4: shared pot (carryover + $10 added when someone wins), split evenly among everyone who hits it
+  - Perfect 5: one pot for both divisions (men's and women's carryover combined, plus $10 once when someone wins), split evenly among everyone who hits it
+  - Perfect 4: one pot for both divisions (men's and women's carryover combined, plus $10 once when someone wins), split evenly among everyone who hits it
   - Division High Score: $10 (must beat previous record; split on ties)
   - Perfect Round Pot: shared pot, split evenly among everyone who hits it.
   - Bonuses awarded manually by tournament director via right-click context menu.
