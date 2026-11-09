@@ -433,6 +433,119 @@ function makeEntry(p: Partial<Entry> = {}): Entry {
 }
 
 // ---------------------------------------------------------------------------
+// 7. Public leaderboard with 27 men (13 finalists) and 7 women (3 finalists)
+//    side by side, keeping all columns and cut lines, with finalists sorted
+//    by Night Total desc and non-finalists by 18 Total desc.
+// ---------------------------------------------------------------------------
+{
+  const men27: Entry[] = [
+    makeEntry({ id: 'm-top-a', division: 'M', score_front: 22, score_back: 21, score_18: 43, made_final: true, score_final: 22, created_at: '2026-11-08T19:01:00.000Z' }),
+    makeEntry({ id: 'm-top-b', division: 'M', score_front: 21, score_back: 21, score_18: 42, made_final: true, score_final: 23, created_at: '2026-11-08T19:02:00.000Z' }),
+    makeEntry({ id: 'm-fin-60', division: 'M', score_front: 21, score_back: 20, score_18: 41, made_final: true, score_final: 19, created_at: '2026-11-08T19:03:00.000Z' }),
+    makeEntry({ id: 'm-fin-56', division: 'M', score_front: 20, score_back: 20, score_18: 40, made_final: true, score_final: 16, created_at: '2026-11-08T19:04:00.000Z' }),
+    makeEntry({ id: 'm-fin-55', division: 'M', score_front: 20, score_back: 19, score_18: 39, made_final: true, score_final: 16, created_at: '2026-11-08T19:05:00.000Z' }),
+    makeEntry({ id: 'm-fin-54', division: 'M', score_front: 19, score_back: 19, score_18: 38, made_final: true, score_final: 16, created_at: '2026-11-08T19:06:00.000Z' }),
+    makeEntry({ id: 'm-fin-53', division: 'M', score_front: 19, score_back: 18, score_18: 37, made_final: true, score_final: 16, created_at: '2026-11-08T19:07:00.000Z' }),
+    makeEntry({ id: 'm-fin-52', division: 'M', score_front: 18, score_back: 18, score_18: 36, made_final: true, score_final: 16, created_at: '2026-11-08T19:08:00.000Z' }),
+    makeEntry({ id: 'm-fin-51', division: 'M', score_front: 18, score_back: 18, score_18: 36, made_final: true, score_final: 15, created_at: '2026-11-08T19:09:00.000Z' }),
+    makeEntry({ id: 'm-fin-50', division: 'M', score_front: 18, score_back: 17, score_18: 35, made_final: true, score_final: 15, created_at: '2026-11-08T19:10:00.000Z' }),
+    makeEntry({ id: 'm-fin-48', division: 'M', score_front: 18, score_back: 17, score_18: 35, made_final: true, score_final: 13, created_at: '2026-11-08T19:11:00.000Z' }),
+    makeEntry({ id: 'j-ferguson', division: 'M', score_front: 17, score_back: 17, score_18: 34, made_final: true, score_final: 24, created_at: '2026-11-08T19:12:00.000Z' }),
+    makeEntry({ id: 'dirk-tailford', division: 'M', score_front: 17, score_back: 16, score_18: 33, made_final: true, score_final: 24, created_at: '2026-11-08T19:13:00.000Z' }),
+    ...Array.from({ length: 14 }, (_, idx) => {
+      const t18 = 19 + idx
+      const front = Math.ceil(t18 / 2)
+      const back = Math.floor(t18 / 2)
+      return makeEntry({
+        id: `m-cut-${t18}`,
+        division: 'M',
+        score_front: front,
+        score_back: back,
+        score_18: t18,
+        made_final: false,
+        created_at: `2026-11-08T19:${String(14 + idx).padStart(2, '0')}:00.000Z`,
+      })
+    }),
+  ]
+
+  const women7: Entry[] = [
+    makeEntry({ id: 'w-fin-3', division: 'W', score_front: 16, score_back: 16, score_18: 32, made_final: true, score_final: 20, created_at: '2026-11-08T19:30:00.000Z' }),
+    makeEntry({ id: 'w-fin-1', division: 'W', score_front: 18, score_back: 18, score_18: 36, made_final: true, score_final: 19, created_at: '2026-11-08T19:31:00.000Z' }),
+    makeEntry({ id: 'w-fin-2', division: 'W', score_front: 17, score_back: 17, score_18: 34, made_final: true, score_final: 20, created_at: '2026-11-08T19:32:00.000Z' }),
+    makeEntry({ id: 'w-cut-4', division: 'W', score_front: 12, score_back: 12, score_18: 24, made_final: false, created_at: '2026-11-08T19:33:00.000Z' }),
+    makeEntry({ id: 'w-cut-1', division: 'W', score_front: 15, score_back: 15, score_18: 30, made_final: false, created_at: '2026-11-08T19:34:00.000Z' }),
+    makeEntry({ id: 'w-cut-3', division: 'W', score_front: 13, score_back: 13, score_18: 26, made_final: false, created_at: '2026-11-08T19:35:00.000Z' }),
+    makeEntry({ id: 'w-cut-2', division: 'W', score_front: 14, score_back: 14, score_18: 28, made_final: false, created_at: '2026-11-08T19:36:00.000Z' }),
+  ]
+
+  const mBoard = tonightBoard(men27, DEFAULT_SETTINGS, 'final9', 13)
+  const wBoard = tonightBoard(women7, DEFAULT_SETTINGS, 'final9', 3)
+
+  const html = renderToStaticMarkup(
+    <div className="leaderboard-grid">
+      {[
+        { d: 'M' as const, title: "Men's Division", board: mBoard, count: men27.length },
+        { d: 'W' as const, title: "Women's Division", board: wBoard, count: women7.length },
+      ].map(({ d, title, board, count }) => (
+        <div key={d} className="stack leaderboard-division" data-division={d}>
+          <div className="row">
+            <h3 className="display">{title}</h3>
+            <span className="muted">{count} players</span>
+          </div>
+          <div className="panel">
+            <div className="table-wrap">
+              <table className="table leaderboard-table">
+                <thead>
+                  <tr>
+                    <th className="col-plc">Plc</th>
+                    <th className="col-player">Player</th>
+                    <th className="c col-score">Front 9</th>
+                    <th className="c col-score">Back 9</th>
+                    <th className="c bl col-score">18 Total</th>
+                    <th className="c bl col-score">Final 9</th>
+                    <th className="c bl col-score">Night Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {board.completed.map(row => (
+                    <Fragment key={row.id}>
+                      <tr data-row-id={row.id}>
+                        <td className="place col-plc">{row.place ?? '—'}</td>
+                        <td className="strong col-player" title={row.id}>
+                          <span className="player-name">{row.id}</span>
+                        </td>
+                        <td className="c col-score">{row.front ?? '—'}</td>
+                        <td className="c col-score">{row.back ?? '—'}</td>
+                        <td className="c bl strong col-score">{row.t18 ?? '—'}</td>
+                        <td className="c bl col-score">{row.finalNine ?? '—'}</td>
+                        <td className="c bl big col-score">{row.night ?? '—'}</td>
+                      </tr>
+                      {row.id === board.cutAfterId && (
+                        <tr className="cut-line" data-cut-after={row.id}>
+                          <td colSpan={7}>Cut line (confirmed)</td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>,
+  )
+
+  assert.ok(html.includes('class="leaderboard-grid"'), 'divisions rendered in side-by-side grid')
+  assert.ok(html.includes('Front 9') && html.includes('Back 9') && html.includes('18 Total') && html.includes('Final 9') && html.includes('Night Total'))
+  assert.ok(html.indexOf('data-row-id="j-ferguson"') < html.indexOf('data-row-id="dirk-tailford"'))
+  assert.ok(html.indexOf('data-row-id="dirk-tailford"') < html.indexOf('data-row-id="m-fin-56"'))
+  assert.ok(html.indexOf('data-row-id="m-fin-48"') < html.indexOf('data-cut-after="m-fin-48"'))
+  assert.ok(html.indexOf('data-cut-after="m-fin-48"') < html.indexOf('data-row-id="m-cut-32"'))
+  assert.ok(html.indexOf('data-cut-after="w-fin-3"') < html.indexOf('data-row-id="w-cut-1"'))
+}
+
+// ---------------------------------------------------------------------------
 // All checks passed
 // ---------------------------------------------------------------------------
 console.log('SMOKE_OK')
