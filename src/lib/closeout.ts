@@ -86,6 +86,20 @@ export function resolveWeek1Identity(
   return { eventId: matches[0].id, seasonId: matches[0].season_id }
 }
 
+export function refuseWeek1Finance(input: {
+  event: { season_id: string; date: string; name: string }
+  action: string
+}): { ok: true } | { ok: false; reason: 'week1_frozen' } {
+  if (
+    input.event.season_id === WEEK1_SEASON_ID &&
+    input.event.date === WEEK1_DATE &&
+    input.event.name === WEEK1_NAME
+  ) {
+    return { ok: false, reason: 'week1_frozen' }
+  }
+  return { ok: true }
+}
+
 export function protectedNullEventLedgerIds(
   rows: readonly NullEventLedgerRow[],
   seasonId: string,
@@ -367,8 +381,14 @@ export function planSplitClose(input: {
   bar: { M: number; W: number }
   openingNight: boolean
   payouts?: { M?: readonly number[]; W?: readonly number[] }
+  event?: { season_id: string; date: string; name: string }
 }):
-  | { ok: false; reason: 'funding_needed' | 'negative_shared_carry'; deficit?: number; legs: [] }
+  | {
+      ok: false
+      reason: 'funding_needed' | 'negative_shared_carry' | 'week1_frozen'
+      deficit?: number
+      legs: []
+    }
   | {
       ok: true
       gross: { M: number; W: number }
@@ -378,6 +398,13 @@ export function planSplitClose(input: {
       firstLegs: Leg[]
       secondLegs: Leg[]
     } {
+  if (input.event) {
+    const refusal = refuseWeek1Finance({ event: input.event, action: 'close' })
+    if (!refusal.ok) {
+      return { ok: false, reason: 'week1_frozen', legs: [] }
+    }
+  }
+
   const menEntries = input.entries.filter((e) => e.division === 'M')
   const womenEntries = input.entries.filter((e) => e.division === 'W')
 
