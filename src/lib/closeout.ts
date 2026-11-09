@@ -273,6 +273,8 @@ export function distributeTiedChecks(
   const result = new Map<string, number>()
 
   for (const [place, group] of byPlace.entries()) {
+    if (place < 1 || group.length === 0) continue
+
     const sorted = [...group].sort((a, b) => {
       const ta = Date.parse(a.created_at)
       const tb = Date.parse(b.created_at)
@@ -286,8 +288,11 @@ export function distributeTiedChecks(
     })
 
     const startIdx = Math.max(0, place - 1)
-    const slice = payouts.slice(startIdx, startIdx + sorted.length)
-    const totalCents = slice.reduce((sum, p) => sum + Math.round(p * 100), 0)
+    let totalCents = 0
+    for (let i = 0; i < sorted.length; i++) {
+      const p = payouts[startIdx + i] ?? 0
+      totalCents += Math.round(p * 100)
+    }
     const n = sorted.length
 
     if (totalCents % 500 === 0) {
@@ -361,6 +366,7 @@ export function planSplitClose(input: {
   balances: { M: Record<Fund, number>; W: Record<Fund, number> }
   bar: { M: number; W: number }
   openingNight: boolean
+  payouts?: { M?: readonly number[]; W?: readonly number[] }
 }):
   | { ok: false; reason: 'funding_needed' | 'negative_shared_carry'; deficit?: number; legs: [] }
   | {
@@ -553,8 +559,10 @@ export function planSplitClose(input: {
     }
   }
 
-  const paidCountM = paidPlaceCount(menEntries.length, 0, input.settings)
-  const checksM = suggestedPayouts(placePool.M, paidCountM)
+  const checksM =
+    input.payouts?.M !== undefined
+      ? input.payouts.M
+      : suggestedPayouts(placePool.M, paidPlaceCount(menEntries.length, 0, input.settings))
   const payoutMapM = distributeTiedChecks(checksM, menEntries)
   const sortedMenEntries = [...menEntries].sort((a, b) => a.place - b.place || byCheckIn(a, b))
   for (const entry of sortedMenEntries) {
@@ -634,8 +642,10 @@ export function planSplitClose(input: {
     }
   }
 
-  const paidCountW = paidPlaceCount(womenEntries.length, 0, input.settings)
-  const checksW = suggestedPayouts(placePool.W, paidCountW)
+  const checksW =
+    input.payouts?.W !== undefined
+      ? input.payouts.W
+      : suggestedPayouts(placePool.W, paidPlaceCount(womenEntries.length, 0, input.settings))
   const payoutMapW = distributeTiedChecks(checksW, womenEntries)
   const sortedWomenEntries = [...womenEntries].sort((a, b) => a.place - b.place || byCheckIn(a, b))
   for (const entry of sortedWomenEntries) {
