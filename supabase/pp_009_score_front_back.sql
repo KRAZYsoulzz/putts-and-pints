@@ -12,7 +12,8 @@ returns trigger as $$
 begin
   if new.score_front is not null and new.score_back is not null then
     new.score_18 := new.score_front + new.score_back;
-  elsif old.score_front is not null and old.score_back is not null then
+  elsif new.score_front is not null or new.score_back is not null
+     or old.score_front is not null or old.score_back is not null then
     new.score_18 := null;
   end if;
   return new;

@@ -51,9 +51,9 @@ export function DivisionSeg({ value, onChange, counts }: {
     options={DIVISIONS.map(d => ({ value: d, label: DIVISION_LABEL[d], count: counts?.[d] }))} />
 }
 
-export function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label?: string }) {
-  return <button type="button" role="switch" aria-checked={on} aria-label={label}
-    className={`toggle ${on ? 'on' : ''}`} onClick={() => onChange(!on)} />
+export function Toggle({ on, onChange, label, disabled }: { on: boolean; onChange: (v: boolean) => void; label?: string; disabled?: boolean }) {
+  return <button type="button" role="switch" aria-checked={on} aria-label={label} disabled={disabled}
+    className={`toggle ${on ? 'on' : ''}`} onClick={() => { if (!disabled) onChange(!on) }} />
 }
 
 export function Dialog({ title, onClose, children, footer, layer = 'base' }: {
@@ -186,20 +186,31 @@ export function ScoreInput({ value, max, disabled, onCommit, onDirty }: {
   onDirty?: (dirty: boolean) => void
 }) {
   const editRef = useRef<ScoreEdit>({ draft: null, enterAlreadySaved: false })
+  const dirtyRef = useRef(false)
+  const onDirtyRef = useRef(onDirty)
+  useEffect(() => { onDirtyRef.current = onDirty }, [onDirty])
+  useEffect(() => () => {
+    if (dirtyRef.current) onDirtyRef.current?.(false)
+  }, [])
   const [draft, setDraft] = useState<string | null>(null)
   const shown = draft ?? (value ?? '')
   const savedText = value == null ? '' : String(value)
 
+  const reportDirty = (nextDirty: boolean) => {
+    dirtyRef.current = nextDirty
+    onDirty?.(nextDirty)
+  }
+
   const publish = (edit: ScoreEdit, typed: string, commit: number | null | undefined) => {
     editRef.current = edit
     setDraft(edit.draft)
-    onDirty?.(edit.draft != null && edit.draft !== savedText)
+    reportDirty(edit.draft != null && edit.draft !== savedText)
     if (commit === undefined) return
     const restore = () => {
       const next = { draft: draftAfterScoreSave(typed, false), enterAlreadySaved: false }
       editRef.current = next
       setDraft(next.draft)
-      onDirty?.(true)
+      reportDirty(true)
     }
     let pending: void | Promise<boolean | void>
     try {
@@ -238,14 +249,14 @@ export function ScoreInput({ value, max, disabled, onCommit, onDirty }: {
         const edit = { draft: savedText, enterAlreadySaved: false }
         editRef.current = edit
         setDraft(edit.draft)
-        onDirty?.(false)
+        reportDirty(false)
         e.target.select()
       }}
       onChange={e => {
         const edit = { draft: e.target.value, enterAlreadySaved: false }
         editRef.current = edit
         setDraft(edit.draft)
-        onDirty?.(e.target.value !== savedText)
+        reportDirty(e.target.value !== savedText)
       }}
       onBlur={() => commitFrom('blur')}
       onKeyDown={e => {

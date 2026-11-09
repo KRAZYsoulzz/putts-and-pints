@@ -25,7 +25,7 @@ import {
   type Player,
   type PPEvent,
 } from '../lib/types'
-import { applyScoreDirty, byEntryOrder, canConfirmCut, cents, computeNineCommit, cutConfirmationReady, displayedBack, displayedFront, effectiveCut, eighteenGridRows, final9EntryOrder, isOpeningTagNight, isSeason9Week1, liveNightTotal, MAX_FINAL, MAX_NINE, qualifiers, suggestedCut, tonightBoard, totals, week1AllowsScorePatch, type Ranked } from '../lib/scoring'
+import { applyScoreDirty, byEntryOrder, canAdvanceToStatus, canConfirmCut, cents, computeNineCommit, cutConfirmationReady, displayedBack, displayedFront, effectiveCut, eighteenGridRows, final9EntryOrder, isOpeningTagNight, isSeason9Week1, liveNightTotal, MAX_FINAL, MAX_NINE, mergeNinePatch, qualifiers, suggestedCut, tonightBoard, totals, week1AllowsScorePatch, type Ranked } from '../lib/scoring'
 import { completeRefresh, requestRefresh, type ScoreBoard } from '../lib/score-refresh'
 import { balances, clampPaidPlaces, displayedPerfectRound, displayedSharedPot, divisionResult, eventLedgerPosted, effectiveBar, eventMoney, nightBonusCost, otherDivisionNights, paidPlaceCount, payoutPool, payoutsForPlaceCount, placeBudget, placeRemainder, postedBonusCost, postedPlaceRemainder, postedRemainderBackup, suggestedPaidPlaces } from '../lib/money'
 import { duplicateName, friendlyError, normalizeName, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../lib/validation'
@@ -68,6 +68,7 @@ export default function Tonight() {
   const [cutOverride, setCutOverride] = useState<{ key: string; value: number } | null>(null)
   const [scoreSaveCount, setScoreSaveCount] = useState(0)
   const [scoreDirtyCount, setScoreDirtyCount] = useState(0)
+  const [isRefreshing, setIsRefreshing] = useState(false)
   const [refreshStatus, setRefreshStatus] = useState<string | null>(null)
 
   const checkingIn = useRef(new Set<string>())
@@ -104,9 +105,21 @@ export default function Tonight() {
     if (isSeason9Week1(event) && !week1AllowsScorePatch(event, patch)) {
       return Promise.resolve(false)
     }
+    const latest = entriesRef.current.find(e => e.id === id)
+    let nextPatch = patch
+    if (
+      latest &&
+      (Object.prototype.hasOwnProperty.call(patch, 'score_front') ||
+        Object.prototype.hasOwnProperty.call(patch, 'score_back') ||
+        Object.prototype.hasOwnProperty.call(patch, 'score_18'))
+    ) {
+      const merged = mergeNinePatch(latest, patch)
+      nextPatch = { ...patch, score_18: merged.score_18 }
+      entriesRef.current = entriesRef.current.map(e => (e.id === id ? merged : e))
+    }
     scoreSaves.current += 1
     setScoreSaveCount(scoreSaves.current)
-    return patchEntry(id, patch).finally(() => {
+    return patchEntry(id, nextPatch).finally(() => {
       scoreSaves.current = Math.max(0, scoreSaves.current - 1)
       setScoreSaveCount(scoreSaves.current)
     })
@@ -117,6 +130,7 @@ export default function Tonight() {
     setRefreshStatus(decision.board.status)
     if (!decision.fetch) return
     refreshLock.current = true
+    setIsRefreshing(true)
     try {
       const result = await reload()
       const finished = completeRefresh(
@@ -133,6 +147,7 @@ export default function Tonight() {
       setRefreshStatus("Couldn't refresh scores.")
     } finally {
       refreshLock.current = false
+      setIsRefreshing(false)
     }
   }
 
@@ -409,7 +424,7 @@ export default function Tonight() {
   const overPool = payoutProblem != null
 
   const handleContextMenu = (e: MouseEvent, entry: Entry) => {
-    if (!isAdmin || event.status === 'complete') return
+    if (!isAdmin || event.status === 'complete' || isSeason9Week1(event)) return
     e.preventDefault()
     setContextMenu({ x: e.clientX, y: e.clientY, entry })
   }
@@ -478,14 +493,14 @@ export default function Tonight() {
 
   const setStatus = async (status: EventStatus) => {
     if (isSeason9Week1(event)) return
+    const evEntries = entriesRef.current.filter(e => e.event_id === event.id)
+    const pending = { dirty: dirtyScores.current.size, saves: scoreSaves.current, refreshing: refreshLock.current }
+    if (!canAdvanceToStatus(event.status, status, evEntries, pending, event)) return
     if (status === 'final9' || status === 'results') {
-      const evEntries = entries.filter(e => e.event_id === event.id)
-      const pending = { dirty: dirtyScores.current.size, saves: scoreSaves.current, refreshing: refreshLock.current }
-      if (!cutConfirmationReady(evEntries, pending)) return
       if (event.status === 'checkin' || event.status === 'scoring') {
         const patch: Partial<PPEvent> = { status }
         for (const d of DIVS) {
-          const field = entries.filter(e => e.event_id === event.id && e.division === d)
+          const field = evEntries.filter(e => e.division === d)
           const stored = d === 'M' ? event.final_cut_men : event.final_cut_women
           const cut = effectiveCut(stored, field.length, settings)
           if (field.length > 0 && stored !== cut) {
@@ -511,17 +526,17 @@ export default function Tonight() {
 
   const canProceedToCut = cutConfirmationReady(
     entries.filter(e => e.event_id === event.id),
-    { dirty: scoreDirtyCount, saves: scoreSaveCount, refreshing: refreshLock.current },
+    { dirty: scoreDirtyCount, saves: scoreSaveCount, refreshing: isRefreshing },
   )
 
   const applyCutAndProceed = async () => {
     if (isSeason9Week1(event)) return
-    const evEntries = entries.filter(e => e.event_id === event.id)
+    const evEntries = entriesRef.current.filter(e => e.event_id === event.id)
     const pending = { dirty: dirtyScores.current.size, saves: scoreSaves.current, refreshing: refreshLock.current }
     if (!cutConfirmationReady(evEntries, pending)) return
     const patch: Partial<PPEvent> = { status: 'final9' }
     for (const d of DIVS) {
-      const field = entries.filter(e => e.event_id === event.id && e.division === d)
+      const field = evEntries.filter(e => e.division === d)
       const stored = d === 'M' ? event.final_cut_men : event.final_cut_women
       const cut = effectiveCut(stored, field.length, settings)
       // Don't store 0 for an empty division. That 0 stuck after players checked in.
@@ -826,7 +841,10 @@ export default function Tonight() {
             {STEPS.map(s => (
               <button
                 key={s.status}
-                disabled={isSeason9Week1(event)}
+                disabled={
+                  isSeason9Week1(event) ||
+                  ((s.status === 'final9' || s.status === 'results') && !canProceedToCut)
+                }
                 className={event.status === s.status ? 'on' : ''}
                 onClick={() => setStatus(s.status)}
               >
@@ -852,7 +870,7 @@ export default function Tonight() {
                 Check players into the {division === 'M' ? "Men's" : "Women's"} division, record tag numbers, and set the bar match.
               </p>
             </div>
-            <button className="btn btn-primary" onClick={() => { setCreateError(''); setBuyingTag(current => buyingTagAfter(current, 'open')); setAddPlayerOpen(true) }}>
+            <button className="btn btn-primary" disabled={isSeason9Week1(event)} onClick={() => { if (isSeason9Week1(event)) return; setCreateError(''); setBuyingTag(current => buyingTagAfter(current, 'open')); setAddPlayerOpen(true) }}>
               <UserPlus size={16} /> Check In Player
             </button>
           </div>
@@ -1000,7 +1018,9 @@ export default function Tonight() {
                   </span>
                 ) : !canProceedToCut ? (
                   <span className="muted" style={{ fontSize: 12 }}>
-                    Checked-in players still need a completed 18.
+                    {!canConfirmCut(nightEntries)
+                      ? 'Checked-in players still need a completed 18.'
+                      : 'Waiting for score edits to finish saving…'}
                   </span>
                 ) : null}
               </div>
@@ -1052,7 +1072,7 @@ export default function Tonight() {
                   Week 1 scores stay as played.
                 </span>
               )}
-              <button className="btn btn-primary" disabled={isSeason9Week1(event)} onClick={() => setStatus('results')}>
+              <button className="btn btn-primary" disabled={!canProceedToCut || isSeason9Week1(event)} onClick={() => setStatus('results')}>
                 Advance to Results <ChevronRight size={16} />
               </button>
             </div>
@@ -1654,7 +1674,7 @@ function ScoreTable({ rows, rankedById, playerById, settings, mode, disabledScor
                     </td>
                     <td className="c bl strong">{t.t18 != null ? t.t18 : ''}</td>
                     <td className="c bl">
-                      <button className="btn btn-ghost btn-sm" style={{ fontSize: 11 }} onClick={e => onContextMenu(e, ent)}>
+                      <button className="btn btn-ghost btn-sm" style={{ fontSize: 11 }} disabled={disabledScores} onClick={e => { if (!disabledScores) onContextMenu(e, ent) }}>
                         <Sparkles size={12} /> Awards
                       </button>
                     </td>

@@ -91,8 +91,24 @@ export function computeNineCommit(current: Entry, which: 'front' | 'back', nextV
 
   if (nextFront != null && nextBack != null) {
     patch.score_18 = nextFront + nextBack
-  } else if (current.score_front != null && current.score_back != null) {
+  } else if (
+    current.score_front != null ||
+    current.score_back != null ||
+    current.score_18 != null
+  ) {
     patch.score_18 = null
+  }
+
+  if (
+    current.r1_b1 != null ||
+    current.r1_b2 != null ||
+    current.r2_b1 != null ||
+    current.r2_b2 != null
+  ) {
+    patch.r1_b1 = null
+    patch.r1_b2 = null
+    patch.r2_b1 = null
+    patch.r2_b2 = null
   }
 
   return patch
@@ -110,20 +126,30 @@ export function applyNineToLatest(
 export function mergeNinePatch(latest: Entry, patch: Partial<Entry>): Entry {
   const hasFront = Object.prototype.hasOwnProperty.call(patch, 'score_front')
   const hasBack = Object.prototype.hasOwnProperty.call(patch, 'score_back')
+  const has18 = Object.prototype.hasOwnProperty.call(patch, 'score_18')
+  if (!hasFront && !hasBack && !has18) {
+    return { ...latest, ...patch }
+  }
   const nextFront = hasFront ? (patch.score_front ?? null) : latest.score_front
   const nextBack = hasBack ? (patch.score_back ?? null) : latest.score_back
 
   let next18: number | null
   if (nextFront != null && nextBack != null) {
     next18 = nextFront + nextBack
-  } else if (latest.score_front != null && latest.score_back != null) {
+  } else if (
+    hasFront ||
+    hasBack ||
+    latest.score_front != null ||
+    latest.score_back != null
+  ) {
     next18 = null
   } else {
-    next18 = latest.score_18
+    next18 = has18 ? (patch.score_18 ?? null) : latest.score_18
   }
 
   return {
     ...latest,
+    ...patch,
     score_front: nextFront,
     score_back: nextBack,
     score_18: next18,
@@ -138,6 +164,20 @@ export interface PendingCutState {
 
 export function cutConfirmationReady(entries: Entry[], pending: PendingCutState): boolean {
   return canConfirmCut(entries) && pending.dirty === 0 && pending.saves === 0 && !pending.refreshing
+}
+
+export function canAdvanceToStatus(
+  _currentStatus: EventStatus,
+  targetStatus: EventStatus,
+  entries: Entry[],
+  pending: PendingCutState,
+  event?: { season_id?: string | null; event_date?: string | null; name?: string | null } | null,
+): boolean {
+  if (isSeason9Week1(event)) return false
+  if (targetStatus === 'final9' || targetStatus === 'results') {
+    return cutConfirmationReady(entries, pending)
+  }
+  return true
 }
 
 export function applyScoreDirty(
@@ -176,8 +216,12 @@ function countbackValue(e: Entry, key: CountbackKey): number {
   const r1Val = hasNewNine ? e.score_front : t.r1
   const r2Val = hasNewNine ? e.score_back : t.r2
   const map: Record<CountbackKey, number | null> = {
-    final9: t.f, r2: r2Val, r1: r1Val,
-    f_b1: e.made_final ? e.f_b1 : null, r2_b1: e.r2_b1, r1_b1: e.r1_b1,
+    final9: t.f,
+    r2: r2Val,
+    r1: r1Val,
+    f_b1: e.made_final && e.score_final == null ? e.f_b1 : null,
+    r2_b1: hasNewNine ? null : e.r2_b1,
+    r1_b1: hasNewNine ? null : e.r1_b1,
   }
   return map[key] ?? -1
 }
@@ -460,7 +504,7 @@ export function isSeason9Week1(
   return (
     event.season_id === '81298495-f87c-4d7c-a344-89b97e587d9b' &&
     event.event_date === '2026-11-05' &&
-    event.name === 'Week 1'
+    (event.name == null || event.name.trim() === '' || event.name.trim() === 'Week 1')
   )
 }
 
@@ -506,6 +550,14 @@ export function week1AllowsPlayerDelete(
   return !playerEntries.some(e => isSeason9Week1(eventMap.get(e.event_id)))
 }
 
+export function canDeletePlayer(
+  playerEntries: { event_id: string; place?: number | null }[],
+  events: { id: string; season_id?: string | null; event_date?: string | null; name?: string | null; status?: string | null }[],
+): boolean {
+  if (!week1AllowsPlayerDelete(playerEntries, events)) return false
+  return playerEntries.length === 0
+}
+
 export function historicalEighteenWrite(
   entry: Entry,
   next: number | null,
@@ -514,5 +566,40 @@ export function historicalEighteenWrite(
     return { omit: true }
   }
   return { omit: false, score_18: next }
+}
+
+export function historicalEntryUpdatePayload(
+  event: { season_id?: string | null; event_date?: string | null; name?: string | null } | null | undefined,
+  editEntry: Entry,
+  form: {
+    made_final?: boolean
+    place?: number | null
+    payout?: number
+    points?: number
+    awards?: Entry['awards']
+    tag_in?: number | null
+    tag_out?: number | null
+    score_18?: number | null
+    score_final?: number | null
+  },
+): Record<string, unknown> | null {
+  if (isSeason9Week1(event)) return null
+  const score = (v: number | null | undefined, max: number) =>
+    v == null || Number.isNaN(v) ? null : clampScore(String(v), max)
+  const write18 = historicalEighteenWrite(editEntry, score(form.score_18, MAX_18))
+  const payload: Record<string, unknown> = {
+    made_final: Boolean(form.made_final),
+    place: form.place ?? null,
+    payout: form.payout ?? 0,
+    points: form.points ?? 0,
+    awards: form.awards ?? [],
+    tag_in: form.tag_in ?? null,
+    tag_out: form.tag_out ?? null,
+    score_final: score(form.score_final, MAX_FINAL),
+  }
+  if (!write18.omit) {
+    payload.score_18 = write18.score_18
+  }
+  return payload
 }
 

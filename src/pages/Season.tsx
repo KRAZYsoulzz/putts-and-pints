@@ -258,6 +258,7 @@ export default function SeasonPage() {
                             </button>
                             <button
                               className="btn btn-ghost btn-sm btn-icon btn-danger"
+                              disabled={isSeason9Week1(ev)}
                               aria-label={`Delete ${ev.name || ev.event_date}`}
                               onClick={async () => {
                                 if (isSeason9Week1(ev)) {
@@ -332,11 +333,11 @@ export default function SeasonPage() {
             )}
             <div className="field">
               <span>Event name (optional)</span>
-              <input className="input" type="text" value={editName} onChange={e => setEditName(e.target.value)} placeholder="e.g. Week 4" autoFocus />
+              <input className="input" type="text" disabled={isSeason9Week1(editEvent)} value={editName} onChange={e => setEditName(e.target.value)} placeholder="e.g. Week 4" autoFocus />
             </div>
             <div className="field">
               <span>Date</span>
-              <input className="input" type="date" value={editDate} onChange={e => setEditDate(e.target.value)} />
+              <input className="input" type="date" disabled={isSeason9Week1(editEvent)} value={editDate} onChange={e => setEditDate(e.target.value)} />
             </div>
             <p className="muted" style={{ fontSize: 12, margin: 0 }}>
               {editEvent.status === 'complete'
@@ -344,7 +345,7 @@ export default function SeasonPage() {
                 : 'Open the event to keep scoring it.'}
             </p>
             {eventError && <small className="field-error">{eventError}</small>}
-            <button className="btn btn-primary btn-block" disabled={!editDate} onClick={saveEvent}>Save event</button>
+            <button className="btn btn-primary btn-block" disabled={!editDate || isSeason9Week1(editEvent)} onClick={saveEvent}>Save event</button>
           </div>
         </Dialog>
       )}

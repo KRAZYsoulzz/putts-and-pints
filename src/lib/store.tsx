@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js'
 import { supabase } from './supabase'
 import { resolveSettings } from './settings'
-import { totals, week1AllowsEventPatch, week1AllowsScorePatch } from './scoring'
+import { mergeNinePatch, totals, week1AllowsEventPatch, week1AllowsScorePatch } from './scoring'
 import { reportError } from './notify'
 import { friendlyError } from './validation'
 import type { Division, Entry, LedgerRow, PPEvent, Player, Season, Settings, Tag } from './types'
@@ -172,7 +172,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const reloadQueued = useRef(false)
   const reloadGen = useRef(0)
   const seasonsRef = useRef(seasons)
+  const entriesRef = useRef(entries)
   useEffect(() => { seasonsRef.current = seasons }, [seasons])
+  useEffect(() => { entriesRef.current = entries }, [entries])
 
   const reload = useCallback(async (): Promise<'applied' | 'busy' | 'error'> => {
     if (writes.current > 0) { reloadQueued.current = true; return 'busy' }
@@ -215,6 +217,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     setPlayers(allPlayers)
     setTags(nextTags)
     setEvents(nextEvents)
+    entriesRef.current = nextEntries
     setEntries(nextEntries)
     setLedger(nextLedger)
     setLoading(false)
@@ -253,14 +256,26 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
   const patchEntry = useCallback(async (id: string, patch: Partial<Entry>) => {
     if (!isAdmin) return false
-    const entry = entries.find(e => e.id === id)
+    const entry = entriesRef.current.find(e => e.id === id) ?? entries.find(e => e.id === id)
     const entryEvent = entry ? events.find(ev => ev.id === entry.event_id) : null
     if (!week1AllowsScorePatch(entryEvent, patch)) {
       return false
     }
+    const touchesNine =
+      Object.prototype.hasOwnProperty.call(patch, 'score_front') ||
+      Object.prototype.hasOwnProperty.call(patch, 'score_back') ||
+      Object.prototype.hasOwnProperty.call(patch, 'score_18')
+    let dbPatch: Partial<Entry> = patch
+    if (entry && touchesNine) {
+      const merged = mergeNinePatch(entry, patch)
+      dbPatch = { ...patch, score_18: merged.score_18 }
+      entriesRef.current = entriesRef.current.map(e => (e.id === id ? merged : e))
+    } else if (entry) {
+      entriesRef.current = entriesRef.current.map(e => (e.id === id ? { ...e, ...patch } : e))
+    }
     writes.current += 1
-    setEntries(prev => prev.map(e => (e.id === id ? { ...e, ...patch } : e)))
-    const { error } = await supabase.from('pp_entries').update(patch).eq('id', id)
+    setEntries(prev => prev.map(e => (e.id === id ? mergeNinePatch(e, dbPatch) : e)))
+    const { error } = await supabase.from('pp_entries').update(dbPatch).eq('id', id)
     if (error) {
       console.error(error.message)
       reportError(friendlyError(error.message))

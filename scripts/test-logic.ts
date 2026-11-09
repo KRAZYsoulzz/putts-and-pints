@@ -1,7 +1,8 @@
 // Quick sanity checks for the rules engine. Run: npx tsx scripts/test-logic.ts
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import { DEFAULT_SETTINGS as S } from '../src/lib/settings'
-import { bestTotal, byEntryOrder, cents, clampScore, effectiveCut, eighteenGridRows, final9EntryOrder, initialTagAssignment, isOpeningTagNight, qualifiers, rank18, rankFinal, redistributeTags, suggestedCut, totals, displayedFront, displayedBack, computeNineCommit, canConfirmCut, liveNightTotal, tonightBoard, isSeason9Week1, week1AllowsScorePatch, historicalEighteenWrite, week1AllowsEventPatch, week1AllowsCheckin, week1AllowsEntryDelete, week1AllowsFinalize, week1AllowsPlayerDelete, cutConfirmationReady, applyScoreDirty, applyNineToLatest, mergeNinePatch } from '../src/lib/scoring'
+import { bestTotal, byEntryOrder, cents, clampScore, effectiveCut, eighteenGridRows, final9EntryOrder, initialTagAssignment, isOpeningTagNight, qualifiers, rank18, rankFinal, redistributeTags, suggestedCut, totals, displayedFront, displayedBack, computeNineCommit, canConfirmCut, liveNightTotal, tonightBoard, isSeason9Week1, week1AllowsScorePatch, historicalEighteenWrite, week1AllowsEventPatch, week1AllowsCheckin, week1AllowsEntryDelete, week1AllowsFinalize, week1AllowsPlayerDelete, canDeletePlayer, historicalEntryUpdatePayload, canAdvanceToStatus, cutConfirmationReady, applyScoreDirty, applyNineToLatest, mergeNinePatch } from '../src/lib/scoring'
 import { applyScoreEdit, draftAfterScoreSave, runScoreEdit } from '../src/lib/score-edit'
 import { completeRefresh, requestRefresh } from '../src/lib/score-refresh'
 import { balances, clampPaidPlaces, displayedPerfectRound, displayedSharedPot, divisionResult, effectiveBar, eventLedgerPosted, eventMoney, nightBonusCost, otherDivisionNights, paidPlaceCount, payoutPool, payoutsForPlaceCount, placeBudget, postedBonusCost, splitEvenly, suggestedPaidPlaces, suggestedPayouts, type DivisionNight } from '../src/lib/money'
@@ -1203,11 +1204,11 @@ assert.deepEqual(
 )
 assert.deepEqual(
   computeNineCommit(e({ score_front: 40, score_back: null, score_18: 77 }), 'front', null),
-  { score_front: null },
+  { score_front: null, score_18: null },
 )
 assert.deepEqual(
   computeNineCommit(e({ score_front: null, score_back: null, score_18: 77 }), 'front', 40),
-  { score_front: 40 },
+  { score_front: 40, score_18: null },
 )
 assert.deepEqual(
   computeNineCommit(e({ score_front: 40, score_back: null, score_18: 77 }), 'back', 30),
@@ -1342,18 +1343,90 @@ assert.equal(week1AllowsCheckin(week1Event), false)
 assert.equal(week1AllowsEntryDelete(week1Event), false)
 assert.equal(week1AllowsFinalize(week1Event), false)
 assert.equal(week1AllowsEventPatch({ season_id: season9, event_date: '2026-11-19', name: 'Week 2' }, { status: 'scoring' }), true)
+assert.equal(isSeason9Week1({ season_id: season9, event_date: '2026-11-05' }), true, 'Week 1 identified by season and date even when name is omitted')
+assert.equal(isSeason9Week1({ season_id: season9, event_date: '2026-11-05', name: null }), true)
+assert.equal(historicalEntryUpdatePayload(week1Event, legacyEighteen, {
+  made_final: true,
+  place: 1,
+  payout: 20,
+  points: 10,
+  awards: ['high_score'],
+  tag_in: 1,
+  tag_out: 1,
+  score_18: 80,
+  score_final: 25,
+}), null, 'Players historical save must not write to Week 1')
+const week2Historical = historicalEntryUpdatePayload(
+  { season_id: season9, event_date: '2026-11-19', name: 'Week 2' },
+  derivedEighteen,
+  {
+    made_final: true,
+    place: 2,
+    payout: 15,
+    points: 6,
+    awards: ['perfect4'],
+    tag_in: 3,
+    tag_out: 2,
+    score_18: 99,
+    score_final: 22,
+  },
+)
+assert.equal(week2Historical != null && !('score_18' in week2Historical), true, 'derived 18 is omitted on historical save')
+
+// Item 2: Delete Player must not bulk-delete a player's historical entries. Block when player has posted/recorded nights.
 assert.equal(week1AllowsPlayerDelete([{ event_id: 'w1' }], [{ id: 'w1', season_id: season9, event_date: '2026-11-05', name: 'Week 1' }]), false)
-assert.equal(week1AllowsPlayerDelete([{ event_id: 'w2' }], [{ id: 'w2', season_id: season9, event_date: '2026-11-19', name: 'Week 2' }]), true)
+assert.equal(canDeletePlayer([], [{ id: 'w2', season_id: season9, event_date: '2026-11-19', name: 'Week 2', status: 'complete' }]), true)
+assert.equal(canDeletePlayer([{ event_id: 'w2', place: 1 }], [{ id: 'w2', season_id: season9, event_date: '2026-11-19', name: 'Week 2', status: 'complete' }]), false, 'cannot delete player with posted night')
+assert.equal(canDeletePlayer([{ event_id: 'w1', place: null }], [{ id: 'w1', season_id: season9, event_date: '2026-11-05', name: 'Week 1', status: 'complete' }]), false, 'cannot delete player in Week 1')
+assert.equal(canDeletePlayer([{ event_id: 'w3', place: null }], [{ id: 'w3', season_id: season9, event_date: '2026-11-26', name: 'Week 3', status: 'scoring' }]), false, 'cannot bulk-delete player historical entries')
+
+// Item 3: Step navigation (setStatus to final9/results) must not skip completion gate, and must wait for dirty or in-flight saves.
 const ready = { dirty: 0, saves: 0, refreshing: false }
 assert.equal(cutConfirmationReady([bothNines], ready), true)
 assert.equal(cutConfirmationReady([bothNines], { dirty: 1, saves: 0, refreshing: false }), false)
+assert.equal(cutConfirmationReady([bothNines], { dirty: 0, saves: 1, refreshing: false }), false)
+assert.equal(cutConfirmationReady([bothNines], { dirty: 0, saves: 0, refreshing: true }), false)
 assert.equal(cutConfirmationReady([frontOnly], ready), false)
+assert.equal(canAdvanceToStatus('scoring', 'final9', [frontOnly], ready, null), false, 'setStatus to final9 blocked when 18 incomplete')
+assert.equal(canAdvanceToStatus('scoring', 'results', [frontOnly], ready, null), false, 'setStatus to results blocked when 18 incomplete')
+assert.equal(canAdvanceToStatus('scoring', 'final9', [bothNines], { dirty: 1, saves: 0, refreshing: false }, null), false, 'setStatus to final9 waits for dirty input')
+assert.equal(canAdvanceToStatus('final9', 'results', [bothNines], { dirty: 0, saves: 1, refreshing: false }, null), false, 'setStatus to results waits for in-flight save')
+assert.equal(canAdvanceToStatus('scoring', 'final9', [bothNines], ready, week1Event), false, 'setStatus blocked on Week 1')
+assert.equal(canAdvanceToStatus('scoring', 'final9', [bothNines], ready, { season_id: season9, event_date: '2026-11-19', name: 'Week 2' }), true)
+assert.equal(canAdvanceToStatus('scoring', 'checkin', [frontOnly], { dirty: 1, saves: 1, refreshing: false }, { season_id: season9, event_date: '2026-11-19', name: 'Week 2' }), true, 'stepping back to checkin is not gated on 18 completion')
+
+// Item 4: Separate dirty-save keys for front, back, final
 let dirtyKeys = new Set<string>()
 dirtyKeys = applyScoreDirty(dirtyKeys, 'p1', 'front', true)
 dirtyKeys = applyScoreDirty(dirtyKeys, 'p1', 'back', true)
+dirtyKeys = applyScoreDirty(dirtyKeys, 'p1', 'final', true)
 dirtyKeys = applyScoreDirty(dirtyKeys, 'p1', 'back', false)
 assert.equal(dirtyKeys.has('p1:front'), true)
 assert.equal(dirtyKeys.has('p1:back'), false)
+assert.equal(dirtyKeys.has('p1:final'), true)
+dirtyKeys = applyScoreDirty(dirtyKeys, 'p1', 'front', false)
+dirtyKeys = applyScoreDirty(dirtyKeys, 'p1', 'final', false)
+assert.equal(dirtyKeys.size, 0)
+
+// Item 5: Countback tiebreaks r1/r2 must use new Front/Back nines, not old basket fields
+const cbFrontTieA = e({ id: 'cbf-a', created_at: '2026-11-08T01:00:00.000Z', score_front: 35, score_back: 35, score_18: 70, r1_b1: 25, r1_b2: 20, r2_b1: 25, r2_b2: 20 })
+const cbFrontTieB = e({ id: 'cbf-b', created_at: '2026-11-08T02:00:00.000Z', score_front: 35, score_back: 35, score_18: 70, r1_b1: 5, r1_b2: 5, r2_b1: 5, r2_b2: 5 })
+const cbFrontPlaces = new Map(rank18([cbFrontTieA, cbFrontTieB], cbNine).map(r => [r.entry.id, r.place]))
+assert.equal(cbFrontPlaces.get('cbf-a'), 1, 'old basket fields must not break a tie when new Front/Back nines are tied')
+assert.equal(cbFrontPlaces.get('cbf-b'), 1, 'both players share place 1 when new Front and Back are identical despite old basket values')
+const r1OnlySettings = { ...S, ties: { ...S.ties, cut: 'countback' as const, countback: ['r1'] as ('r1')[] } }
+const r1Low = e({ id: 'r1-low', created_at: '2026-11-08T01:00:00.000Z', score_front: 30, score_back: 40, score_18: 70, r1_b1: 25, r1_b2: 25 })
+const r1High = e({ id: 'r1-high', created_at: '2026-11-08T02:00:00.000Z', score_front: 40, score_back: 30, score_18: 70, r1_b1: 5, r1_b2: 5 })
+const r1Places = new Map(rank18([r1Low, r1High], r1OnlySettings).map(r => [r.entry.id, r.place]))
+assert.equal(r1Places.get('r1-high'), 1, 'countback r1 uses score_front and ignores higher old r1_b1+r1_b2')
+assert.equal(r1Places.get('r1-low'), 2)
+
+// Item 6: Confirmed cut divider when no finalists or non-top finalists
+const noFinalistsBoard = tonightBoard([leaderCut, tieOut], S, 'final9', 2)
+assert.equal(noFinalistsBoard.provisional, false)
+assert.equal(noFinalistsBoard.cutAfterId, null, 'confirmed cut divider is null when no one has made_final')
+
+// Item 7: Stale concurrent score_18 save must not bring back a score that was cleared; legacy summed values must not resurrect either.
 let synced = e({ score_front: 40, score_back: 30, score_18: 70 })
 synced = applyNineToLatest(synced, 'front', 41)
 synced = applyNineToLatest(synced, 'back', 32)
@@ -1363,5 +1436,58 @@ const merged = mergeNinePatch(e({ score_front: 41, score_back: 30, score_18: 71 
 assert.equal(merged.score_front, 41)
 assert.equal(merged.score_back, 32)
 assert.equal(merged.score_18, 73)
+
+const afterFrontCleared = e({ score_front: null, score_back: 30, score_18: null })
+const staleSaveWith18 = computeNineCommit(e({ score_front: 40, score_back: 30, score_18: 70 }), 'back', 32)
+const mergedAfterClear = mergeNinePatch(afterFrontCleared, staleSaveWith18)
+assert.equal(mergedAfterClear.score_front, null)
+assert.equal(mergedAfterClear.score_back, 32)
+assert.equal(mergedAfterClear.score_18, null, 'stale concurrent score_18 save must not bring back 18 when front was cleared')
+assert.equal(totals(mergedAfterClear).t18, null)
+
+const mergedDirectStale18 = mergeNinePatch(e({ score_front: 40, score_back: null, score_18: null }), { score_18: 70 })
+assert.equal(mergedDirectStale18.score_18, null, 'direct stale score_18 patch must not resurrect when only one nine is present')
+
+const staleRemaining = e({ score_front: 40, score_back: null, score_18: 70 })
+const clearLastNine = computeNineCommit(staleRemaining, 'front', null)
+const afterLastNineCleared = mergeNinePatch(staleRemaining, clearLastNine)
+assert.equal(afterLastNineCleared.score_18, null, 'clearing last nine must clear legacy/stale score_18')
+assert.equal(totals(afterLastNineCleared).t18, null, 'legacy summed score_18 must not resurrect after clearing last nine')
+
+const withLegacyBaskets = e({ score_front: 40, score_back: 30, score_18: 70, r1_b1: 20, r1_b2: 15, r2_b1: 20, r2_b2: 15 })
+const step1Clear = { ...withLegacyBaskets, ...computeNineCommit(withLegacyBaskets, 'front', null) }
+const step2Clear = { ...step1Clear, ...computeNineCommit(step1Clear, 'back', null) }
+assert.equal(totals(step2Clear).t18, null, 'legacy summed basket values must not resurrect when both nines are cleared')
+assert.equal(displayedFront(step2Clear), null)
+assert.equal(displayedBack(step2Clear), null)
+
+// Item 8: Changed files must be clean UTF-8 without BOM or mojibake
+const utf8Decoder = new TextDecoder('utf-8', { fatal: true })
+const changedFiles = [
+  'src/lib/scoring.ts',
+  'src/lib/store.tsx',
+  'src/lib/types.ts',
+  'src/pages/Players.tsx',
+  'src/pages/Season.tsx',
+  'src/pages/Tonight.tsx',
+  'src/components/ui.tsx',
+  'scripts/test-logic.ts',
+  'scripts/smoke-scoring.tsx',
+  'supabase/pp_009_score_front_back.sql',
+]
+for (const relPath of changedFiles) {
+  const bytes = fs.readFileSync(new URL(`../${relPath}`, import.meta.url))
+  assert.equal(
+    bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf,
+    false,
+    `${relPath} must not have a UTF-8 BOM`,
+  )
+  const decoded = utf8Decoder.decode(bytes)
+  assert.equal(
+    /[\u0080-\u009f\ufffd\u00c2\u00c3]|\u00e2\u20ac/.test(decoded),
+    false,
+    `${relPath} must not contain mojibake`,
+  )
+}
 
 console.log('All rules checks passed ✔')

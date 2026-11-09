@@ -3,7 +3,7 @@ import { Edit2, Plus, Trash2 } from 'lucide-react'
 import { useData, must } from '../lib/store'
 import { supabase } from '../lib/supabase'
 import { askConfirm, messageOf } from '../lib/notify'
-import { bestTotal, clampScore, historicalEighteenWrite, isSeason9Week1, MAX_18, MAX_FINAL, totals, week1AllowsPlayerDelete } from '../lib/scoring'
+import { bestTotal, canDeletePlayer, historicalEighteenWrite, historicalEntryUpdatePayload, isSeason9Week1, totals, week1AllowsPlayerDelete } from '../lib/scoring'
 import { duplicateName, normalizeName, parseTag, tagTakenOnRoster } from '../lib/validation'
 import {
   AWARDS,
@@ -172,21 +172,22 @@ export default function Players() {
   const handleDeletePlayer = async () => {
     if (!editPlayer) return
     const playerEntries = entries.filter((e) => e.player_id === editPlayer.id)
-    if (!week1AllowsPlayerDelete(playerEntries, events)) {
-      setEditError('Week 1 scores stay as played.')
+    if (!canDeletePlayer(playerEntries, events)) {
+      setEditError(
+        !week1AllowsPlayerDelete(playerEntries, events)
+          ? 'Week 1 scores stay as played.'
+          : 'Players with recorded nights cannot be deleted. Mark them inactive instead.',
+      )
       return
     }
-    const hasEntries = playerEntries.length > 0
-    const confirmMsg = hasEntries
-      ? `Warning: ${editPlayer.name} has tournament entry records. Deleting them will delete all associated scores and history. Are you sure?`
-      : `Delete ${editPlayer.name}? This cannot be undone.`
 
-    const ok = await askConfirm(confirmMsg, { title: 'Delete player', confirmLabel: 'Delete', danger: true })
+    const ok = await askConfirm(`Delete ${editPlayer.name}? This cannot be undone.`, { title: 'Delete player', confirmLabel: 'Delete', danger: true })
     if (!ok) return
+    if (!canDeletePlayer(entries.filter((e) => e.player_id === editPlayer.id), events)) {
+      setEditError('Players with recorded nights cannot be deleted. Mark them inactive instead.')
+      return
+    }
     try {
-      if (hasEntries) {
-        await must(supabase.from('pp_entries').delete().eq('player_id', editPlayer.id))
-      }
       await must(supabase.from('pp_tags').delete().eq('player_id', editPlayer.id))
       await must(supabase.from('pp_players').delete().eq('id', editPlayer.id))
     } catch (err) {
@@ -222,8 +223,6 @@ export default function Players() {
       setEntryError('Week 1 scores stay as played.')
       return
     }
-    const score = (v: number | null | undefined, max: number) =>
-      v == null || Number.isNaN(v) ? null : clampScore(String(v), max)
     const tag = (v: number | null | undefined, label: string) => {
       if (v == null || Number.isNaN(v)) return { ok: true as const, value: null }
       const parsed = parseTag(String(v))
@@ -236,25 +235,14 @@ export default function Players() {
     if (!tagOut.ok) { setEntryError(tagOut.error); return }
     setEntryError('')
 
-    const entryEvent = events.find((e) => e.id === editEntry.event_id)
-    const isWeek1 = isSeason9Week1(entryEvent)
-    const write18 = historicalEighteenWrite(editEntry, score(entryForm.score_18, MAX_18))
-
-    const updatePayload: Record<string, unknown> = {
-      place: entryForm.place,
-      payout: entryForm.payout,
-      points: entryForm.points,
-      awards: entryForm.awards,
+    const updatePayload = historicalEntryUpdatePayload(entryEvent, editEntry, {
+      ...entryForm,
       tag_in: tagIn.value,
       tag_out: tagOut.value,
-    }
-
-    if (!isWeek1) {
-      updatePayload.made_final = entryForm.made_final
-      updatePayload.score_final = score(entryForm.score_final, MAX_FINAL)
-      if (!write18.omit) {
-        updatePayload.score_18 = write18.score_18
-      }
+    })
+    if (!updatePayload) {
+      setEntryError('Week 1 scores stay as played.')
+      return
     }
 
     try {
@@ -666,6 +654,7 @@ export default function Players() {
                 <span style={{ fontSize: 13 }}>Qualified for Final 9</span>
                 <Toggle
                   on={!!entryForm.made_final}
+                  disabled={disableFinal}
                   onChange={(v) => {
                     if (!disableFinal) {
                       setEntryForm((prev) => ({ ...prev, made_final: v }))
@@ -805,10 +794,10 @@ export default function Players() {
 
             {entryError && <small className="field-error">{entryError}</small>}
             <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
-              <button className="btn btn-primary" style={{ flex: 1 }} onClick={handleSaveEntry}>
+              <button className="btn btn-primary" style={{ flex: 1 }} disabled={isWeek1} onClick={handleSaveEntry}>
                 Save Changes
               </button>
-              <button className="btn btn-ghost btn-danger" onClick={handleDeleteEntry} title="Delete Entry">
+              <button className="btn btn-ghost btn-danger" disabled={isWeek1} onClick={handleDeleteEntry} title="Delete Entry">
                 <Trash2 size={15} /> Delete Entry
               </button>
             </div>
