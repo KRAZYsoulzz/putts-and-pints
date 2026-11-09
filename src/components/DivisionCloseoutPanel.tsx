@@ -9,6 +9,7 @@ export interface DivisionCloseoutPanelProps {
   division?: 'M' | 'W'
   heldReserve?: { perfect4: number; perfect5: number }
   releasedReserve?: number
+  previewText?: string | null
   canClose?: boolean
   isClosing?: boolean
   canCorrect?: boolean
@@ -24,6 +25,7 @@ export function DivisionCloseoutPanel({
   division,
   heldReserve,
   releasedReserve = 0,
+  previewText,
   canClose = false,
   isClosing = false,
   canCorrect = false,
@@ -44,6 +46,23 @@ export function DivisionCloseoutPanel({
       <div className="eyebrow" style={{ marginBottom: 8 }}>{divLabel} Closeout &amp; Shared Pots</div>
       {info.fundingNeeded && (
         <p className="funding-needed field-error" style={{ margin: '0 0 8px' }}>{info.fundingNeeded}</p>
+      )}
+      {previewText && !info.closed && (
+        <pre
+          className="closeout-preview muted"
+          style={{
+            margin: '0 0 10px',
+            padding: '8px 10px',
+            borderRadius: 6,
+            background: 'var(--surface-1)',
+            border: '1px solid var(--line)',
+            fontSize: 12,
+            whiteSpace: 'pre-wrap',
+            fontFamily: 'inherit',
+          }}
+        >
+          {previewText}
+        </pre>
       )}
       <div className="kv">
         <dt>Division closed</dt>

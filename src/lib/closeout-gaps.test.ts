@@ -253,7 +253,286 @@ check("closeout panels are wired into Results section of Tonight.tsx", () => {
   const tonight = readFileSync(fileURLToPath(new URL("../pages/Tonight.tsx", import.meta.url)), "utf8")
   assert.match(tonight, /DivisionCloseoutPanel/)
   assert.match(tonight, /CorrectionDraftPanel/)
+  assert.equal(tonight.includes("handleFinalize"), false, "legacy handleFinalize must be removed")
+  assert.equal(tonight.includes("Finalize & Post Event"), false, "legacy Finalize & Post Event button must be removed")
+  assert.equal(tonight.includes("from('pp_ledger')"), false, "Tonight.tsx must not insert or delete pp_ledger directly")
+  assert.match(tonight, /executeDivisionCloseFlow/)
+  assert.match(tonight, /executeCorrectionFlow/)
 })
+
+async function runAsyncChecks() {
+  const checkAsync = async (name: string, fn: () => Promise<void>) => {
+    try {
+      await fn()
+    } catch (err) {
+      failures.push(name + ": " + (err instanceof Error ? err.message : String(err)))
+    }
+  }
+
+  await checkAsync("RPC division close flow calls pp_preview_close first, shows preview, then calls pp_execute_division_close per division", async () => {
+    const rpcCalls: { fn: string; args?: Record<string, unknown> }[] = []
+    let dbState = {
+      closed_men: false,
+      closed_women: false,
+      shared_pots_posted: false,
+      reserve_p4_men: 0,
+      reserve_p5_men: 0,
+      reserve_p4_women: 0,
+      reserve_p5_women: 0,
+    }
+
+    const rpc: closeout.CloseoutRpcCaller = async (fn, args) => {
+      rpcCalls.push({ fn, args })
+      if (fn === "pp_preview_close") {
+        return {
+          data: {
+            event_id: week2.id,
+            season_id: week2.season_id,
+            close_mode: dbState.closed_men || dbState.closed_women ? "split" : "legacy",
+            ...dbState,
+            week1_frozen: false,
+            later_posted: false,
+            can_close: true,
+          },
+          error: null,
+        }
+      }
+      if (fn === "pp_execute_division_close") {
+        const div = args?.p_division as "M" | "W"
+        const closedM = dbState.closed_men || div === "M"
+        const closedW = dbState.closed_women || div === "W"
+        const shared = closedM && closedW
+        dbState = {
+          closed_men: closedM,
+          closed_women: closedW,
+          shared_pots_posted: shared,
+          reserve_p4_men: div === "M" && !shared ? Number(args?.p_reserve_p4 ?? 0) : shared ? 0 : dbState.reserve_p4_men,
+          reserve_p5_men: div === "M" && !shared ? Number(args?.p_reserve_p5 ?? 0) : shared ? 0 : dbState.reserve_p5_men,
+          reserve_p4_women: div === "W" && !shared ? Number(args?.p_reserve_p4 ?? 0) : shared ? 0 : dbState.reserve_p4_women,
+          reserve_p5_women: div === "W" && !shared ? Number(args?.p_reserve_p5 ?? 0) : shared ? 0 : dbState.reserve_p5_women,
+        }
+        return {
+          data: {
+            ok: true,
+            cached: false,
+            event_id: week2.id,
+            posting_id: "post-" + div,
+            division: div,
+            closed_men: closedM,
+            closed_women: closedW,
+            shared_pots_posted: shared,
+          },
+          error: null,
+        }
+      }
+      throw new Error("unexpected rpc: " + fn)
+    }
+
+    const entries = [
+      { id: "m1", player_id: "m1", division: "M" as const, created_at: "2026-11-12T01:00:01", awards: ["perfect4"], place: 1 },
+      { id: "m2", player_id: "m2", division: "M" as const, created_at: "2026-11-12T01:00:02", awards: [], place: 2 },
+      { id: "w1", player_id: "w1", division: "W" as const, created_at: "2026-11-12T02:00:01", awards: ["perfect4"], place: 1 },
+      { id: "w2", player_id: "w2", division: "W" as const, created_at: "2026-11-12T02:00:02", awards: [], place: 2 },
+    ]
+
+    let previewSeenM = ""
+    const closeM = await closeout.executeDivisionCloseFlow({
+      rpc,
+      event: week2,
+      division: "M",
+      settings: S,
+      entries,
+      balances: { M: bal({ perfect4: 20 }), W: bal({ perfect4: 20 }) },
+      bar: { M: 10, W: 10 },
+      openingNight: true,
+      payouts: { M: [15], W: [15] },
+      confirmPreview: (summary) => {
+        previewSeenM = summary.text
+        // At confirmation time, only pp_preview_close has been called
+        assert.equal(rpcCalls.length, 1)
+        assert.equal(rpcCalls[0].fn, "pp_preview_close")
+        return true
+      },
+    })
+
+    assert.equal(closeM.ok, true)
+    if (!closeM.ok) return
+    assert.match(previewSeenM, /Men's division close preview/i)
+    assert.match(previewSeenM, /Shared P4\/P5 reserve held/i)
+    assert.equal(rpcCalls.length, 2)
+    assert.equal(rpcCalls[0].fn, "pp_preview_close")
+    assert.equal(rpcCalls[1].fn, "pp_execute_division_close")
+    assert.equal(rpcCalls[1].args?.p_division, "M")
+    assert.match(String(rpcCalls[1].args?.p_request_id), /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+    assert.equal(closeM.closed.M, true)
+    assert.equal(closeM.closed.W, false)
+    assert.equal(closeM.sharedPosted, false)
+    assert.equal(closeM.postedLegs.some((l) => l.fund === "perfect4"), false, "shared P4 stays held on first close")
+    assert.equal(closeM.postedLegs.every((l) => l.division === "M"), true, "first close only posts Men's legs")
+
+    // Now close Women's after reload from DB (passing no local state, only DB flags on event)
+    let previewSeenW = ""
+    const closeW = await closeout.executeDivisionCloseFlow({
+      rpc,
+      event: {
+        ...week2,
+        pp_closed_men: dbState.closed_men,
+        pp_closed_women: dbState.closed_women,
+        pp_shared_pots_posted: dbState.shared_pots_posted,
+        pp_reserve_p4_men: dbState.reserve_p4_men,
+        pp_reserve_p5_men: dbState.reserve_p5_men,
+      },
+      division: "W",
+      settings: S,
+      entries,
+      balances: { M: bal({ perfect4: 20 }), W: bal({ perfect4: 20 }) },
+      bar: { M: 10, W: 10 },
+      openingNight: true,
+      payouts: { M: [15], W: [15] },
+      confirmPreview: (summary) => {
+        previewSeenW = summary.text
+        return true
+      },
+    })
+
+    assert.equal(closeW.ok, true)
+    if (!closeW.ok) return
+    assert.match(previewSeenW, /Women's division close preview/i)
+    assert.match(previewSeenW, /settling shared P4\/P5 pots now/i)
+    assert.equal(rpcCalls.length, 4)
+    assert.equal(rpcCalls[2].fn, "pp_preview_close")
+    assert.equal(rpcCalls[3].fn, "pp_execute_division_close")
+    assert.equal(rpcCalls[3].args?.p_division, "W")
+    assert.equal(closeW.closed.M, true)
+    assert.equal(closeW.closed.W, true)
+    assert.equal(closeW.sharedPosted, true)
+    assert.equal(closeW.postedLegs.filter((l) => l.fund === "perfect4" && l.kind === "bonus_payout").length, 2, "shared P4 settled once when second division closes")
+  })
+
+  await checkAsync("cancelling the preview confirmation does not call pp_execute_division_close", async () => {
+    const rpcCalls: string[] = []
+    const rpc: closeout.CloseoutRpcCaller = async (fn) => {
+      rpcCalls.push(fn)
+      return {
+        data: {
+          event_id: week2.id,
+          season_id: week2.season_id,
+          closed_men: false,
+          closed_women: false,
+          shared_pots_posted: false,
+          week1_frozen: false,
+          later_posted: false,
+          can_close: true,
+        },
+        error: null,
+      }
+    }
+    const res = await closeout.executeDivisionCloseFlow({
+      rpc,
+      event: week2,
+      division: "M",
+      settings: S,
+      entries: [{ id: "m1", player_id: "m1", division: "M", created_at: "2026-11-12T01:00:01", awards: [], place: 1 }],
+      balances: { M: bal(), W: bal() },
+      bar: { M: 0, W: 0 },
+      openingNight: true,
+      payouts: { M: [5], W: [] },
+      confirmPreview: () => false,
+    })
+    assert.equal(res.ok, false)
+    if (res.ok) return
+    assert.equal(res.reason, "cancelled")
+    assert.deepEqual(rpcCalls, ["pp_preview_close"])
+  })
+
+  await checkAsync("RPC correction flow calls pp_apply_correction and Week 1 event e1ff57b8-9569-485d-aaa2-d538470bf9f4 is blocked", async () => {
+    const prodWeek1 = {
+      id: "e1ff57b8-9569-485d-aaa2-d538470bf9f4",
+      season_id: "81298495-f87c-4d7c-a344-89b97e587d9b",
+      date: "2026-11-05",
+      name: "Week 1",
+    }
+    assert.equal(closeout.isWeek1Event({ id: "e1ff57b8-9569-485d-aaa2-d538470bf9f4" }), true)
+
+    const rpcCalls: { fn: string; args?: Record<string, unknown> }[] = []
+    const rpc: closeout.CloseoutRpcCaller = async (fn, args) => {
+      rpcCalls.push({ fn, args })
+      return {
+        data: {
+          ok: true,
+          event_id: week2.id,
+          correction_id: "corr-1",
+          division: args?.p_division,
+          reopened: args?.p_reopen,
+        },
+        error: null,
+      }
+    }
+
+    const blockedClose = await closeout.executeDivisionCloseFlow({
+      rpc,
+      event: prodWeek1,
+      division: "M",
+      settings: S,
+      entries: [],
+      balances: { M: bal(), W: bal() },
+      bar: { M: 0, W: 0 },
+      openingNight: true,
+      payouts: { M: [], W: [] },
+    })
+    assert.equal(blockedClose.ok, false)
+    if (!blockedClose.ok) assert.equal(blockedClose.reason, "week1_frozen")
+    assert.equal(rpcCalls.length, 0, "Week 1 must not even invoke RPC")
+
+    const draftRes = closeout.createCorrectionDraft({
+      event: { ...week2, pp_closed_women: true },
+      division: "W",
+      events: [{ ...week2, pp_closed_women: true }],
+      ledger: [{ event_id: week2.id }],
+      bookedCash: 50,
+      targetCash: 60,
+      balances: { M: bal({ purse: 50 }), W: bal({ purse: 50 }) },
+      originalPayouts: [{ id: "w1", player_id: "w1", place: 1, payout: 50 }],
+      reopenDivision: true,
+    })
+    assert.equal(draftRes.ok, true)
+    if (!draftRes.ok) return
+
+    const confirmedDraft: closeout.CorrectionDraft = {
+      ...draftRes.draft,
+      handled: 10,
+      acknowledged: true,
+      confirmation: closeout.CONFIRMATION_SENTENCE,
+    }
+
+    const blockedCorr = await closeout.executeCorrectionFlow({
+      rpc,
+      event: prodWeek1,
+      draft: confirmedDraft,
+    })
+    assert.equal(blockedCorr.ok, false)
+    if (!blockedCorr.ok) assert.equal(blockedCorr.reason, "week1_frozen")
+    assert.equal(rpcCalls.length, 0)
+
+    const appliedCorr = await closeout.executeCorrectionFlow({
+      rpc,
+      event: week2,
+      draft: confirmedDraft,
+    })
+    assert.equal(appliedCorr.ok, true)
+    if (!appliedCorr.ok) return
+    assert.equal(appliedCorr.reopened, true)
+    assert.equal(rpcCalls.length, 1)
+    assert.equal(rpcCalls[0].fn, "pp_apply_correction")
+    assert.equal(rpcCalls[0].args?.p_division, "W")
+    assert.equal(rpcCalls[0].args?.p_reopen, true)
+    assert.equal(rpcCalls[0].args?.p_cash_due, 10)
+    assert.equal(rpcCalls[0].args?.p_handled, 10)
+    assert.equal(rpcCalls[0].args?.p_confirmation, closeout.CONFIRMATION_SENTENCE)
+  })
+}
+
+await runAsyncChecks()
 
 if (failures.length) {
   console.log(failures.join("\n"))

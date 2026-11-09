@@ -106,9 +106,20 @@ function md5Hex(message: string): string {
   return Array.from(out, (b) => b.toString(16).padStart(2, '0')).join('')
 }
 
+export const WEEK1_EVENT_ID = 'e1ff57b8-9569-485d-aaa2-d538470bf9f4'
 const WEEK1_SEASON_ID = '81298495-f87c-4d7c-a344-89b97e587d9b'
 const WEEK1_DATE = '2026-11-05'
 const WEEK1_NAME = 'Week 1'
+
+export function closeoutPayloadHash(payload: unknown): string {
+  return sha256Hex(JSON.stringify(payload))
+}
+
+export function closeoutRequestUuid(seed: string): string {
+  const hex = sha256Hex(seed)
+  const variantNibble = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16)
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variantNibble}${hex.slice(17, 20)}-${hex.slice(20, 32)}`
+}
 
 interface EventRow {
   id: string
@@ -183,12 +194,14 @@ export function resolveWeek1Identity(
 }
 
 export function isWeek1Event(event: {
+  id?: string | null
   season_id?: string | null
   date?: string | null
   event_date?: string | null
   name?: string | null
 } | null | undefined): boolean {
   if (!event) return false
+  if (event.id === WEEK1_EVENT_ID) return true
   const eventDate = event.date ?? event.event_date ?? ''
   const eventName = event.name == null || event.name.trim() === '' ? WEEK1_NAME : event.name.trim()
   return (
@@ -199,7 +212,7 @@ export function isWeek1Event(event: {
 }
 
 export function refuseWeek1Finance(input: {
-  event: { season_id: string; date?: string; event_date?: string; name?: string | null }
+  event: { id?: string | null; season_id: string; date?: string; event_date?: string; name?: string | null }
   action: string
 }): { ok: true } | { ok: false; reason: 'week1_frozen' } {
   if (isWeek1Event(input.event)) {
@@ -1477,4 +1490,582 @@ export function closeoutReader(input: {
         : null,
   }
 }
+
+export interface PreviewCloseRpcResponse {
+  event_id: string
+  season_id: string
+  close_mode?: 'legacy' | 'split' | null
+  closed_men?: boolean | null
+  closed_women?: boolean | null
+  shared_pots_posted?: boolean | null
+  reserve_p4_men?: number | string | null
+  reserve_p5_men?: number | string | null
+  reserve_p4_women?: number | string | null
+  reserve_p5_women?: number | string | null
+  week1_frozen?: boolean | null
+  later_posted?: boolean | null
+  can_close?: boolean | null
+}
+
+export interface ExecuteDivisionCloseRpcResponse {
+  ok: boolean
+  cached?: boolean
+  event_id: string
+  posting_id?: string
+  division: 'M' | 'W'
+  closed_men: boolean
+  closed_women: boolean
+  shared_pots_posted: boolean
+}
+
+export interface ApplyCorrectionRpcResponse {
+  ok: boolean
+  event_id: string
+  correction_id: string
+  division: 'M' | 'W'
+  reopened: boolean
+}
+
+export type CloseoutRpcCaller = (
+  fn: string,
+  args?: Record<string, unknown>,
+) => PromiseLike<{ data: unknown; error: { message: string } | null }>
+
+export interface DivisionClosePreviewSummary {
+  division: 'M' | 'W'
+  divisionLabel: string
+  isSecondClose: boolean
+  entryPurse: number
+  barMatch: number
+  perfectRoundContribution: number
+  perfectRoundOverflow: number
+  placePayoutTotal: number
+  placePayouts: ReadonlyArray<{ note: string; amount: number; player_id: string | null }>
+  placeRemainderToPot: number
+  placeRemainderToBackup: number
+  highScorePayoutTotal: number
+  perfectRoundPayoutTotal: number
+  heldReserve: { perfect4: number; perfect5: number }
+  sharedP4PayoutTotal: number
+  sharedP5PayoutTotal: number
+  releasedReserve: number
+  legs: ReadonlyArray<Leg>
+  text: string
+}
+
+export function hydrateDivisionCloseState(params: {
+  event: {
+    pp_closed_men?: boolean | null
+    pp_closed_women?: boolean | null
+    pp_shared_pots_posted?: boolean | null
+    pp_reserve_p4_men?: number | null
+    pp_reserve_p5_men?: number | null
+    pp_reserve_p4_women?: number | null
+    pp_reserve_p5_women?: number | null
+    payouts_men?: readonly number[] | null
+    payouts_women?: readonly number[] | null
+  }
+  preview?: PreviewCloseRpcResponse | null
+  previous?: DivisionCloseState | null
+}): DivisionCloseState {
+  const base = params.previous ?? createEmptyDivisionCloseState()
+  const closedM = Boolean(params.preview?.closed_men ?? params.event.pp_closed_men ?? base.closed.M)
+  const closedW = Boolean(params.preview?.closed_women ?? params.event.pp_closed_women ?? base.closed.W)
+  const sharedPosted = Boolean(
+    params.preview?.shared_pots_posted ?? params.event.pp_shared_pots_posted ?? (closedM && closedW),
+  )
+  const num = (v: unknown, fallback = 0) => {
+    const n = Number(v)
+    return Number.isFinite(n) ? cents(n) : fallback
+  }
+  const reserveM = {
+    perfect4: num(params.preview?.reserve_p4_men ?? params.event.pp_reserve_p4_men, base.heldReserve.M.perfect4),
+    perfect5: num(params.preview?.reserve_p5_men ?? params.event.pp_reserve_p5_men, base.heldReserve.M.perfect5),
+  }
+  const reserveW = {
+    perfect4: num(params.preview?.reserve_p4_women ?? params.event.pp_reserve_p4_women, base.heldReserve.W.perfect4),
+    perfect5: num(params.preview?.reserve_p5_women ?? params.event.pp_reserve_p5_women, base.heldReserve.W.perfect5),
+  }
+
+  let firstDivision: 'M' | 'W' | null = base.firstDivision
+  if (closedM && !closedW) {
+    firstDivision = 'M'
+  } else if (closedW && !closedM) {
+    firstDivision = 'W'
+  } else if (!closedM && !closedW) {
+    firstDivision = null
+  } else if (!firstDivision) {
+    firstDivision = 'M'
+  }
+
+  const frozenChecks: { M?: readonly number[]; W?: readonly number[] } = {
+    ...base.frozenChecks,
+  }
+  if (closedM && (params.event.payouts_men?.length ?? 0) > 0 && !frozenChecks.M) {
+    frozenChecks.M = params.event.payouts_men!.map((n) => Number(n))
+  }
+  if (closedW && (params.event.payouts_women?.length ?? 0) > 0 && !frozenChecks.W) {
+    frozenChecks.W = params.event.payouts_women!.map((n) => Number(n))
+  }
+
+  return {
+    ...base,
+    closed: { M: closedM, W: closedW },
+    firstDivision,
+    sharedPosted,
+    heldReserve: { M: reserveM, W: reserveW },
+    frozenChecks,
+  }
+}
+
+export function buildDivisionClosePreview(params: {
+  division: 'M' | 'W'
+  isSecondClose: boolean
+  legs: ReadonlyArray<Leg>
+  heldReserve: { perfect4: number; perfect5: number }
+  releasedReserve: number
+}): DivisionClosePreviewSummary {
+  const { division, isSecondClose, legs, heldReserve, releasedReserve } = params
+  const divisionLabel = division === 'M' ? "Men's" : "Women's"
+  const sumAbs = (pred: (leg: Leg) => boolean) =>
+    cents(legs.filter(pred).reduce((acc, leg) => acc + Math.abs(leg.amount), 0))
+
+  const entryPurse = sumAbs((l) => l.division === division && l.fund === 'purse' && l.kind === 'entry' && l.amount > 0)
+  const barMatch = sumAbs((l) => l.division === division && l.fund === 'purse' && l.kind === 'bar_match' && l.amount > 0)
+  const perfectRoundContribution = sumAbs(
+    (l) => l.division === division && l.fund === 'perfect_round' && l.kind === 'entry' && l.amount > 0,
+  )
+  const perfectRoundOverflow = sumAbs(
+    (l) =>
+      l.division === division &&
+      l.fund === 'backup' &&
+      l.kind === 'overflow' &&
+      l.note === 'Over the cap' &&
+      l.amount > 0,
+  )
+  const placePayoutLegs = legs.filter(
+    (l) => l.division === division && l.fund === 'purse' && l.kind === 'place_payout' && l.amount < 0,
+  )
+  const placePayoutTotal = cents(placePayoutLegs.reduce((acc, l) => acc + Math.abs(l.amount), 0))
+  const placeRemainderToPot = sumAbs(
+    (l) =>
+      l.division === division &&
+      l.fund === 'perfect_round' &&
+      l.kind === 'transfer' &&
+      l.note === PLACE_REMAINDER_NOTE &&
+      l.amount > 0,
+  )
+  const placeRemainderToBackup = sumAbs(
+    (l) =>
+      l.division === division &&
+      l.fund === 'backup' &&
+      l.kind === 'overflow' &&
+      l.note === PLACE_REMAINDER_BACKUP_NOTE &&
+      l.amount > 0,
+  )
+  const highScorePayoutTotal = sumAbs(
+    (l) => l.division === division && l.fund === 'high_score' && l.kind === 'bonus_payout' && l.amount < 0,
+  )
+  const perfectRoundPayoutTotal = sumAbs(
+    (l) => l.division === division && l.fund === 'perfect_round' && l.kind === 'bonus_payout' && l.amount < 0,
+  )
+  const sharedP4PayoutTotal = sumAbs((l) => l.fund === 'perfect4' && l.kind === 'bonus_payout' && l.amount < 0)
+  const sharedP5PayoutTotal = sumAbs((l) => l.fund === 'perfect5' && l.kind === 'bonus_payout' && l.amount < 0)
+
+  const fmt = (n: number) => `$${cents(n).toFixed(2).replace(/\.00$/, '')}`
+  const lines: string[] = [`${divisionLabel} division close preview:`]
+  if (legs.length === 0) {
+    lines.push('• Re-closing division after correction (existing division ledger legs stay intact).')
+  } else {
+    lines.push(`• Purse funding: ${fmt(entryPurse)} entry share + ${fmt(barMatch)} bar match`)
+    lines.push(`• Place payouts (${placePayoutLegs.length}): ${fmt(placePayoutTotal)}`)
+    const remTotal = cents(placeRemainderToPot + placeRemainderToBackup)
+    lines.push(
+      `• Perfect Round pot: +${fmt(perfectRoundContribution)} entry ($2/player)` +
+        (remTotal > 0 ? ` + ${fmt(remTotal)} place remainder` : '') +
+        (perfectRoundOverflow > 0 ? ` (${fmt(perfectRoundOverflow)} overflow to Backup)` : ''),
+    )
+    if (highScorePayoutTotal > 0) {
+      lines.push(`• High Score bonus payout: ${fmt(highScorePayoutTotal)}`)
+    }
+    if (perfectRoundPayoutTotal > 0) {
+      lines.push(`• Perfect Round bonus payout: ${fmt(perfectRoundPayoutTotal)}`)
+    }
+  }
+
+  const heldTotal = cents(heldReserve.perfect4 + heldReserve.perfect5)
+  if (!isSecondClose) {
+    if (heldTotal > 0) {
+      lines.push(
+        `• Shared P4/P5 reserve held until other division closes: ${fmt(heldTotal)} (P4 ${fmt(heldReserve.perfect4)}, P5 ${fmt(heldReserve.perfect5)})`,
+      )
+    } else {
+      lines.push('• Shared P4/P5 pots stay held until both divisions close.')
+    }
+  } else {
+    lines.push(
+      `• Both divisions closing — settling shared P4/P5 pots now (P4 payout ${fmt(sharedP4PayoutTotal)}, P5 payout ${fmt(sharedP5PayoutTotal)}).`,
+    )
+    if (releasedReserve > 0) {
+      lines.push(`• Released unused shared reserve to Perfect Round pot: +${fmt(releasedReserve)}`)
+    }
+  }
+
+  return {
+    division,
+    divisionLabel,
+    isSecondClose,
+    entryPurse,
+    barMatch,
+    perfectRoundContribution,
+    perfectRoundOverflow,
+    placePayoutTotal,
+    placePayouts: placePayoutLegs.map((l) => ({
+      note: l.note,
+      amount: Math.abs(l.amount),
+      player_id: l.player_id,
+    })),
+    placeRemainderToPot,
+    placeRemainderToBackup,
+    highScorePayoutTotal,
+    perfectRoundPayoutTotal,
+    heldReserve,
+    sharedP4PayoutTotal,
+    sharedP5PayoutTotal,
+    releasedReserve,
+    legs,
+    text: lines.join('\n'),
+  }
+}
+
+export async function executeDivisionCloseFlow(params: {
+  rpc: CloseoutRpcCaller
+  event: {
+    id: string
+    season_id: string
+    date?: string
+    event_date?: string
+    name?: string | null
+    pp_closed_men?: boolean | null
+    pp_closed_women?: boolean | null
+    pp_shared_pots_posted?: boolean | null
+    pp_reserve_p4_men?: number | null
+    pp_reserve_p5_men?: number | null
+    pp_reserve_p4_women?: number | null
+    pp_reserve_p5_women?: number | null
+    payouts_men?: readonly number[] | null
+    payouts_women?: readonly number[] | null
+  }
+  division: 'M' | 'W'
+  settings: Settings
+  entries: ReadonlyArray<{
+    id: string
+    player_id: string
+    division: 'M' | 'W'
+    created_at: string
+    awards: readonly string[]
+    place: number
+  }>
+  balances: { M: Record<Fund, number>; W: Record<Fund, number> }
+  bar: { M: number; W: number }
+  openingNight: boolean
+  payouts: { M: readonly number[]; W: readonly number[] }
+  state?: DivisionCloseState
+  divisionAlreadyPosted?: boolean
+  requestNonce?: string | number
+  onPreview?: (summary: DivisionClosePreviewSummary) => void
+  confirmPreview?: (summary: DivisionClosePreviewSummary) => Promise<boolean> | boolean
+}): Promise<
+  | {
+      ok: false
+      reason:
+        | 'week1_frozen'
+        | 'chronology'
+        | 'legacy_pending'
+        | 'collision'
+        | 'funding_needed'
+        | 'negative_shared_carry'
+        | 'insolvent'
+        | 'already_closed'
+        | 'cancelled'
+        | 'rpc_error'
+      message: string
+      deficit?: number
+      preview?: DivisionClosePreviewSummary
+    }
+  | {
+      ok: true
+      cached: boolean
+      preview: DivisionClosePreviewSummary
+      rpcResult: ExecuteDivisionCloseRpcResponse
+      closed: { M: boolean; W: boolean }
+      sharedPosted: boolean
+      heldReserve: { M: { perfect4: number; perfect5: number }; W: { perfect4: number; perfect5: number } }
+      released: { M: number; W: number }
+      postedLegs: Leg[]
+      state: DivisionCloseState
+    }
+> {
+  if (isWeek1Event(params.event)) {
+    return {
+      ok: false,
+      reason: 'week1_frozen',
+      message: 'Week 1 is locked and cannot be modified.',
+    }
+  }
+
+  const previewRes = await params.rpc('pp_preview_close', { p_event_id: params.event.id })
+  if (previewRes.error) {
+    return {
+      ok: false,
+      reason: 'rpc_error',
+      message: previewRes.error.message,
+    }
+  }
+  const serverPreview = (previewRes.data ?? {}) as PreviewCloseRpcResponse
+  if (serverPreview.week1_frozen) {
+    return {
+      ok: false,
+      reason: 'week1_frozen',
+      message: 'Week 1 is locked and cannot be modified.',
+    }
+  }
+  if (serverPreview.later_posted || serverPreview.can_close === false) {
+    return {
+      ok: false,
+      reason: 'chronology',
+      message: 'Cannot close division because a later night has already been financially posted.',
+    }
+  }
+
+  const hydratedState = hydrateDivisionCloseState({
+    event: params.event,
+    preview: serverPreview,
+    previous: params.state ?? null,
+  })
+  if (hydratedState.closed[params.division]) {
+    return {
+      ok: false,
+      reason: 'already_closed',
+      message: `${params.division === 'M' ? "Men's" : "Women's"} division is already closed.`,
+    }
+  }
+
+  const payloadObj = {
+    eventId: params.event.id,
+    division: params.division,
+    payouts: params.payouts[params.division],
+    bar: params.bar,
+    reclose: Boolean(params.divisionAlreadyPosted),
+    nonce: params.requestNonce ?? 0,
+  }
+  const payloadHash = closeoutPayloadHash(payloadObj)
+  const requestId = closeoutRequestUuid(
+    `${params.event.id}:${params.division}:close:${payloadHash}`,
+  )
+
+  const step = closeDivisionStep({
+    state: hydratedState,
+    event: params.event,
+    division: params.division,
+    requestId,
+    payloadHash,
+    settings: params.settings,
+    entries: params.entries,
+    balances: params.balances,
+    bar: params.bar,
+    openingNight: params.openingNight,
+    payouts: params.payouts,
+    laterPosted: Boolean(serverPreview.later_posted),
+  })
+
+  if (!step.ok) {
+    return {
+      ok: false,
+      reason: step.reason,
+      deficit: step.deficit,
+      message: `Cannot close division: ${step.reason}`,
+    }
+  }
+
+  const legsToPost = params.divisionAlreadyPosted ? [] : step.postedLegs
+  const isSecondClose = step.sharedPosted
+  const releasedTotal = cents(step.released.M + step.released.W)
+  const previewSummary = buildDivisionClosePreview({
+    division: params.division,
+    isSecondClose,
+    legs: legsToPost,
+    heldReserve: step.heldReserve[params.division],
+    releasedReserve: releasedTotal,
+  })
+
+  params.onPreview?.(previewSummary)
+
+  if (params.confirmPreview) {
+    const confirmed = await params.confirmPreview(previewSummary)
+    if (!confirmed) {
+      return {
+        ok: false,
+        reason: 'cancelled',
+        message: 'Division close cancelled.',
+        preview: previewSummary,
+      }
+    }
+  }
+
+  const execRes = await params.rpc('pp_execute_division_close', {
+    p_event_id: params.event.id,
+    p_division: params.division,
+    p_request_id: requestId,
+    p_payload_hash: payloadHash,
+    p_legs: legsToPost,
+    p_reserve_p4: step.heldReserve[params.division].perfect4,
+    p_reserve_p5: step.heldReserve[params.division].perfect5,
+  })
+  if (execRes.error) {
+    return {
+      ok: false,
+      reason: 'rpc_error',
+      message: execRes.error.message,
+      preview: previewSummary,
+    }
+  }
+
+  const rpcData = (execRes.data ?? {}) as Partial<ExecuteDivisionCloseRpcResponse>
+  const finalClosed = {
+    M: typeof rpcData.closed_men === 'boolean' ? rpcData.closed_men : step.closed.M,
+    W: typeof rpcData.closed_women === 'boolean' ? rpcData.closed_women : step.closed.W,
+  }
+  const finalSharedPosted =
+    typeof rpcData.shared_pots_posted === 'boolean' ? rpcData.shared_pots_posted : step.sharedPosted
+
+  const finalState: DivisionCloseState = {
+    ...step.state,
+    closed: finalClosed,
+    sharedPosted: finalSharedPosted,
+  }
+
+  return {
+    ok: true,
+    cached: Boolean(rpcData.cached ?? step.cached),
+    preview: previewSummary,
+    rpcResult: {
+      ok: true,
+      cached: Boolean(rpcData.cached ?? step.cached),
+      event_id: rpcData.event_id ?? params.event.id,
+      posting_id: rpcData.posting_id,
+      division: params.division,
+      closed_men: finalClosed.M,
+      closed_women: finalClosed.W,
+      shared_pots_posted: finalSharedPosted,
+    },
+    closed: finalClosed,
+    sharedPosted: finalSharedPosted,
+    heldReserve: step.heldReserve,
+    released: step.released,
+    postedLegs: legsToPost,
+    state: finalState,
+  }
+}
+
+export async function executeCorrectionFlow(params: {
+  rpc: CloseoutRpcCaller
+  event: {
+    id: string
+    season_id: string
+    date?: string
+    event_date?: string
+    name?: string | null
+  }
+  draft: CorrectionDraft
+  requestNonce?: string | number
+}): Promise<
+  | {
+      ok: false
+      reason: 'week1_frozen' | 'confirmation_required' | 'rpc_error'
+      message: string
+    }
+  | {
+      ok: true
+      reopened: boolean
+      adjustmentLegs: Leg[]
+      rpcResult: ApplyCorrectionRpcResponse
+      draft: CorrectionDraft
+    }
+> {
+  if (isWeek1Event(params.event)) {
+    return {
+      ok: false,
+      reason: 'week1_frozen',
+      message: 'Week 1 is locked and cannot be corrected.',
+    }
+  }
+
+  const applied = applyCorrectionDraft({
+    draft: params.draft,
+    handled: params.draft.handled,
+    acknowledged: params.draft.acknowledged,
+    confirmation: params.draft.confirmation,
+  })
+  if (!applied.ok) {
+    return {
+      ok: false,
+      reason: 'confirmation_required',
+      message: 'Confirm physical cash settlement before posting this correction.',
+    }
+  }
+
+  const payloadObj = {
+    eventId: params.event.id,
+    division: params.draft.division,
+    bookedCash: params.draft.bookedCash,
+    targetCash: params.draft.targetCash,
+    cashDue: params.draft.cashDue,
+    handled: params.draft.handled,
+    reopen: applied.reopened,
+    legs: applied.adjustmentLegs,
+    nonce: params.requestNonce ?? params.draft.id,
+  }
+  const payloadHash = closeoutPayloadHash(payloadObj)
+  const requestId = closeoutRequestUuid(
+    `${params.event.id}:${params.draft.division}:correction:${payloadHash}`,
+  )
+
+  const rpcRes = await params.rpc('pp_apply_correction', {
+    p_event_id: params.event.id,
+    p_division: params.draft.division,
+    p_request_id: requestId,
+    p_payload_hash: payloadHash,
+    p_confirmation: params.draft.confirmation,
+    p_cash_due: params.draft.cashDue,
+    p_handled: params.draft.handled,
+    p_legs: applied.adjustmentLegs,
+    p_reopen: applied.reopened,
+  })
+  if (rpcRes.error) {
+    return {
+      ok: false,
+      reason: 'rpc_error',
+      message: rpcRes.error.message,
+    }
+  }
+
+  const rpcData = (rpcRes.data ?? {}) as Partial<ApplyCorrectionRpcResponse>
+  const reopened = typeof rpcData.reopened === 'boolean' ? rpcData.reopened : applied.reopened
+
+  return {
+    ok: true,
+    reopened,
+    adjustmentLegs: applied.adjustmentLegs,
+    rpcResult: {
+      ok: true,
+      event_id: rpcData.event_id ?? params.event.id,
+      correction_id: rpcData.correction_id ?? '',
+      division: params.draft.division,
+      reopened,
+    },
+    draft: applied.draft,
+  }
+}
+
 

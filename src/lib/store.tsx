@@ -42,11 +42,24 @@ const Ctx = createContext<Data | null>(null)
 /** Numeric columns sometimes come back as strings. Keep them numbers so inputs and sums stay honest. */
 function normalizeEvent(row: PPEvent): PPEvent {
   const nums = (list: number[] | null | undefined) => (list ?? []).map(n => Number(n)).filter(n => Number.isFinite(n))
-  const money = (n: number) => {
+  const money = (n: number | null | undefined) => {
     const v = Number(n)
     return Number.isFinite(v) ? v : 0
   }
-  return { ...row, bar_match_men: money(row.bar_match_men), bar_match_women: money(row.bar_match_women), payouts_men: nums(row.payouts_men), payouts_women: nums(row.payouts_women) }
+  return {
+    ...row,
+    bar_match_men: money(row.bar_match_men),
+    bar_match_women: money(row.bar_match_women),
+    payouts_men: nums(row.payouts_men),
+    payouts_women: nums(row.payouts_women),
+    pp_closed_men: Boolean(row.pp_closed_men),
+    pp_closed_women: Boolean(row.pp_closed_women),
+    pp_shared_pots_posted: Boolean(row.pp_shared_pots_posted),
+    pp_reserve_p4_men: money(row.pp_reserve_p4_men),
+    pp_reserve_p5_men: money(row.pp_reserve_p5_men),
+    pp_reserve_p4_women: money(row.pp_reserve_p4_women),
+    pp_reserve_p5_women: money(row.pp_reserve_p5_women),
+  }
 }
 
 /** Throw-on-error wrapper. Callers see a short message; the raw database text stays in the console. */

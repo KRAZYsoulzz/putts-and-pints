@@ -504,10 +504,13 @@ export function isOpeningTagNight(
   return first.id === eventId
 }
 
+export const WEEK1_EVENT_ID = 'e1ff57b8-9569-485d-aaa2-d538470bf9f4'
+
 export function isSeason9Week1(
-  event: { season_id?: string | null; event_date?: string | null; name?: string | null } | null | undefined,
+  event: { id?: string | null; season_id?: string | null; event_date?: string | null; name?: string | null } | null | undefined,
 ): boolean {
   if (!event) return false
+  if (event.id === WEEK1_EVENT_ID) return true
   return (
     event.season_id === '81298495-f87c-4d7c-a344-89b97e587d9b' &&
     event.event_date === '2026-11-05' &&
@@ -516,7 +519,7 @@ export function isSeason9Week1(
 }
 
 export function week1AllowsScorePatch(
-  event: { season_id?: string | null; event_date?: string | null; name?: string | null } | null | undefined,
+  event: { id?: string | null; season_id?: string | null; event_date?: string | null; name?: string | null } | null | undefined,
   patch: Partial<Entry> | Record<string, unknown>,
 ): boolean {
   if (!isSeason9Week1(event)) return true
@@ -524,7 +527,7 @@ export function week1AllowsScorePatch(
 }
 
 export function week1AllowsEventPatch(
-  event: { season_id?: string | null; event_date?: string | null; name?: string | null } | null | undefined,
+  event: { id?: string | null; season_id?: string | null; event_date?: string | null; name?: string | null } | null | undefined,
   patch: Record<string, unknown>,
 ): boolean {
   if (!isSeason9Week1(event)) return true
