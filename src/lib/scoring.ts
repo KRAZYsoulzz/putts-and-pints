@@ -399,9 +399,16 @@ export function tonightBoard(
       }
     }
   } else {
+    const completed18 = entries.filter(e => totals(e).t18 != null)
+    const rankedFinal = rank(completed18, {
+      score: e => (e.made_final && liveNightTotal(e) != null ? liveNightTotal(e) : totals(e).t18),
+      group: e => (!e.made_final ? 2 : liveNightTotal(e) != null ? 0 : 1),
+      mode: settings.ties.placement,
+      countback: settings.ties.countback,
+    })
     const finalists: TonightBoardRow[] = []
     const nonFinalists: TonightBoardRow[] = []
-    for (const r of completedEntries) {
+    for (const r of rankedFinal) {
       if (r.entry.made_final) {
         finalists.push(toRow(r))
       } else {

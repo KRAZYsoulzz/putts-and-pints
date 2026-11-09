@@ -1243,14 +1243,127 @@ const finB = e({ id: 'fin-b', created_at: '2026-11-08T22:00:00.000Z', score_18: 
 assert.deepEqual(tonightBoard([finA, finB], S, 'final9').completed.map(row => row.id), ['fin-b', 'fin-a'])
 assert.equal(tonightBoard([finA, finB], S, 'final9').completed.find(row => row.id === 'fin-a')?.night, null)
 finA.score_final = 12
-assert.deepEqual(tonightBoard([finA, finB], S, 'final9').completed.map(row => row.id), ['fin-b', 'fin-a'])
+assert.deepEqual(tonightBoard([finA, finB], S, 'final9').completed.map(row => row.id), ['fin-a', 'fin-b'])
 assert.equal(tonightBoard([finA, finB], S, 'final9').completed.find(row => row.id === 'fin-a')?.night, 48)
 finB.score_final = 0
 const afterZero = tonightBoard([finA, finB], S, 'final9')
 assert.equal(afterZero.provisional, false)
 assert.equal(afterZero.completed.find(row => row.id === 'fin-b')?.finalNine, 0)
 assert.equal(afterZero.completed.find(row => row.id === 'fin-b')?.night, 40)
-assert.deepEqual(afterZero.completed.map(row => row.id), ['fin-b', 'fin-a'])
+assert.deepEqual(afterZero.completed.map(row => row.id), ['fin-a', 'fin-b'])
+
+// 27-player Men's division (13 finalists, 14 non-finalists) + 7-player Women's division (3 finalists, 4 non-finalists)
+// Reproduces bug where J Ferguson (Night Total 58) and Dirk Tailford (Night Total 57) had lower 18 totals
+// and appeared below finalists with lower Night Totals after Final 9.
+const men27: Entry[] = [
+  // Two finalists tied at 65
+  e({ id: 'm-top-a', division: 'M', created_at: '2026-11-08T18:01:00.000Z', score_front: 22, score_back: 21, score_18: 43, made_final: true, score_final: 22 }), // 65
+  e({ id: 'm-top-b', division: 'M', created_at: '2026-11-08T18:02:00.000Z', score_front: 21, score_back: 21, score_18: 42, made_final: true, score_final: 23 }), // 65
+  // Other finalists with higher 18-hole scores (35..41) but lower Final 9 scores -> Night Totals 48..60
+  e({ id: 'm-fin-60', division: 'M', created_at: '2026-11-08T18:03:00.000Z', score_front: 21, score_back: 20, score_18: 41, made_final: true, score_final: 19 }), // 60
+  e({ id: 'm-fin-56', division: 'M', created_at: '2026-11-08T18:04:00.000Z', score_front: 20, score_back: 20, score_18: 40, made_final: true, score_final: 16 }), // 56
+  e({ id: 'm-fin-55', division: 'M', created_at: '2026-11-08T18:05:00.000Z', score_front: 20, score_back: 19, score_18: 39, made_final: true, score_final: 16 }), // 55
+  e({ id: 'm-fin-54', division: 'M', created_at: '2026-11-08T18:06:00.000Z', score_front: 19, score_back: 19, score_18: 38, made_final: true, score_final: 16 }), // 54
+  e({ id: 'm-fin-53', division: 'M', created_at: '2026-11-08T18:07:00.000Z', score_front: 19, score_back: 18, score_18: 37, made_final: true, score_final: 16 }), // 53
+  e({ id: 'm-fin-52', division: 'M', created_at: '2026-11-08T18:08:00.000Z', score_front: 18, score_back: 18, score_18: 36, made_final: true, score_final: 16 }), // 52
+  e({ id: 'm-fin-51', division: 'M', created_at: '2026-11-08T18:09:00.000Z', score_front: 18, score_back: 18, score_18: 36, made_final: true, score_final: 15 }), // 51
+  e({ id: 'm-fin-50', division: 'M', created_at: '2026-11-08T18:10:00.000Z', score_front: 18, score_back: 17, score_18: 35, made_final: true, score_final: 15 }), // 50
+  e({ id: 'm-fin-48', division: 'M', created_at: '2026-11-08T18:11:00.000Z', score_front: 18, score_back: 17, score_18: 35, made_final: true, score_final: 13 }), // 48
+  // J Ferguson (18 total 34, Final 9 24 -> Night Total 58) and Dirk Tailford (18 total 33, Final 9 24 -> Night Total 57)
+  e({ id: 'j-ferguson', division: 'M', created_at: '2026-11-08T18:12:00.000Z', score_front: 17, score_back: 17, score_18: 34, made_final: true, score_final: 24 }), // 58
+  e({ id: 'dirk-tailford', division: 'M', created_at: '2026-11-08T18:13:00.000Z', score_front: 17, score_back: 16, score_18: 33, made_final: true, score_final: 24 }), // 57
+  // 14 non-finalists (18 totals 19..32, given in non-sorted order)
+  e({ id: 'm-cut-25', division: 'M', created_at: '2026-11-08T18:14:00.000Z', score_front: 13, score_back: 12, score_18: 25, made_final: false }),
+  e({ id: 'm-cut-32', division: 'M', created_at: '2026-11-08T18:15:00.000Z', score_front: 16, score_back: 16, score_18: 32, made_final: false }),
+  e({ id: 'm-cut-19', division: 'M', created_at: '2026-11-08T18:16:00.000Z', score_front: 10, score_back: 9, score_18: 19, made_final: false }),
+  e({ id: 'm-cut-31', division: 'M', created_at: '2026-11-08T18:17:00.000Z', score_front: 16, score_back: 15, score_18: 31, made_final: false }),
+  e({ id: 'm-cut-28', division: 'M', created_at: '2026-11-08T18:18:00.000Z', score_front: 14, score_back: 14, score_18: 28, made_final: false }),
+  e({ id: 'm-cut-30', division: 'M', created_at: '2026-11-08T18:19:00.000Z', score_front: 15, score_back: 15, score_18: 30, made_final: false }),
+  e({ id: 'm-cut-22', division: 'M', created_at: '2026-11-08T18:20:00.000Z', score_front: 11, score_back: 11, score_18: 22, made_final: false }),
+  e({ id: 'm-cut-29', division: 'M', created_at: '2026-11-08T18:21:00.000Z', score_front: 15, score_back: 14, score_18: 29, made_final: false }),
+  e({ id: 'm-cut-27', division: 'M', created_at: '2026-11-08T18:22:00.000Z', score_front: 14, score_back: 13, score_18: 27, made_final: false }),
+  e({ id: 'm-cut-24', division: 'M', created_at: '2026-11-08T18:23:00.000Z', score_front: 12, score_back: 12, score_18: 24, made_final: false }),
+  e({ id: 'm-cut-26', division: 'M', created_at: '2026-11-08T18:24:00.000Z', score_front: 13, score_back: 13, score_18: 26, made_final: false }),
+  e({ id: 'm-cut-21', division: 'M', created_at: '2026-11-08T18:25:00.000Z', score_front: 11, score_back: 10, score_18: 21, made_final: false }),
+  e({ id: 'm-cut-23', division: 'M', created_at: '2026-11-08T18:26:00.000Z', score_front: 12, score_back: 11, score_18: 23, made_final: false }),
+  e({ id: 'm-cut-20', division: 'M', created_at: '2026-11-08T18:27:00.000Z', score_front: 10, score_back: 10, score_18: 20, made_final: false }),
+]
+for (const statusAfterF9 of ['final9', 'results'] as const) {
+  const menBoard = tonightBoard(men27, S, statusAfterF9, 13)
+  assert.equal(menBoard.completed.length, 27)
+  assert.equal(menBoard.provisional, false)
+  const menFinalRows = menBoard.completed.slice(0, 13)
+  const menNonFinalRows = menBoard.completed.slice(13)
+  assert.deepEqual(
+    menFinalRows.map(r => r.id),
+    [
+      'm-top-a',
+      'm-top-b',
+      'm-fin-60',
+      'j-ferguson',
+      'dirk-tailford',
+      'm-fin-56',
+      'm-fin-55',
+      'm-fin-54',
+      'm-fin-53',
+      'm-fin-52',
+      'm-fin-51',
+      'm-fin-50',
+      'm-fin-48',
+    ],
+    `27-player Men's finalists sorted by Night Total desc in ${statusAfterF9}`,
+  )
+  assert.deepEqual(
+    menFinalRows.map(r => r.place),
+    [1, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
+    'two finalists tied at 65 share 1st, followed by 3rd..13th by Night Total',
+  )
+  // Verify countback tiebreak mode shows 1st/2nd for the two tied at 65
+  const menBoardCb = tonightBoard(men27, { ...S, ties: { ...S.ties, placement: 'countback' } }, statusAfterF9, 13)
+  assert.deepEqual(menBoardCb.completed.slice(0, 2).map(r => r.id), ['m-top-b', 'm-top-a'])
+  assert.deepEqual(menBoardCb.completed.slice(0, 2).map(r => r.place), [1, 2])
+  assert.equal(menBoard.cutAfterId, 'm-fin-48', 'cut line placed immediately after the 13th finalist')
+  assert.deepEqual(
+    menNonFinalRows.map(r => r.id),
+    [
+      'm-cut-32',
+      'm-cut-31',
+      'm-cut-30',
+      'm-cut-29',
+      'm-cut-28',
+      'm-cut-27',
+      'm-cut-26',
+      'm-cut-25',
+      'm-cut-24',
+      'm-cut-23',
+      'm-cut-22',
+      'm-cut-21',
+      'm-cut-20',
+      'm-cut-19',
+    ],
+    `non-finalists sorted by 18 total desc after the cut line in ${statusAfterF9}`,
+  )
+  assert.deepEqual(
+    menNonFinalRows.map(r => r.place),
+    [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27],
+  )
+}
+
+const women7: Entry[] = [
+  e({ id: 'w-fin-3', division: 'W', created_at: '2026-11-08T18:30:00.000Z', score_front: 16, score_back: 16, score_18: 32, made_final: true, score_final: 20 }), // 52
+  e({ id: 'w-fin-1', division: 'W', created_at: '2026-11-08T18:31:00.000Z', score_front: 18, score_back: 18, score_18: 36, made_final: true, score_final: 19 }), // 55
+  e({ id: 'w-fin-2', division: 'W', created_at: '2026-11-08T18:32:00.000Z', score_front: 17, score_back: 17, score_18: 34, made_final: true, score_final: 20 }), // 54
+  e({ id: 'w-cut-4', division: 'W', created_at: '2026-11-08T18:33:00.000Z', score_front: 12, score_back: 12, score_18: 24, made_final: false }),
+  e({ id: 'w-cut-1', division: 'W', created_at: '2026-11-08T18:34:00.000Z', score_front: 15, score_back: 15, score_18: 30, made_final: false }),
+  e({ id: 'w-cut-3', division: 'W', created_at: '2026-11-08T18:35:00.000Z', score_front: 13, score_back: 13, score_18: 26, made_final: false }),
+  e({ id: 'w-cut-2', division: 'W', created_at: '2026-11-08T18:36:00.000Z', score_front: 14, score_back: 14, score_18: 28, made_final: false }),
+]
+const womenBoard = tonightBoard(women7, S, 'final9', 3)
+assert.deepEqual(
+  womenBoard.completed.map(r => r.id),
+  ['w-fin-1', 'w-fin-2', 'w-fin-3', 'w-cut-1', 'w-cut-2', 'w-cut-3', 'w-cut-4'],
+)
+assert.equal(womenBoard.cutAfterId, 'w-fin-3')
 
 const cutHi = e({ id: 'cut-hi', created_at: '2026-11-08T17:00:00.000Z', score_18: 50, score_front: null, score_back: null })
 const cutMid = e({ id: 'cut-mid', created_at: '2026-11-08T18:00:00.000Z', score_18: 40, score_front: null, score_back: null })

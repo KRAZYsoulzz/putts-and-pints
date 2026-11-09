@@ -1077,9 +1077,10 @@ export default function Tonight() {
 
   const viewingOther = viewEventId != null && liveEvent != null && viewEventId !== liveEvent.id
   const eventLabel = event.name?.trim() || 'Tonight’s Tournament'
+  const isPublicLeaderboard = !isAdmin && event.status !== 'complete'
 
   return (
-    <div className="tonight-page">
+    <div className={`tonight-page${isPublicLeaderboard ? ' public-view' : ''}`}>
       <PageHead
         eyebrow={`${event.name?.trim() ? `${event.name.trim()} · ` : ''}${event.event_date} · ${event.status}`}
         title={eventLabel}
@@ -1387,108 +1388,111 @@ export default function Tonight() {
       )}
 
       {!isAdmin && event.status !== 'complete' ? (
-        <div className="section stack" style={{ gap: 28 }}>
+        <div className="section stack leaderboard-section">
           <div>
             <h2 className="display section-title">Tonight's Leaderboard</h2>
             <p className="muted" style={{ fontSize: 13, marginTop: 4 }}>
               Live scoring and cut standings. Completed rounds are ranked, followed by partial rounds and players on the course.
             </p>
           </div>
-          {DIVS.map(d => {
-            const dEntries = entries.filter(e => e.event_id === event.id && e.division === d)
-            const savedCut = d === 'M' ? event.final_cut_men : event.final_cut_women
-            const board = tonightBoard(dEntries, settings, event.status, savedCut)
-            const entryMap = new Map(dEntries.map(ent => [ent.id, ent]))
-            const renderRow = (row: typeof board.completed[number]) => {
-              const ent = entryMap.get(row.id)
-              const p = ent ? playerById.get(ent.player_id) : null
+          <div className="leaderboard-grid">
+            {DIVS.map(d => {
+              const dEntries = entries.filter(e => e.event_id === event.id && e.division === d)
+              const savedCut = d === 'M' ? event.final_cut_men : event.final_cut_women
+              const board = tonightBoard(dEntries, settings, event.status, savedCut)
+              const entryMap = new Map(dEntries.map(ent => [ent.id, ent]))
+              const renderRow = (row: typeof board.completed[number]) => {
+                const ent = entryMap.get(row.id)
+                const p = ent ? playerById.get(ent.player_id) : null
+                const playerName = p?.name ?? 'Unknown Player'
+                return (
+                  <tr key={row.id} className={row.place === 1 ? 'leader' : ''}>
+                    <td className="place col-plc">{row.place != null && row.place > 0 ? ordinal(row.place) : '—'}</td>
+                    <td className="strong col-player" title={playerName}>
+                      <span className="player-name">{playerName}</span>
+                      {ent?.awards && ent.awards.length > 0 && (
+                        <span className="chips">
+                          {ent.awards.map(a => <span key={a} className="chip chip-teal">{AWARD_SHORT[a]}</span>)}
+                        </span>
+                      )}
+                    </td>
+                    <td className="c col-score">{row.front != null ? row.front : '—'}</td>
+                    <td className="c col-score">{row.back != null ? row.back : '—'}</td>
+                    <td className="c bl strong col-score">{row.t18 != null ? row.t18 : '—'}</td>
+                    <td className="c bl col-score">{row.finalNine != null ? row.finalNine : '—'}</td>
+                    <td className="c bl big col-score">{row.night != null ? row.night : '—'}</td>
+                  </tr>
+                )
+              }
+              const allEmpty = board.completed.length === 0 && board.partial.length === 0 && board.unscored.length === 0
               return (
-                <tr key={row.id} className={row.place === 1 ? 'leader' : ''}>
-                  <td className="place">{row.place != null && row.place > 0 ? ordinal(row.place) : '—'}</td>
-                  <td className="strong">
-                    {p?.name ?? 'Unknown Player'}
-                    {ent?.awards && ent.awards.length > 0 && (
-                      <span className="chips">
-                        {ent.awards.map(a => <span key={a} className="chip chip-teal">{AWARD_SHORT[a]}</span>)}
-                      </span>
-                    )}
-                  </td>
-                  <td className="c">{row.front != null ? row.front : '—'}</td>
-                  <td className="c">{row.back != null ? row.back : '—'}</td>
-                  <td className="c bl strong">{row.t18 != null ? row.t18 : '—'}</td>
-                  <td className="c bl">{row.finalNine != null ? row.finalNine : '—'}</td>
-                  <td className="c bl big">{row.night != null ? row.night : '—'}</td>
-                </tr>
-              )
-            }
-            const allEmpty = board.completed.length === 0 && board.partial.length === 0 && board.unscored.length === 0
-            return (
-              <div key={d} className="stack" style={{ gap: 12 }}>
-                <div className="row" style={{ justifyContent: 'space-between' }}>
-                  <h3 className="display" style={{ fontSize: 20 }}>
-                    {d === 'M' ? "Men's Division" : "Women's Division"}
-                  </h3>
-                  <span className="muted" style={{ fontSize: 13 }}>
-                    {dEntries.length} {dEntries.length === 1 ? 'player' : 'players'}
-                  </span>
-                </div>
-                <div className="panel">
-                  <div className="table-wrap">
-                    <table className="table">
-                      <thead>
-                        <tr>
-                          <th style={{ width: 45 }}>Plc</th>
-                          <th>Player</th>
-                          <th className="c" style={{ width: 80 }}>Front 9</th>
-                          <th className="c" style={{ width: 80 }}>Back 9</th>
-                          <th className="c bl" style={{ width: 80 }}>18 Total</th>
-                          <th className="c bl" style={{ width: 80 }}>Final 9</th>
-                          <th className="c bl" style={{ width: 90 }}>Night Total</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {allEmpty ? (
+                <div key={d} className="stack leaderboard-division">
+                  <div className="row" style={{ justifyContent: 'space-between' }}>
+                    <h3 className="display" style={{ fontSize: 18 }}>
+                      {d === 'M' ? "Men's Division" : "Women's Division"}
+                    </h3>
+                    <span className="muted" style={{ fontSize: 12 }}>
+                      {dEntries.length} {dEntries.length === 1 ? 'player' : 'players'}
+                    </span>
+                  </div>
+                  <div className="panel">
+                    <div className="table-wrap">
+                      <table className="table leaderboard-table">
+                        <thead>
                           <tr>
-                            <td colSpan={7} style={{ textAlign: 'center', padding: '36px 0' }} className="muted">
-                              No players checked into this division yet.
-                            </td>
+                            <th className="col-plc">Plc</th>
+                            <th className="col-player">Player</th>
+                            <th className="c col-score">Front 9</th>
+                            <th className="c col-score">Back 9</th>
+                            <th className="c bl col-score">18 Total</th>
+                            <th className="c bl col-score">Final 9</th>
+                            <th className="c bl col-score">Night Total</th>
                           </tr>
-                        ) : (
-                          <>
-                            {board.completed.map(row => (
-                              <Fragment key={row.id}>
-                                {renderRow(row)}
-                                {row.id === board.cutAfterId && (
-                                  <tr className="cut-line">
-                                    <td
-                                      colSpan={7}
-                                      style={{
-                                        textAlign: 'center',
-                                        background: 'var(--surface-2)',
-                                        padding: '6px 12px',
-                                        fontSize: 12,
-                                        fontWeight: 600,
-                                        color: 'var(--orange)',
-                                        letterSpacing: '0.04em',
-                                      }}
-                                    >
-                                      Cut line ({board.provisional ? 'provisional' : 'confirmed'})
-                                    </td>
-                                  </tr>
-                                )}
-                              </Fragment>
-                            ))}
-                            {board.partial.map(row => renderRow(row))}
-                            {board.unscored.map(row => renderRow(row))}
-                          </>
-                        )}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody>
+                          {allEmpty ? (
+                            <tr>
+                              <td colSpan={7} style={{ textAlign: 'center', padding: '24px 0' }} className="muted">
+                                No players checked into this division yet.
+                              </td>
+                            </tr>
+                          ) : (
+                            <>
+                              {board.completed.map(row => (
+                                <Fragment key={row.id}>
+                                  {renderRow(row)}
+                                  {row.id === board.cutAfterId && (
+                                    <tr className="cut-line">
+                                      <td
+                                        colSpan={7}
+                                        style={{
+                                          textAlign: 'center',
+                                          background: 'var(--surface-2)',
+                                          padding: '2px 8px',
+                                          fontSize: 11,
+                                          fontWeight: 600,
+                                          color: 'var(--orange)',
+                                          letterSpacing: '0.04em',
+                                        }}
+                                      >
+                                        Cut line ({board.provisional ? 'provisional' : 'confirmed'})
+                                      </td>
+                                    </tr>
+                                  )}
+                                </Fragment>
+                              ))}
+                              {board.partial.map(row => renderRow(row))}
+                              {board.unscored.map(row => renderRow(row))}
+                            </>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 </div>
-              </div>
-            )
-          })}
+              )
+            })}
+          </div>
         </div>
       ) : (event.status === 'results' || event.status === 'complete') && (
         <div className="section">
