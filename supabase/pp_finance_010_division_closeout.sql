@@ -167,11 +167,11 @@ as $$
 begin
   if not coalesce(pp_private.pp_finance_is_admin(), false) then
     raise exception 'insufficient privilege'
-      using errcode = 'insufficient_privilege';
+      using errcode = '42501';
   end if;
 
   raise exception 'canonical close is not installed for execution yet'
-    using errcode = 'feature_not_enabled';
+    using errcode = '0A000';
 end;
 $$;
 
