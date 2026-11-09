@@ -2,13 +2,17 @@ import { Fragment, useEffect, useMemo, useRef, useState, type MouseEvent } from 
 import {
   Check,
   ChevronRight,
+  LayoutGrid,
+  List,
   Lock,
   Minus,
   Plus,
   RotateCcw,
+  Shuffle,
   Sparkles,
   Trophy,
   UserPlus,
+  Users,
 } from 'lucide-react'
 import { useData, must } from '../lib/store'
 import { supabase } from '../lib/supabase'
@@ -45,6 +49,22 @@ import {
 import DivisionCloseoutPanel from '../components/DivisionCloseoutPanel'
 import CorrectionDraftPanel from '../components/CorrectionDraftPanel'
 import { Dialog, DivisionSeg, Menu, MoneyInput, PageHead, ScoreInput, Stat, Toggle, money, ordinal } from '../components/ui'
+import {
+  assignPlayerToSmallestCard,
+  clearEventCards,
+  generateEventCards,
+  loadCheckinViewMode,
+  loadEventCards,
+  loadScoreViewMode,
+  movePlayerBetweenCards,
+  removePlayerFromCards,
+  saveCheckinViewMode,
+  saveEventCards,
+  saveScoreViewMode,
+  shuffleDivisionCards,
+  type CardSortMode,
+  type PPEvtCards,
+} from '../lib/cards'
 
 const STEPS: { status: EventStatus; label: string }[] = [
   { status: 'checkin', label: '1. Check-in' },
@@ -88,6 +108,27 @@ export default function Tonight() {
   const [correctionDrafts, setCorrectionDrafts] = useState<Record<string, CorrectionDraft | null>>({})
   const [correctionError, setCorrectionError] = useState<string | null>(null)
   const [reopenedDivisions, setReopenedDivisions] = useState<Record<string, boolean>>({})
+
+  const [eventCards, setEventCards] = useState<PPEvtCards | null>(() => {
+    if (!event) return null
+    return loadEventCards(event.id)
+  })
+  const [makeCardsOpen, setMakeCardsOpen] = useState(false)
+  const [cardSizeInput, setCardSizeInput] = useState(4)
+  const [cardSortInput, setCardSortInput] = useState<CardSortMode>('checkin')
+  const [scoreViewMode, setScoreViewMode] = useState<'list' | 'card'>(loadScoreViewMode)
+  const [checkinViewMode, setCheckinViewMode] = useState<'list' | 'card'>(loadCheckinViewMode)
+
+  useEffect(() => {
+    if (!event) {
+      setEventCards(null)
+      return
+    }
+    const loaded = loadEventCards(event.id)
+    setEventCards(loaded)
+    if (loaded?.targetCardSize) setCardSizeInput(loaded.targetCardSize)
+    if (loaded?.sortMode) setCardSortInput(loaded.sortMode)
+  }, [event?.id])
 
   const checkingIn = useRef(new Set<string>())
   const dirtyScores = useRef(new Set<string>())
@@ -239,6 +280,14 @@ export default function Tonight() {
   }), [division, divEntries, payoutsList, settings, priorBalances, barAmount, records, event, events, entries, ledger, playerById, openingNight])
 
   const rankedById = useMemo(() => new Map(result.ranked.map(r => [r.entry.id, r])), [result])
+
+  const divCards = useMemo(() => {
+    return eventCards?.cards[division] ?? []
+  }, [eventCards, division])
+
+  const divCardPlayerIds = useMemo(() => {
+    return new Set(divCards.flatMap(c => c.playerIds))
+  }, [divCards])
 
   const placeKey = `${event?.id ?? ''}|${division}`
 
@@ -483,6 +532,22 @@ export default function Tonight() {
       setSearchName('')
       setCreateError('')
       setBuyingTag(current => buyingTagAfter(current, 'success'))
+      if (eventCards) {
+        const curCards = eventCards.cards[pDiv] ?? []
+        if (curCards.length > 0) {
+          const updatedCards = assignPlayerToSmallestCard(curCards, pId)
+          const updated: PPEvtCards = {
+            ...eventCards,
+            cards: {
+              ...eventCards.cards,
+              [pDiv]: updatedCards,
+            },
+            updatedAt: new Date().toISOString(),
+          }
+          setEventCards(updated)
+          saveEventCards(event.id, updated, event)
+        }
+      }
       await reload()
       return true
     } finally {
@@ -506,6 +571,88 @@ export default function Tonight() {
       setCreateError(messageOf(err))
       setBuyingTag(current => buyingTagAfter(current, 'save-failure'))
     }
+  }
+
+  const handleSetScoreViewMode = (mode: 'list' | 'card') => {
+    setScoreViewMode(mode)
+    saveScoreViewMode(mode)
+  }
+
+  const handleSetCheckinViewMode = (mode: 'list' | 'card') => {
+    setCheckinViewMode(mode)
+    saveCheckinViewMode(mode)
+  }
+
+  const handleGenerateCards = (size = cardSizeInput, sort = cardSortInput) => {
+    if (!event || isWeek1Locked) return
+    const nightEvEntries = entries.filter(e => e.event_id === event.id)
+    const generated = generateEventCards({
+      eventId: event.id,
+      entries: nightEvEntries,
+      cardSize: size,
+      sortMode: sort,
+      allEntries: entries,
+      events,
+    })
+    setEventCards(generated)
+    saveEventCards(event.id, generated, event)
+    setMakeCardsOpen(false)
+    setCheckinViewMode('card')
+    reportInfo(`Cards generated for tonight (${size} players per card).`)
+  }
+
+  const handleShuffleDivision = () => {
+    if (!event || !eventCards || isWeek1Locked) return
+    const curCards = eventCards.cards[division] ?? []
+    if (curCards.length === 0) return
+    const nightEvEntries = entries.filter(e => e.event_id === event.id)
+    const shuffledCards = shuffleDivisionCards({
+      cards: curCards,
+      division,
+      targetCardSize: eventCards.targetCardSize,
+      entries: nightEvEntries,
+    })
+    const updated: PPEvtCards = {
+      ...eventCards,
+      sortMode: 'random',
+      cards: {
+        ...eventCards.cards,
+        [division]: shuffledCards,
+      },
+      updatedAt: new Date().toISOString(),
+    }
+    setEventCards(updated)
+    saveEventCards(event.id, updated, event)
+    reportInfo(`${division === 'M' ? "Men's" : "Women's"} cards reshuffled.`)
+  }
+
+  const handleMovePlayer = (playerId: string, targetCardId: string) => {
+    if (!event || !eventCards || isWeek1Locked) return
+    const curCards = eventCards.cards[division] ?? []
+    const updatedDivCards = movePlayerBetweenCards({
+      cards: curCards,
+      division,
+      playerId,
+      targetCardId,
+    })
+    const updated: PPEvtCards = {
+      ...eventCards,
+      cards: {
+        ...eventCards.cards,
+        [division]: updatedDivCards,
+      },
+      updatedAt: new Date().toISOString(),
+    }
+    setEventCards(updated)
+    saveEventCards(event.id, updated, event)
+  }
+
+  const handleClearCards = () => {
+    if (!event || isWeek1Locked) return
+    clearEventCards(event.id, event)
+    setEventCards(null)
+    setMakeCardsOpen(false)
+    reportInfo('Cards cleared for tonight.')
   }
 
   const setStatus = async (status: EventStatus) => {
@@ -1162,85 +1309,453 @@ export default function Tonight() {
                 Check players into the {division === 'M' ? "Men's" : "Women's"} division, record tag numbers, and set the bar match.
               </p>
             </div>
-            <button className="btn btn-primary" disabled={isSeason9Week1(event)} onClick={() => { if (isSeason9Week1(event)) return; setCreateError(''); setBuyingTag(current => buyingTagAfter(current, 'open')); setAddPlayerOpen(true) }}>
-              <UserPlus size={16} /> Check In Player
-            </button>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div className="row" role="group" aria-label="Check-in view" style={{ background: 'var(--surface-1)', padding: '2px 4px', borderRadius: 6, border: '1px solid var(--line)' }}>
+                <button
+                  type="button"
+                  className={`btn btn-sm ${checkinViewMode === 'list' ? 'btn-primary' : 'btn-ghost'}`}
+                  style={{ padding: '3px 8px', fontSize: 12 }}
+                  onClick={() => handleSetCheckinViewMode('list')}
+                >
+                  <List size={13} style={{ marginRight: 4 }} /> List
+                </button>
+                <button
+                  type="button"
+                  className={`btn btn-sm ${checkinViewMode === 'card' ? 'btn-primary' : 'btn-ghost'}`}
+                  style={{ padding: '3px 8px', fontSize: 12 }}
+                  onClick={() => handleSetCheckinViewMode('card')}
+                >
+                  <LayoutGrid size={13} style={{ marginRight: 4 }} /> Cards
+                </button>
+              </div>
+              <button
+                className="btn btn-ghost"
+                disabled={isSeason9Week1(event)}
+                onClick={() => setMakeCardsOpen(true)}
+              >
+                <Users size={16} /> {divCards.length > 0 ? `Cards (${divCards.length})` : 'Make Cards'}
+              </button>
+              <button className="btn btn-primary" disabled={isSeason9Week1(event)} onClick={() => { if (isSeason9Week1(event)) return; setCreateError(''); setBuyingTag(current => buyingTagAfter(current, 'open')); setAddPlayerOpen(true) }}>
+                <UserPlus size={16} /> Check In Player
+              </button>
+            </div>
           </div>
 
           <div className="grid-2">
-            <div className="panel">
-              <div className="table-wrap">
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th style={{ width: 40 }}>#</th>
-                      <th>Player Name</th>
-                      <th className="c" style={{ width: 110 }}>Tag In</th>
-                      <th className="c" style={{ width: 80 }}>Paid ($10)</th>
-                      <th className="r" style={{ width: 80 }}>Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {orderedEntries.length === 0 ? (
-                      <tr>
-                        <td colSpan={5} style={{ textAlign: 'center', padding: '36px 0' }} className="muted">
-                          No players checked into this division yet.
-                        </td>
-                      </tr>
-                    ) : orderedEntries.map((ent, i) => {
-                      const p = playerById.get(ent.player_id)
+            {checkinViewMode === 'card' ? (
+              <div className="panel panel-pad stack" style={{ gap: 14 }}>
+                <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                  <div>
+                    <h3 className="display" style={{ fontSize: 18, margin: 0 }}>
+                      {division === 'M' ? "Men's" : "Women's"} Playing Cards
+                    </h3>
+                    <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
+                      {divCards.length > 0
+                        ? `${divCards.length} ${divCards.length === 1 ? 'card' : 'cards'} · Target size ${eventCards?.targetCardSize ?? 4} · ${eventCards?.sortMode === 'standings' ? 'Standings sort' : eventCards?.sortMode === 'random' ? 'Random sort' : 'Check-in sort'}`
+                        : 'No cards made yet for this division.'}
+                    </div>
+                  </div>
+                  <div className="row" style={{ gap: 6 }}>
+                    {eventCards?.sortMode === 'random' && divCards.length > 0 && (
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        disabled={isSeason9Week1(event)}
+                        onClick={handleShuffleDivision}
+                        title="Reshuffle players in this division across cards"
+                      >
+                        <Shuffle size={14} style={{ marginRight: 4 }} /> Shuffle
+                      </button>
+                    )}
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      disabled={isSeason9Week1(event) || orderedEntries.length === 0}
+                      onClick={() => setMakeCardsOpen(true)}
+                    >
+                      <RotateCcw size={14} style={{ marginRight: 4 }} /> {divCards.length > 0 ? 'Regenerate' : 'Make Cards'}
+                    </button>
+                  </div>
+                </div>
+
+                {divCards.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '24px 0' }} className="muted stack">
+                    <Users size={32} style={{ margin: '0 auto', opacity: 0.5 }} />
+                    <p style={{ margin: '6px 0 0' }}>No cards generated for {division === 'M' ? "Men's" : "Women's"} yet.</p>
+                    <p style={{ fontSize: 12, margin: '2px 0 12px' }}>
+                      {orderedEntries.length} {orderedEntries.length === 1 ? 'player' : 'players'} checked in.
+                    </p>
+                    {orderedEntries.length > 0 && (
+                      <div>
+                        <button
+                          className="btn btn-primary btn-sm"
+                          disabled={isSeason9Week1(event)}
+                          onClick={() => setMakeCardsOpen(true)}
+                        >
+                          <Users size={14} style={{ marginRight: 4 }} /> Make Cards
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="stack" style={{ gap: 12 }}>
+                    {divCards.map(c => {
+                      const cardEntries = c.playerIds
+                        .map(pId => orderedEntries.find(ent => ent.player_id === pId))
+                        .filter((ent): ent is Entry => ent != null)
                       return (
-                        <tr key={ent.id}>
-                          <td className="faint">{i + 1}</td>
-                          <td className="strong">{p?.name ?? 'Unknown Player'}</td>
-                          <td className="c">
-                            <TagInCell
-                              entry={ent}
-                              name={p?.name ?? 'player'}
-                              siblings={nightEntries}
-                              inTags={p?.in_tags === true}
-                              disabled={isSeason9Week1(event)}
-                              onCommit={tag => {
-                                if (isSeason9Week1(event)) return
-                                patchEntry(ent.id, { tag_in: tag })
-                              }}
-                            />
-                          </td>
-                          <td className="c">
-                            <button
-                              className={`btn btn-sm ${ent.paid ? 'btn-ghost' : 'btn-danger'}`}
-                              disabled={isSeason9Week1(event)}
-                              onClick={() => {
-                                if (isSeason9Week1(event)) return
-                                patchEntry(ent.id, { paid: !ent.paid })
-                              }}
-                            >
-                              {ent.paid ? <Check size={14} color="var(--teal)" /> : 'Unpaid'}
-                            </button>
-                          </td>
-                          <td className="r">
-                            <button
-                              className="btn btn-ghost btn-sm btn-danger"
-                              disabled={isSeason9Week1(event)}
-                              onClick={async () => {
-                                if (isSeason9Week1(event)) return
-                                const ok = await askConfirm(`Remove ${p?.name ?? 'this player'} from tonight?`, { title: 'Remove player', confirmLabel: 'Remove', danger: true })
-                                if (!ok) return
-                                if (isSeason9Week1(event)) return
-                                await must(supabase.from('pp_entries').delete().eq('id', ent.id))
-                                reload()
-                              }}
-                            >
-                              Remove
-                            </button>
-                          </td>
-                        </tr>
+                        <div
+                          key={c.id}
+                          className="stack"
+                          style={{
+                            background: 'var(--surface-1)',
+                            border: '1px solid var(--line)',
+                            borderRadius: 8,
+                            padding: '10px 12px',
+                            gap: 8,
+                          }}
+                        >
+                          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontWeight: 600, fontSize: 14 }}>{c.name}</span>
+                            <span className="muted" style={{ fontSize: 12 }}>
+                              {cardEntries.length} {cardEntries.length === 1 ? 'player' : 'players'}
+                            </span>
+                          </div>
+                          <div className="table-wrap">
+                            <table className="table" style={{ margin: 0 }}>
+                              <thead>
+                                <tr>
+                                  <th style={{ width: 35 }}>#</th>
+                                  <th>Player Name</th>
+                                  <th className="c" style={{ width: 85 }}>Tag In</th>
+                                  <th className="c" style={{ width: 75 }}>Paid</th>
+                                  <th className="c" style={{ width: 130 }}>Move Card</th>
+                                  <th className="r" style={{ width: 70 }}>Action</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {cardEntries.length === 0 ? (
+                                  <tr>
+                                    <td colSpan={6} style={{ textAlign: 'center', padding: '12px 0' }} className="muted">
+                                      Empty card
+                                    </td>
+                                  </tr>
+                                ) : (
+                                  cardEntries.map((ent, idx) => {
+                                    const p = playerById.get(ent.player_id)
+                                    return (
+                                      <tr key={ent.id}>
+                                        <td className="faint">{idx + 1}</td>
+                                        <td className="strong">{p?.name ?? 'Unknown Player'}</td>
+                                        <td className="c">
+                                          <TagInCell
+                                            entry={ent}
+                                            name={p?.name ?? 'player'}
+                                            siblings={nightEntries}
+                                            inTags={p?.in_tags === true}
+                                            disabled={isSeason9Week1(event)}
+                                            onCommit={tag => {
+                                              if (isSeason9Week1(event)) return
+                                              patchEntry(ent.id, { tag_in: tag })
+                                            }}
+                                          />
+                                        </td>
+                                        <td className="c">
+                                          <button
+                                            className={`btn btn-sm ${ent.paid ? 'btn-ghost' : 'btn-danger'}`}
+                                            disabled={isSeason9Week1(event)}
+                                            onClick={() => {
+                                              if (isSeason9Week1(event)) return
+                                              patchEntry(ent.id, { paid: !ent.paid })
+                                            }}
+                                          >
+                                            {ent.paid ? <Check size={14} color="var(--teal)" /> : 'Unpaid'}
+                                          </button>
+                                        </td>
+                                        <td className="c">
+                                          <select
+                                            className="select select-sm"
+                                            style={{
+                                              fontSize: 12,
+                                              padding: '2px 6px',
+                                              borderRadius: 4,
+                                              background: 'var(--surface-2)',
+                                              border: '1px solid var(--line)',
+                                              color: 'var(--text)',
+                                              maxWidth: 125,
+                                            }}
+                                            value={c.id}
+                                            disabled={isSeason9Week1(event)}
+                                            onChange={e => handleMovePlayer(ent.player_id, e.target.value)}
+                                            aria-label={`Card for ${p?.name ?? 'player'}`}
+                                          >
+                                            {divCards.map(targetC => (
+                                              <option key={targetC.id} value={targetC.id}>
+                                                {targetC.name} ({targetC.playerIds.length})
+                                              </option>
+                                            ))}
+                                            <option value="new">+ New Card</option>
+                                          </select>
+                                        </td>
+                                        <td className="r">
+                                          <button
+                                            className="btn btn-ghost btn-sm btn-danger"
+                                            disabled={isSeason9Week1(event)}
+                                            onClick={async () => {
+                                              if (isSeason9Week1(event)) return
+                                              const ok = await askConfirm(
+                                                `Remove ${p?.name ?? 'this player'} from tonight?`,
+                                                { title: 'Remove player', confirmLabel: 'Remove', danger: true },
+                                              )
+                                              if (!ok) return
+                                              if (isSeason9Week1(event)) return
+                                              await must(supabase.from('pp_entries').delete().eq('id', ent.id))
+                                              if (eventCards) {
+                                                const curCards = eventCards.cards[ent.division] ?? []
+                                                const nextCards = removePlayerFromCards(curCards, ent.player_id)
+                                                const updated: PPEvtCards = {
+                                                  ...eventCards,
+                                                  cards: { ...eventCards.cards, [ent.division]: nextCards },
+                                                  updatedAt: new Date().toISOString(),
+                                                }
+                                                setEventCards(updated)
+                                                saveEventCards(event.id, updated, event)
+                                              }
+                                              reload()
+                                            }}
+                                          >
+                                            Remove
+                                          </button>
+                                        </td>
+                                      </tr>
+                                    )
+                                  })
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
                       )
                     })}
-                  </tbody>
-                </table>
+
+                    {orderedEntries.filter(ent => !divCardPlayerIds.has(ent.player_id)).length > 0 && (
+                      <div
+                        className="stack"
+                        style={{
+                          background: 'var(--surface-1)',
+                          border: '1px dashed var(--orange)',
+                          borderRadius: 8,
+                          padding: '10px 12px',
+                          gap: 8,
+                        }}
+                      >
+                        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ fontWeight: 600, fontSize: 14, color: 'var(--orange)' }}>
+                            Unassigned Players ({orderedEntries.filter(ent => !divCardPlayerIds.has(ent.player_id)).length})
+                          </span>
+                          <button
+                            className="btn btn-ghost btn-sm"
+                            disabled={isSeason9Week1(event)}
+                            onClick={() => {
+                              if (!eventCards) return
+                              let cur = eventCards.cards[division] ?? []
+                              const unassigned = orderedEntries.filter(ent => !divCardPlayerIds.has(ent.player_id))
+                              for (const un of unassigned) {
+                                cur = assignPlayerToSmallestCard(cur, un.player_id)
+                              }
+                              const updated: PPEvtCards = {
+                                ...eventCards,
+                                cards: { ...eventCards.cards, [division]: cur },
+                                updatedAt: new Date().toISOString(),
+                              }
+                              setEventCards(updated)
+                              saveEventCards(event.id, updated, event)
+                            }}
+                          >
+                            Put in smallest cards
+                          </button>
+                        </div>
+                        <div className="table-wrap">
+                          <table className="table" style={{ margin: 0 }}>
+                            <tbody>
+                              {orderedEntries
+                                .filter(ent => !divCardPlayerIds.has(ent.player_id))
+                                .map((ent, idx) => {
+                                  const p = playerById.get(ent.player_id)
+                                  return (
+                                    <tr key={ent.id}>
+                                      <td className="faint" style={{ width: 35 }}>{idx + 1}</td>
+                                      <td className="strong">{p?.name ?? 'Unknown Player'}</td>
+                                      <td className="c" style={{ width: 130 }}>
+                                        <select
+                                          className="select select-sm"
+                                          style={{
+                                            fontSize: 12,
+                                            padding: '2px 6px',
+                                            borderRadius: 4,
+                                            background: 'var(--surface-2)',
+                                            border: '1px solid var(--line)',
+                                            color: 'var(--text)',
+                                            maxWidth: 125,
+                                          }}
+                                          value=""
+                                          disabled={isSeason9Week1(event)}
+                                          onChange={e => handleMovePlayer(ent.player_id, e.target.value)}
+                                          aria-label={`Card for ${p?.name ?? 'player'}`}
+                                        >
+                                          <option value="" disabled>Assign to card…</option>
+                                          {divCards.map(targetC => (
+                                            <option key={targetC.id} value={targetC.id}>
+                                              {targetC.name} ({targetC.playerIds.length})
+                                            </option>
+                                          ))}
+                                          <option value="new">+ New Card</option>
+                                        </select>
+                                      </td>
+                                      <td className="r">
+                                        <button
+                                          className="btn btn-ghost btn-sm btn-danger"
+                                          disabled={isSeason9Week1(event)}
+                                          onClick={async () => {
+                                            if (isSeason9Week1(event)) return
+                                            const ok = await askConfirm(
+                                              `Remove ${p?.name ?? 'this player'} from tonight?`,
+                                              { title: 'Remove player', confirmLabel: 'Remove', danger: true },
+                                            )
+                                            if (!ok) return
+                                            if (isSeason9Week1(event)) return
+                                            await must(supabase.from('pp_entries').delete().eq('id', ent.id))
+                                            reload()
+                                          }}
+                                        >
+                                          Remove
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  )
+                                })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-            </div>
+            ) : (
+              <div className="panel">
+                <div className="table-wrap">
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th style={{ width: 40 }}>#</th>
+                        <th>Player Name</th>
+                        <th className="c" style={{ width: 110 }}>Tag In</th>
+                        <th className="c" style={{ width: 80 }}>Paid ($10)</th>
+                        {divCards.length > 0 && <th className="c" style={{ width: 130 }}>Card</th>}
+                        <th className="r" style={{ width: 80 }}>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {orderedEntries.length === 0 ? (
+                        <tr>
+                          <td colSpan={divCards.length > 0 ? 6 : 5} style={{ textAlign: 'center', padding: '36px 0' }} className="muted">
+                            No players checked into this division yet.
+                          </td>
+                        </tr>
+                      ) : orderedEntries.map((ent, i) => {
+                        const p = playerById.get(ent.player_id)
+                        const playerCard = divCards.find(c => c.playerIds.includes(ent.player_id))
+                        return (
+                          <tr key={ent.id}>
+                            <td className="faint">{i + 1}</td>
+                            <td className="strong">{p?.name ?? 'Unknown Player'}</td>
+                            <td className="c">
+                              <TagInCell
+                                entry={ent}
+                                name={p?.name ?? 'player'}
+                                siblings={nightEntries}
+                                inTags={p?.in_tags === true}
+                                disabled={isSeason9Week1(event)}
+                                onCommit={tag => {
+                                  if (isSeason9Week1(event)) return
+                                  patchEntry(ent.id, { tag_in: tag })
+                                }}
+                              />
+                            </td>
+                            <td className="c">
+                              <button
+                                className={`btn btn-sm ${ent.paid ? 'btn-ghost' : 'btn-danger'}`}
+                                disabled={isSeason9Week1(event)}
+                                onClick={() => {
+                                  if (isSeason9Week1(event)) return
+                                  patchEntry(ent.id, { paid: !ent.paid })
+                                }}
+                              >
+                                {ent.paid ? <Check size={14} color="var(--teal)" /> : 'Unpaid'}
+                              </button>
+                            </td>
+                            {divCards.length > 0 && (
+                              <td className="c">
+                                <select
+                                  className="select select-sm"
+                                  style={{
+                                    fontSize: 12,
+                                    padding: '2px 6px',
+                                    borderRadius: 4,
+                                    background: 'var(--surface-2)',
+                                    border: '1px solid var(--line)',
+                                    color: 'var(--text)',
+                                    maxWidth: 125,
+                                  }}
+                                  value={playerCard?.id ?? ''}
+                                  disabled={isSeason9Week1(event)}
+                                  onChange={e => handleMovePlayer(ent.player_id, e.target.value)}
+                                  aria-label={`Card for ${p?.name ?? 'player'}`}
+                                >
+                                  {!playerCard && <option value="">Unassigned</option>}
+                                  {divCards.map(targetC => (
+                                    <option key={targetC.id} value={targetC.id}>
+                                      {targetC.name}
+                                    </option>
+                                  ))}
+                                  <option value="new">+ New Card</option>
+                                </select>
+                              </td>
+                            )}
+                            <td className="r">
+                              <button
+                                className="btn btn-ghost btn-sm btn-danger"
+                                disabled={isSeason9Week1(event)}
+                                onClick={async () => {
+                                  if (isSeason9Week1(event)) return
+                                  const ok = await askConfirm(`Remove ${p?.name ?? 'this player'} from tonight?`, { title: 'Remove player', confirmLabel: 'Remove', danger: true })
+                                  if (!ok) return
+                                  if (isSeason9Week1(event)) return
+                                  await must(supabase.from('pp_entries').delete().eq('id', ent.id))
+                                  if (eventCards) {
+                                    const curCards = eventCards.cards[ent.division] ?? []
+                                    const nextCards = removePlayerFromCards(curCards, ent.player_id)
+                                    const updated: PPEvtCards = {
+                                      ...eventCards,
+                                      cards: { ...eventCards.cards, [ent.division]: nextCards },
+                                      updatedAt: new Date().toISOString(),
+                                    }
+                                    setEventCards(updated)
+                                    saveEventCards(event.id, updated, event)
+                                  }
+                                  reload()
+                                }}
+                              >
+                                Remove
+                              </button>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
 
             <div className="panel panel-pad stack">
               <div className="eyebrow">Night Finances & Match</div>
@@ -1290,7 +1805,40 @@ export default function Tonight() {
                 Front 9 and Back 9, each 0–50, rows staying in check-in order. Right-click a player to award a bonus.
               </p>
             </div>
-            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div
+                className="row"
+                role="group"
+                aria-label="18-hole score view mode"
+                style={{ background: 'var(--surface-1)', padding: 2, borderRadius: 6, border: '1px solid var(--line)' }}
+              >
+                <button
+                  type="button"
+                  className={`btn btn-sm ${scoreViewMode === 'list' ? 'btn-primary' : 'btn-ghost'}`}
+                  style={{ padding: '3px 8px', fontSize: 12 }}
+                  onClick={() => handleSetScoreViewMode('list')}
+                  aria-pressed={scoreViewMode === 'list'}
+                >
+                  <List size={13} style={{ marginRight: 4 }} /> List
+                </button>
+                <button
+                  type="button"
+                  className={`btn btn-sm ${scoreViewMode === 'card' ? 'btn-primary' : 'btn-ghost'}`}
+                  style={{ padding: '3px 8px', fontSize: 12 }}
+                  onClick={() => handleSetScoreViewMode('card')}
+                  aria-pressed={scoreViewMode === 'card'}
+                >
+                  <LayoutGrid size={13} style={{ marginRight: 4 }} /> Cards
+                </button>
+              </div>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                disabled={isSeason9Week1(event)}
+                onClick={() => setMakeCardsOpen(true)}
+              >
+                <Users size={14} style={{ marginRight: 4 }} /> {divCards.length > 0 ? `Cards (${divCards.length})` : 'Make Cards'}
+              </button>
               <RefreshScores
                 blocked={() => scoreDirtyCount > 0 || scoreSaveCount > 0 || dirtyScores.current.size > 0 || scoreSaves.current > 0 || refreshLock.current}
                 status={refreshStatus}
@@ -1318,17 +1866,102 @@ export default function Tonight() {
               </div>
             </div>
           </div>
-          <ScoreTable
-            rows={orderedEntries}
-            rankedById={rankedById}
-            playerById={playerById}
-            settings={settings}
-            mode="18"
-            disabledScores={isSeason9Week1(event)}
-            onContextMenu={handleContextMenu}
-            onScore={saveScore}
-            onDirty={markScoreDirty}
-          />
+          {scoreViewMode === 'card' && divCards.length === 0 ? (
+            <div className="stack" style={{ gap: 12 }}>
+              <div className="banner" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                <span>No cards generated yet for {division === 'M' ? "Men's" : "Women's"}. Showing all players in list view.</span>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-ghost"
+                  disabled={isSeason9Week1(event)}
+                  onClick={() => setMakeCardsOpen(true)}
+                >
+                  <Users size={13} style={{ marginRight: 4 }} /> Make Cards
+                </button>
+              </div>
+              <ScoreTable
+                rows={orderedEntries}
+                allRows={orderedEntries}
+                rankedById={rankedById}
+                playerById={playerById}
+                settings={settings}
+                mode="18"
+                disabledScores={isSeason9Week1(event)}
+                onContextMenu={handleContextMenu}
+                onScore={saveScore}
+                onDirty={markScoreDirty}
+              />
+            </div>
+          ) : scoreViewMode === 'card' ? (
+            <div className="stack" style={{ gap: 16 }}>
+              {divCards.map(c => {
+                const cardEntries = c.playerIds
+                  .map(pId => orderedEntries.find(ent => ent.player_id === pId))
+                  .filter((ent): ent is Entry => ent != null)
+                return (
+                  <div key={c.id} className="stack" style={{ gap: 8 }}>
+                    <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', padding: '0 4px' }}>
+                      <span style={{ fontWeight: 600, fontSize: 15 }}>{c.name}</span>
+                      <span className="muted" style={{ fontSize: 12 }}>
+                        {cardEntries.length} {cardEntries.length === 1 ? 'player' : 'players'}
+                      </span>
+                    </div>
+                    <ScoreTable
+                      rows={cardEntries}
+                      allRows={orderedEntries}
+                      rankedById={rankedById}
+                      playerById={playerById}
+                      settings={settings}
+                      mode="18"
+                      disabledScores={isSeason9Week1(event)}
+                      onContextMenu={handleContextMenu}
+                      onScore={saveScore}
+                      onDirty={markScoreDirty}
+                    />
+                  </div>
+                )
+              })}
+              {(() => {
+                const unassigned = orderedEntries.filter(ent => !divCardPlayerIds.has(ent.player_id))
+                if (unassigned.length === 0) return null
+                return (
+                  <div className="stack" style={{ gap: 8 }}>
+                    <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', padding: '0 4px' }}>
+                      <span style={{ fontWeight: 600, fontSize: 15 }}>Unassigned Players</span>
+                      <span className="muted" style={{ fontSize: 12 }}>
+                        {unassigned.length} {unassigned.length === 1 ? 'player' : 'players'}
+                      </span>
+                    </div>
+                    <ScoreTable
+                      rows={unassigned}
+                      allRows={orderedEntries}
+                      rankedById={rankedById}
+                      playerById={playerById}
+                      settings={settings}
+                      mode="18"
+                      disabledScores={isSeason9Week1(event)}
+                      onContextMenu={handleContextMenu}
+                      onScore={saveScore}
+                      onDirty={markScoreDirty}
+                    />
+                  </div>
+                )
+              })()}
+            </div>
+          ) : (
+            <ScoreTable
+              rows={orderedEntries}
+              allRows={orderedEntries}
+              rankedById={rankedById}
+              playerById={playerById}
+              settings={settings}
+              mode="18"
+              disabledScores={isSeason9Week1(event)}
+              onContextMenu={handleContextMenu}
+              onScore={saveScore}
+              onDirty={markScoreDirty}
+            />
+          )}
         </div>
       )}
 
@@ -1341,7 +1974,40 @@ export default function Tonight() {
                 Final 9 is added to the 18-hole score. 18 holes max 100, the Final 9 maxes at 50, and the night maxes at 150.
               </p>
             </div>
-            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div
+                className="row"
+                role="group"
+                aria-label="Final 9 score view mode"
+                style={{ background: 'var(--surface-1)', padding: 2, borderRadius: 6, border: '1px solid var(--line)' }}
+              >
+                <button
+                  type="button"
+                  className={`btn btn-sm ${scoreViewMode === 'list' ? 'btn-primary' : 'btn-ghost'}`}
+                  style={{ padding: '3px 8px', fontSize: 12 }}
+                  onClick={() => handleSetScoreViewMode('list')}
+                  aria-pressed={scoreViewMode === 'list'}
+                >
+                  <List size={13} style={{ marginRight: 4 }} /> List
+                </button>
+                <button
+                  type="button"
+                  className={`btn btn-sm ${scoreViewMode === 'card' ? 'btn-primary' : 'btn-ghost'}`}
+                  style={{ padding: '3px 8px', fontSize: 12 }}
+                  onClick={() => handleSetScoreViewMode('card')}
+                  aria-pressed={scoreViewMode === 'card'}
+                >
+                  <LayoutGrid size={13} style={{ marginRight: 4 }} /> Cards
+                </button>
+              </div>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                disabled={isSeason9Week1(event)}
+                onClick={() => setMakeCardsOpen(true)}
+              >
+                <Users size={14} style={{ marginRight: 4 }} /> {divCards.length > 0 ? `Cards (${divCards.length})` : 'Make Cards'}
+              </button>
               <RefreshScores
                 blocked={() => scoreDirtyCount > 0 || scoreSaveCount > 0 || dirtyScores.current.size > 0 || scoreSaves.current > 0 || refreshLock.current}
                 status={refreshStatus}
@@ -1369,21 +2035,116 @@ export default function Tonight() {
               </button>
             </div>
           </div>
-          <ScoreTable
-            rows={final9Entries}
-            rankedById={rankedById}
-            playerById={playerById}
-            settings={settings}
-            mode="final"
-            disabledScores={isSeason9Week1(event)}
-            onContextMenu={handleContextMenu}
-            onScore={saveScore}
-            onToggleFinal={entry => {
-              if (isSeason9Week1(event)) return
-              void patchEntry(entry.id, { made_final: !entry.made_final })
-            }}
-            onDirty={markScoreDirty}
-          />
+          {scoreViewMode === 'card' && divCards.length === 0 ? (
+            <div className="stack" style={{ gap: 12 }}>
+              <div className="banner" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                <span>No cards generated yet for {division === 'M' ? "Men's" : "Women's"}. Showing all players in list view.</span>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-ghost"
+                  disabled={isSeason9Week1(event)}
+                  onClick={() => setMakeCardsOpen(true)}
+                >
+                  <Users size={13} style={{ marginRight: 4 }} /> Make Cards
+                </button>
+              </div>
+              <ScoreTable
+                rows={final9Entries}
+                allRows={final9Entries}
+                rankedById={rankedById}
+                playerById={playerById}
+                settings={settings}
+                mode="final"
+                disabledScores={isSeason9Week1(event)}
+                onContextMenu={handleContextMenu}
+                onScore={saveScore}
+                onToggleFinal={entry => {
+                  if (isSeason9Week1(event)) return
+                  void patchEntry(entry.id, { made_final: !entry.made_final })
+                }}
+                onDirty={markScoreDirty}
+              />
+            </div>
+          ) : scoreViewMode === 'card' ? (
+            <div className="stack" style={{ gap: 16 }}>
+              {divCards.map(c => {
+                const cardEntries = final9Entries.filter(ent => c.playerIds.includes(ent.player_id))
+                return (
+                  <div key={c.id} className="stack" style={{ gap: 8 }}>
+                    <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', padding: '0 4px' }}>
+                      <span style={{ fontWeight: 600, fontSize: 15 }}>{c.name}</span>
+                      <span className="muted" style={{ fontSize: 12 }}>
+                        {cardEntries.length} {cardEntries.length === 1 ? 'player' : 'players'}
+                      </span>
+                    </div>
+                    <ScoreTable
+                      rows={cardEntries}
+                      allRows={final9Entries}
+                      rankedById={rankedById}
+                      playerById={playerById}
+                      settings={settings}
+                      mode="final"
+                      disabledScores={isSeason9Week1(event)}
+                      onContextMenu={handleContextMenu}
+                      onScore={saveScore}
+                      onToggleFinal={entry => {
+                        if (isSeason9Week1(event)) return
+                        void patchEntry(entry.id, { made_final: !entry.made_final })
+                      }}
+                      onDirty={markScoreDirty}
+                    />
+                  </div>
+                )
+              })}
+              {(() => {
+                const unassigned = final9Entries.filter(ent => !divCardPlayerIds.has(ent.player_id))
+                if (unassigned.length === 0) return null
+                return (
+                  <div className="stack" style={{ gap: 8 }}>
+                    <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', padding: '0 4px' }}>
+                      <span style={{ fontWeight: 600, fontSize: 15 }}>Unassigned Players</span>
+                      <span className="muted" style={{ fontSize: 12 }}>
+                        {unassigned.length} {unassigned.length === 1 ? 'player' : 'players'}
+                      </span>
+                    </div>
+                    <ScoreTable
+                      rows={unassigned}
+                      allRows={final9Entries}
+                      rankedById={rankedById}
+                      playerById={playerById}
+                      settings={settings}
+                      mode="final"
+                      disabledScores={isSeason9Week1(event)}
+                      onContextMenu={handleContextMenu}
+                      onScore={saveScore}
+                      onToggleFinal={entry => {
+                        if (isSeason9Week1(event)) return
+                        void patchEntry(entry.id, { made_final: !entry.made_final })
+                      }}
+                      onDirty={markScoreDirty}
+                    />
+                  </div>
+                )
+              })()}
+            </div>
+          ) : (
+            <ScoreTable
+              rows={final9Entries}
+              allRows={final9Entries}
+              rankedById={rankedById}
+              playerById={playerById}
+              settings={settings}
+              mode="final"
+              disabledScores={isSeason9Week1(event)}
+              onContextMenu={handleContextMenu}
+              onScore={saveScore}
+              onToggleFinal={entry => {
+                if (isSeason9Week1(event)) return
+                void patchEntry(entry.id, { made_final: !entry.made_final })
+              }}
+              onDirty={markScoreDirty}
+            />
+          )}
         </div>
       )}
 
@@ -1814,6 +2575,125 @@ export default function Tonight() {
           </div>
         </Dialog>
       )}
+
+      {makeCardsOpen && (
+        <Dialog title="Make Playing Cards" onClose={() => setMakeCardsOpen(false)}>
+          <div className="stack" style={{ gap: 16 }}>
+            <p className="muted" style={{ fontSize: 13, margin: 0 }}>
+              Split tonight's checked-in players into playing groups. Men's and Women's divisions are always grouped separately.
+            </p>
+
+            <div className="field">
+              <span>Card size (players per group)</span>
+              <input
+                className="input"
+                type="number"
+                min={2}
+                max={12}
+                value={cardSizeInput}
+                onChange={e => {
+                  const val = parseInt(e.target.value, 10)
+                  if (!Number.isNaN(val) && val >= 1) {
+                    setCardSizeInput(val)
+                  }
+                }}
+              />
+              <span className="muted" style={{ fontSize: 11 }}>
+                Recommended: 4. When player counts don't divide evenly, group sizes differ by at most 1 (e.g. 14 players = 4, 4, 3, 3).
+              </span>
+            </div>
+
+            <div className="field">
+              <span>Sort order within division</span>
+              <div className="stack" style={{ gap: 8, marginTop: 4 }}>
+                <label className="row" style={{ gap: 8, cursor: 'pointer', alignItems: 'center' }}>
+                  <input
+                    type="radio"
+                    name="cardSort"
+                    value="checkin"
+                    checked={cardSortInput === 'checkin'}
+                    onChange={() => setCardSortInput('checkin')}
+                  />
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>Check-in order</div>
+                    <div className="muted" style={{ fontSize: 11 }}>Players are placed on cards in the order they checked in tonight.</div>
+                  </div>
+                </label>
+
+                <label className="row" style={{ gap: 8, cursor: 'pointer', alignItems: 'center' }}>
+                  <input
+                    type="radio"
+                    name="cardSort"
+                    value="standings"
+                    checked={cardSortInput === 'standings'}
+                    onChange={() => setCardSortInput('standings')}
+                  />
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>Standings (Skill-based)</div>
+                    <div className="muted" style={{ fontSize: 11 }}>Ranked by season standings so players with similar skill play together.</div>
+                  </div>
+                </label>
+
+                <label className="row" style={{ gap: 8, cursor: 'pointer', alignItems: 'center' }}>
+                  <input
+                    type="radio"
+                    name="cardSort"
+                    value="random"
+                    checked={cardSortInput === 'random'}
+                    onChange={() => setCardSortInput('random')}
+                  />
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>Random</div>
+                    <div className="muted" style={{ fontSize: 11 }}>Shuffled randomly across cards. You can re-shuffle anytime.</div>
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            {cardSortInput === 'random' && divCards.length > 0 && (
+              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', background: 'var(--surface-1)', padding: '8px 12px', borderRadius: 6 }}>
+                <span style={{ fontSize: 12 }}>Shuffle {division === 'M' ? "Men's" : "Women's"} cards now?</span>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={handleShuffleDivision}
+                >
+                  <Shuffle size={13} style={{ marginRight: 4 }} /> Shuffle {division === 'M' ? "Men" : "Women"}
+                </button>
+              </div>
+            )}
+
+            <div className="row" style={{ justifyContent: 'space-between', marginTop: 8 }}>
+              {divCards.length > 0 ? (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-danger btn-sm"
+                  onClick={handleClearCards}
+                >
+                  Clear Cards
+                </button>
+              ) : <div />}
+              <div className="row" style={{ gap: 8 }}>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => setMakeCardsOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={orderedEntries.length === 0 || isSeason9Week1(event)}
+                  onClick={() => handleGenerateCards(cardSizeInput, cardSortInput)}
+                >
+                  {divCards.length > 0 ? 'Regenerate Cards' : 'Generate Cards'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </Dialog>
+      )}
     </div>
   )
 }
@@ -1926,8 +2806,9 @@ function RefreshScores({ blocked, status, onRefresh }: {
   )
 }
 
-function ScoreTable({ rows, rankedById, playerById, settings, mode, disabledScores, onContextMenu, onScore, onToggleFinal, onDirty }: {
+function ScoreTable({ rows, allRows, rankedById, playerById, settings, mode, disabledScores, onContextMenu, onScore, onToggleFinal, onDirty }: {
   rows: Entry[]
+  allRows?: Entry[]
   rankedById: Map<string, Ranked>
   playerById: Map<string, Player>
   settings: ReturnType<typeof useData>['settings']
@@ -1938,8 +2819,9 @@ function ScoreTable({ rows, rankedById, playerById, settings, mode, disabledScor
   onToggleFinal?: (entry: Entry) => void
   onDirty: (id: string, field: 'front' | 'back' | 'final', dirty: boolean) => void
 }) {
+  const placeRows = allRows ?? rows
   const eighteenPlace = mode === '18'
-    ? new Map(eighteenGridRows(rows, settings).map(row => [row.id, row.place]))
+    ? new Map(eighteenGridRows(placeRows, settings).map(row => [row.id, row.place]))
     : null
   return (
     <div className="panel">
