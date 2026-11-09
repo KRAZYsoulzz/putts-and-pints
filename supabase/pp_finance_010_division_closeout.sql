@@ -22,6 +22,8 @@ end
 $role$;
 
 grant usage on schema public to pp_finance_owner;
+-- Needed only so ALTER FUNCTION ... OWNER TO works; revoked at end of file.
+grant create on schema public to pp_finance_owner;
 grant select, update on table public.pp_events to pp_finance_owner;
 grant select, insert on table public.pp_ledger to pp_finance_owner;
 
@@ -714,3 +716,5 @@ revoke all on function public.pp_apply_correction(uuid, text, uuid, text, text, 
 revoke all on function public.pp_apply_correction(uuid, text, uuid, text, text, numeric, numeric, jsonb, boolean) from anon;
 grant execute on function public.pp_apply_correction(uuid, text, uuid, text, text, numeric, numeric, jsonb, boolean) to authenticated;
 
+-- Ownership is set; the owner role does not keep CREATE on public.
+revoke create on schema public from pp_finance_owner;
