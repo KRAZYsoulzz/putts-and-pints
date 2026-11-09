@@ -30,6 +30,20 @@ import { completeRefresh, requestRefresh, type ScoreBoard } from '../lib/score-r
 import { balances, clampPaidPlaces, displayedPerfectRound, displayedSharedPot, divisionResult, eventLedgerPosted, effectiveBar, eventMoney, nightBonusCost, otherDivisionNights, paidPlaceCount, payoutPool, payoutsForPlaceCount, placeBudget, placeRemainder, postedBonusCost, postedPlaceRemainder, postedRemainderBackup, suggestedPaidPlaces } from '../lib/money'
 import { duplicateName, friendlyError, normalizeName, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../lib/validation'
 import { buyingTagAfter, checkinTagIn, freshBuyingTag, newPlayerInsert } from '../lib/newPlayer'
+import {
+  applyCorrectionDraft,
+  canEditDivisionPayouts,
+  closeDivisionStep,
+  createCorrectionDraft,
+  createEmptyDivisionCloseState,
+  isLatestPostedNight,
+  isWeek1Event,
+  openPoolDeficit,
+  type CorrectionDraft,
+  type DivisionCloseState,
+} from '../lib/closeout'
+import DivisionCloseoutPanel from '../components/DivisionCloseoutPanel'
+import CorrectionDraftPanel from '../components/CorrectionDraftPanel'
 import { Dialog, DivisionSeg, Menu, MoneyInput, PageHead, ScoreInput, Stat, Toggle, money, ordinal } from '../components/ui'
 
 const STEPS: { status: EventStatus; label: string }[] = [
@@ -70,6 +84,10 @@ export default function Tonight() {
   const [scoreDirtyCount, setScoreDirtyCount] = useState(0)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [refreshStatus, setRefreshStatus] = useState<string | null>(null)
+  const [closeStates, setCloseStates] = useState<Record<string, DivisionCloseState>>({})
+  const [correctionDrafts, setCorrectionDrafts] = useState<Record<string, CorrectionDraft | null>>({})
+  const [correctionError, setCorrectionError] = useState<string | null>(null)
+  const [reopenedDivisions, setReopenedDivisions] = useState<Record<string, boolean>>({})
 
   const checkingIn = useRef(new Set<string>())
   const dirtyScores = useRef(new Set<string>())
@@ -226,8 +244,7 @@ export default function Tonight() {
 
   // Suggest payouts the first time a night reaches results, instead of leaving every place at $0.
   useEffect(() => {
-    if (!event || event.status !== 'results' || !isAdmin) return
-    if (isSeason9Week1(event)) return
+    if (!event || event.status !== 'results' || !isAdmin || isSeason9Week1(event) || isWeek1Event(event)) return
     if (prefilled.current.has(event.id)) return
     if ((event.payouts_men?.length ?? 0) > 0 && (event.payouts_women?.length ?? 0) > 0) {
       prefilled.current.add(event.id)
@@ -255,8 +272,7 @@ export default function Tonight() {
   // rounded down) stays 0 after players arrive, so nobody makes the final.
   // Fill a sensible half-field cut once and mark those qualifiers.
   useEffect(() => {
-    if (!event || event.status !== 'final9' || !isAdmin) return
-    if (isSeason9Week1(event)) return
+    if (!event || event.status !== 'final9' || !isAdmin || isSeason9Week1(event) || isWeek1Event(event)) return
     for (const d of DIVS) {
       const field = entries.filter(e => e.event_id === event.id && e.division === d)
       if (!field.length) continue
@@ -423,15 +439,16 @@ export default function Tonight() {
   const payoutProblem = payoutIssue(payoutsList, placeBudget(pool))
   const overPool = payoutProblem != null
 
+  const isWeek1Locked = isSeason9Week1(event) || isWeek1Event(event)
+
   const handleContextMenu = (e: MouseEvent, entry: Entry) => {
-    if (!isAdmin || event.status === 'complete' || isSeason9Week1(event)) return
+    if (!isAdmin || event.status === 'complete' || isWeek1Locked) return
     e.preventDefault()
     setContextMenu({ x: e.clientX, y: e.clientY, entry })
   }
 
   const toggleAward = async (award: Award) => {
-    if (!contextMenu) return
-    if (isSeason9Week1(event)) return
+    if (!contextMenu || isWeek1Locked) return
     const cur = contextMenu.entry.awards || []
     const next = cur.includes(award) ? cur.filter(a => a !== award) : [...cur, award]
     await patchEntry(contextMenu.entry.id, { awards: next })
@@ -439,7 +456,7 @@ export default function Tonight() {
   }
 
   const handleCheckinPlayer = async (pId: string, pDiv: Division, known?: { in_tags?: boolean }) => {
-    if (isSeason9Week1(event)) return false
+    if (isWeek1Locked) return false
     if (checkingIn.current.has(pId)) return false
     if (entries.some(e => e.event_id === event.id && e.player_id === pId)) return false
     checkingIn.current.add(pId)
@@ -474,7 +491,7 @@ export default function Tonight() {
   }
 
   const handleCreateAndCheckin = async (name: string, pDiv: Division) => {
-    if (isSeason9Week1(event)) return
+    if (isWeek1Locked) return
     const clean = normalizeName(name)
     if (!clean) { setCreateError('Enter a player name.'); return }
     if (duplicateName(clean, players)) { setCreateError(`“${clean}” is already on the roster.`); return }
@@ -492,7 +509,7 @@ export default function Tonight() {
   }
 
   const setStatus = async (status: EventStatus) => {
-    if (isSeason9Week1(event)) return
+    if (isWeek1Locked) return
     const evEntries = entriesRef.current.filter(e => e.event_id === event.id)
     const pending = { dirty: dirtyScores.current.size, saves: scoreSaves.current, refreshing: refreshLock.current }
     if (!canAdvanceToStatus(event.status, status, evEntries, pending, event)) return
@@ -517,6 +534,7 @@ export default function Tonight() {
   }
 
   const applyCut = async (cut: number, field: Entry[]) => {
+    if (isWeek1Locked) return
     const ids = qualifiers(field, cut, settingsRef.current)
     for (const ent of field) {
       const should = ids.has(ent.id)
@@ -530,7 +548,7 @@ export default function Tonight() {
   )
 
   const applyCutAndProceed = async () => {
-    if (isSeason9Week1(event)) return
+    if (isWeek1Locked) return
     const evEntries = entriesRef.current.filter(e => e.event_id === event.id)
     const pending = { dirty: dirtyScores.current.size, saves: scoreSaves.current, refreshing: refreshLock.current }
     if (!cutConfirmationReady(evEntries, pending)) return
@@ -559,7 +577,7 @@ export default function Tonight() {
       )
 
   const stepCut = (delta: number) => {
-    if (isSeason9Week1(event)) return
+    if (isWeek1Locked) return
     const size = Math.max(1, divEntries.length)
     const base = cutRef.current[division] ?? shownCut
     const next = Math.min(size, Math.max(1, base + delta))
@@ -592,8 +610,50 @@ export default function Tonight() {
     }, 4500)
   }
 
+  const closeState = closeStates[event.id] ?? createEmptyDivisionCloseState()
+  const divLedgerPosted = ledger.some(r => r.event_id === event.id && r.division === division && r.kind === 'entry')
+  const otherDiv: Division = division === 'M' ? 'W' : 'M'
+  const otherDivLedgerPosted = ledger.some(r => r.event_id === event.id && r.division === otherDiv && r.kind === 'entry')
+  const divReopenKey = `${event.id}|${division}`
+  const isDivisionReopened = Boolean(reopenedDivisions[divReopenKey])
+  const isDivisionClosed = !isDivisionReopened && (
+    closeState.closed[division] ||
+    (division === 'M' ? Boolean(event.pp_closed_men) : Boolean(event.pp_closed_women)) ||
+    divLedgerPosted ||
+    event.status === 'complete'
+  )
+  const isOtherDivisionClosed = (
+    closeState.closed[otherDiv] ||
+    (otherDiv === 'M' ? Boolean(event.pp_closed_men) : Boolean(event.pp_closed_women)) ||
+    otherDivLedgerPosted ||
+    event.status === 'complete'
+  )
+  const isSharedPosted =
+    closeState.sharedPosted ||
+    Boolean(event.pp_shared_pots_posted) ||
+    (isDivisionClosed && isOtherDivisionClosed)
+  const activeCorrectionDraft = correctionDrafts[divReopenKey] ?? null
+  const latestPostedCheck = isLatestPostedNight({ event, events, ledger })
+  const canEditPayouts = !isWeek1Locked && canEditDivisionPayouts({
+    event,
+    divisionClosed: isDivisionClosed,
+    reopenViaCorrection: isDivisionReopened,
+  })
+  const entryPurseShare = cents(settings.entryFee - settings.perfectRoundShare)
+  const hsLiability = !openingNight && divEntries.some(e => e.awards?.includes('high_score')) ? settings.bonus.highScore : 0
+  const sharedReserveOrCharge = !isDivisionClosed && !isOtherDivisionClosed
+    ? (divEntries.some(e => e.awards?.includes('perfect4')) ? settings.bonus.perfect4 : 0) +
+      (divEntries.some(e => e.awards?.includes('perfect5')) ? settings.bonus.perfect5 : 0)
+    : Math.max(0, cents(liveBonusCost - hsLiability))
+  const divisionDeficit = openPoolDeficit({
+    entryPurse: cents(counts[division] * entryPurseShare),
+    bar: barAmount,
+    highScoreLiability: hsLiability,
+    sharedCharges: sharedReserveOrCharge,
+  }).deficit
+
   const savePayout = (idx: number, val: number) => {
-    if (isSeason9Week1(event)) return
+    if (!canEditPayouts) return
     const next = Array.from({ length: Math.max(payoutsList.length, idx + 1) }, (_, i) => Number(payoutsList[i] ?? 0))
     next[idx] = val
     while (next.length > 0 && next[next.length - 1] === 0) next.pop()
@@ -609,7 +669,7 @@ export default function Tonight() {
   }
 
   const stepPaidPlaces = (delta: number) => {
-    if (isSeason9Week1(event)) return
+    if (!canEditPayouts) return
     const field = counts[division]
     if (field <= 0) return
     const base = paidCountRef.current.key === placeKey ? paidCountRef.current.n : paidPlaces
@@ -629,7 +689,7 @@ export default function Tonight() {
   }
 
   const useSuggested = () => {
-    if (isSeason9Week1(event)) return
+    if (!canEditPayouts) return
     // Re-split the current pool across the place count on screen.
     clearPayoutNote()
     const amounts = payoutsForPlaceCount(pool, paidPlaces)
@@ -658,8 +718,244 @@ export default function Tonight() {
     )
   }
 
+  const handleCloseDivision = async (targetDiv: Division = division) => {
+    if (isWeek1Locked) {
+      reportError('Week 1 is locked and cannot be modified.')
+      return
+    }
+    const group = entries.filter(e => e.event_id === event.id && e.division === targetDiv)
+    const list = divisionPayouts(event, targetDiv)
+    const net = payoutPool(group.length, barOf(event, targetDiv), settings, nightBonusCost(group, settings, {
+      payHighScore: !openingNight,
+      division: targetDiv,
+      cohort: otherDivisionNights(targetDiv, event.id, entries, ledger),
+    }))
+    if (payoutIssue(list, placeBudget(net))) {
+      const name = targetDiv === 'M' ? "Men's" : "Women's"
+      reportError(payoutIssue(list, placeBudget(net)) === 'increment'
+        ? `${name} place checks have to be multiples of $5.`
+        : `${name} place checks are over the $5 payout budget or include a negative.`)
+      return
+    }
+
+    setIsFinalizing(true)
+    try {
+      const allRankedM = divisionResult({
+        division: 'M',
+        entries: entries.filter(e => e.event_id === event.id && e.division === 'M'),
+        payoutPlaces: divisionPayouts(event, 'M'),
+        settings,
+        balances: balances(ledger.filter(r => r.event_id !== event.id), 'M'),
+        barMatch: barOf(event, 'M'),
+        priorRecord: records.M,
+        openingNight,
+        cohort: otherDivisionNights('M', event.id, entries, ledger),
+        tagPlan: isOpeningTagNight(events, event.id) ? 'opening' : 'redistribute',
+        inTags,
+      })
+      const allRankedW = divisionResult({
+        division: 'W',
+        entries: entries.filter(e => e.event_id === event.id && e.division === 'W'),
+        payoutPlaces: divisionPayouts(event, 'W'),
+        settings,
+        balances: balances(ledger.filter(r => r.event_id !== event.id), 'W'),
+        barMatch: barOf(event, 'W'),
+        priorRecord: records.W,
+        openingNight,
+        cohort: otherDivisionNights('W', event.id, entries, ledger),
+        tagPlan: isOpeningTagNight(events, event.id) ? 'opening' : 'redistribute',
+        inTags,
+      })
+      const closeEntries = [
+        ...allRankedM.ranked.map(r => ({
+          id: r.entry.id,
+          player_id: r.entry.player_id,
+          division: 'M' as const,
+          created_at: r.entry.created_at ?? '',
+          awards: r.entry.awards ?? [],
+          place: r.place,
+        })),
+        ...allRankedW.ranked.map(r => ({
+          id: r.entry.id,
+          player_id: r.entry.player_id,
+          division: 'W' as const,
+          created_at: r.entry.created_at ?? '',
+          awards: r.entry.awards ?? [],
+          place: r.place,
+        })),
+      ]
+      const priorBalM = balances(ledger.filter(r => r.event_id !== event.id), 'M')
+      const priorBalW = balances(ledger.filter(r => r.event_id !== event.id), 'W')
+      const reqId = `${event.id}:${targetDiv}:close`
+      const payloadHash = JSON.stringify({
+        eventId: event.id,
+        division: targetDiv,
+        payouts: list,
+        bar: { M: barOf(event, 'M'), W: barOf(event, 'W') },
+      })
+
+      const step = closeDivisionStep({
+        state: closeState,
+        event,
+        division: targetDiv,
+        requestId: reqId,
+        payloadHash,
+        settings,
+        entries: closeEntries,
+        balances: { M: priorBalM, W: priorBalW },
+        bar: { M: barOf(event, 'M'), W: barOf(event, 'W') },
+        openingNight,
+        payouts: { M: divisionPayouts(event, 'M'), W: divisionPayouts(event, 'W') },
+        laterPosted: latestPostedCheck.laterPosted,
+      })
+
+      if (!step.ok) {
+        reportError(`Cannot close division: ${step.reason}`)
+        return
+      }
+
+      setCloseStates(prev => ({ ...prev, [event.id]: step.state }))
+      setReopenedDivisions(prev => ({ ...prev, [`${event.id}|${targetDiv}`]: false }))
+
+      if (!step.cached && step.postedLegs.length > 0 && season) {
+        const rows = step.postedLegs.map(r => ({
+          season_id: season.id,
+          event_id: event.id,
+          division: r.division,
+          fund: r.fund,
+          kind: r.kind,
+          amount: r.amount,
+          note: r.note,
+          player_id: r.player_id,
+        }))
+        await must(supabase.from('pp_ledger').insert(rows))
+      }
+
+      const divPlan = targetDiv === 'M' ? allRankedM : allRankedW
+      for (const r of divPlan.ranked) {
+        const ent = r.entry
+        const tagOut = divPlan.tagsOut.get(ent.id) ?? null
+        await must(supabase.from('pp_entries').update({
+          place: r.place > 0 ? r.place : null,
+          payout: divPlan.payouts.get(ent.id) ?? 0,
+          points: divPlan.points.get(ent.id) ?? 0,
+          tag_out: tagOut,
+        }).eq('id', ent.id))
+        if (season) {
+          if (tagOut != null) {
+            await must(supabase.from('pp_tags').upsert(
+              { season_id: season.id, player_id: ent.player_id, tag_number: tagOut },
+              { onConflict: 'season_id,player_id' },
+            ))
+          } else if (!inTags(ent.player_id)) {
+            await must(supabase.from('pp_tags').delete().eq('season_id', season.id).eq('player_id', ent.player_id))
+          }
+        }
+      }
+
+      if (step.sharedPosted) {
+        await patchEvent(event.id, { status: 'complete' })
+      }
+      reportInfo(`${targetDiv === 'M' ? "Men's" : "Women's"} division closed.`)
+      reload()
+    } catch {
+      // must() already reported the error
+    } finally {
+      setIsFinalizing(false)
+    }
+  }
+
+  const startCorrectionDraft = (reopen = false, nextTargetCash?: number) => {
+    setCorrectionError(null)
+    const bookedCash = cents(
+      ledger
+        .filter(r => r.event_id === event.id && r.division === division && r.fund === 'purse' && r.kind === 'place_payout')
+        .reduce((sum, r) => sum + Math.abs(Number(r.amount)), 0) || allocated,
+    )
+    const target = nextTargetCash ?? bookedCash
+    const draftRes = createCorrectionDraft({
+      event,
+      division,
+      events,
+      ledger,
+      bookedCash,
+      targetCash: target,
+      balances: {
+        M: balances(ledger, 'M'),
+        W: balances(ledger, 'W'),
+      },
+      originalPayouts: divEntries.map(e => ({
+        id: e.id,
+        player_id: e.player_id,
+        place: e.place,
+        payout: e.payout,
+      })),
+      reopenDivision: reopen,
+    })
+    if (!draftRes.ok) {
+      const msg = draftRes.reason === 'week1_frozen'
+        ? 'Week 1 is locked and cannot be corrected.'
+        : draftRes.reason === 'chronology'
+          ? 'Corrections apply to the latest financially posted night only.'
+          : draftRes.reason === 'insolvent'
+            ? 'Pot balances do not have enough funds to cover this correction.'
+            : 'Night must be financially posted before creating a correction.'
+      setCorrectionError(msg)
+      reportError(msg)
+      return
+    }
+    setCorrectionDrafts(prev => ({ ...prev, [divReopenKey]: draftRes.draft }))
+  }
+
+  const handleApplyCorrection = async () => {
+    if (!activeCorrectionDraft || !season) return
+    setCorrectionError(null)
+    const applied = applyCorrectionDraft({
+      draft: activeCorrectionDraft,
+      handled: activeCorrectionDraft.handled,
+      acknowledged: activeCorrectionDraft.acknowledged,
+      confirmation: activeCorrectionDraft.confirmation,
+    })
+    if (!applied.ok) {
+      setCorrectionError('Confirm physical cash settlement before posting this correction.')
+      return
+    }
+    try {
+      if (applied.adjustmentLegs.length > 0) {
+        await must(
+          supabase.from('pp_ledger').insert(
+            applied.adjustmentLegs.map(leg => ({
+              season_id: season.id,
+              event_id: event.id,
+              division: leg.division,
+              fund: leg.fund,
+              kind: leg.kind,
+              amount: leg.amount,
+              note: leg.note,
+              player_id: leg.player_id,
+            })),
+          ),
+        )
+      }
+      if (applied.reopened) {
+        setReopenedDivisions(prev => ({ ...prev, [divReopenKey]: true }))
+        if (event.status === 'complete') {
+          await patchEvent(event.id, { status: 'results' })
+        }
+      }
+      setCorrectionDrafts(prev => ({ ...prev, [divReopenKey]: null }))
+      reportInfo(applied.reopened ? 'Correction confirmed and division reopened.' : 'Correction confirmed and posted to the ledger.')
+      reload()
+    } catch (err) {
+      setCorrectionError(messageOf(err))
+    }
+  }
+
   const handleFinalize = async () => {
-    if (isSeason9Week1(event)) return
+    if (isWeek1Locked) {
+      reportError('Week 1 is locked and cannot be modified.')
+      return
+    }
     for (const d of DIVS) {
       const group = entries.filter(e => e.event_id === event.id && e.division === d)
       const list = divisionPayouts(event, d)
@@ -793,18 +1089,13 @@ export default function Tonight() {
           {viewingOther && (
             <button className="btn btn-ghost btn-sm" onClick={() => openEvent(null)}>Back to tonight</button>
           )}
-          {isAdmin && event.status === 'complete' && (
-            <button className="btn btn-ghost btn-sm" disabled={isSeason9Week1(event)} onClick={async () => {
-              if (isSeason9Week1(event)) return
-              const ok = await askConfirm(
-                'Scores can be edited again. Finalizing a second time replaces this night’s ledger rows.',
-                { title: 'Reopen event?', confirmLabel: 'Reopen' },
-              )
-              if (!ok) return
-              if (isSeason9Week1(event)) return
-              await patchEvent(event.id, { status: 'results' })
-            }}>
-              <RotateCcw size={14} /> Reopen Event
+          {isAdmin && event.status === 'complete' && !isWeek1Locked && (
+            <button
+              className="btn btn-ghost btn-sm"
+              disabled={!latestPostedCheck.latest}
+              onClick={() => startCorrectionDraft(true)}
+            >
+              <RotateCcw size={14} /> Reopen {division === 'M' ? "Men's" : "Women's"} via Correction
             </button>
           )}
         </div>
@@ -1211,10 +1502,21 @@ export default function Tonight() {
                 {openingNight && ' High score on this first night sets the season record and pays $0.'}
               </p>
             </div>
-            {isAdmin && event.status !== 'complete' && (
-              <button className="btn btn-primary" disabled={isFinalizing || overPool || isSeason9Week1(event)} onClick={handleFinalize}>
-                <Lock size={16} /> {isFinalizing ? 'Finalizing...' : 'Finalize & Post Event'}
-              </button>
+            {isAdmin && event.status !== 'complete' && !isWeek1Locked && (
+              <div style={{ display: 'flex', gap: 8 }}>
+                {!isDivisionClosed && (
+                  <button
+                    className="btn btn-ghost"
+                    disabled={isFinalizing || overPool || divisionDeficit > 0}
+                    onClick={() => void handleCloseDivision(division)}
+                  >
+                    <Lock size={16} /> Close {division === 'M' ? "Men's" : "Women's"} Division
+                  </button>
+                )}
+                <button className="btn btn-primary" disabled={isFinalizing || overPool} onClick={handleFinalize}>
+                  <Lock size={16} /> {isFinalizing ? 'Finalizing...' : 'Finalize & Post Event'}
+                </button>
+              </div>
             )}
           </div>
 
@@ -1293,7 +1595,7 @@ export default function Tonight() {
                 <dd style={{ color: purseLeft < -0.001 ? 'var(--danger)' : 'var(--text)' }}>{money(purseLeft)}</dd>
               </div>
 
-              {isAdmin && event.status !== 'complete' && (
+              {isAdmin && canEditPayouts && (
                 <div style={{ marginTop: 8 }}>
                   {paidPlaces > 0 && (
                     <>
@@ -1348,6 +1650,55 @@ export default function Tonight() {
                   )}
                   {!overPool && payoutNoteText && <small className="field-error">{payoutNoteText}</small>}
                 </div>
+              )}
+
+              <DivisionCloseoutPanel
+                closed={isDivisionClosed}
+                sharedPosted={isSharedPosted}
+                correctionPending={activeCorrectionDraft != null}
+                deficit={divisionDeficit}
+                division={division}
+                heldReserve={closeState.heldReserve[division]}
+                releasedReserve={closeState.released[division]}
+                canClose={isAdmin && !isWeek1Locked && !isDivisionClosed && !overPool}
+                isClosing={isFinalizing}
+                canCorrect={isAdmin && !isWeek1Locked && isDivisionClosed && latestPostedCheck.latest}
+                onCloseDivision={isAdmin ? () => void handleCloseDivision(division) : undefined}
+                onStartCorrection={isAdmin ? () => startCorrectionDraft(true) : undefined}
+              />
+
+              {isAdmin && activeCorrectionDraft && (
+                <CorrectionDraftPanel
+                  division={division}
+                  bookedCash={activeCorrectionDraft.bookedCash}
+                  targetCash={activeCorrectionDraft.targetCash}
+                  cashDue={activeCorrectionDraft.cashDue}
+                  handled={activeCorrectionDraft.handled}
+                  acknowledged={activeCorrectionDraft.acknowledged}
+                  confirmation={activeCorrectionDraft.confirmation}
+                  reopenDivision={activeCorrectionDraft.reopenDivision}
+                  error={correctionError}
+                  onTargetCashChange={val => startCorrectionDraft(activeCorrectionDraft.reopenDivision, val)}
+                  onHandledChange={val => setCorrectionDrafts(prev => ({
+                    ...prev,
+                    [divReopenKey]: prev[divReopenKey] ? { ...prev[divReopenKey]!, handled: val } : null,
+                  }))}
+                  onConfirmSettlement={(ack, sentence) => setCorrectionDrafts(prev => ({
+                    ...prev,
+                    [divReopenKey]: prev[divReopenKey]
+                      ? { ...prev[divReopenKey]!, acknowledged: ack, confirmation: sentence }
+                      : null,
+                  }))}
+                  onReopenChange={reopen => setCorrectionDrafts(prev => ({
+                    ...prev,
+                    [divReopenKey]: prev[divReopenKey] ? { ...prev[divReopenKey]!, reopenDivision: reopen } : null,
+                  }))}
+                  onApply={() => void handleApplyCorrection()}
+                  onCancel={() => {
+                    setCorrectionError(null)
+                    setCorrectionDrafts(prev => ({ ...prev, [divReopenKey]: null }))
+                  }}
+                />
               )}
 
               <div style={{ marginTop: 14 }}>

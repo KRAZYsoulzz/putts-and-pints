@@ -1474,6 +1474,7 @@ const changedFiles = [
   'scripts/test-logic.ts',
   'scripts/smoke-scoring.tsx',
   'supabase/pp_009_score_front_back.sql',
+  'supabase/pp_finance_010_division_closeout.sql',
 ]
 for (const relPath of changedFiles) {
   const bytes = fs.readFileSync(new URL(`../${relPath}`, import.meta.url))
@@ -1490,4 +1491,13 @@ for (const relPath of changedFiles) {
   )
 }
 
+await import('../src/lib/closeout.test')
+await import('../src/lib/closeout-money.test')
+await import('../src/lib/closeout-plan.test')
+await import('../src/lib/closeout-fixtures.test')
+await import('../src/lib/closeout-protocol.test')
+await import('../src/lib/closeout-week1.test')
+await import('../src/lib/closeout-gaps.test')
+
 console.log('All rules checks passed ✔')
+
