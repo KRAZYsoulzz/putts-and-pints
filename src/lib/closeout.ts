@@ -797,3 +797,172 @@ export function planSplitClose(input: {
     secondLegs,
   }
 }
+
+export function activationDecision(input: {
+  status: string
+  entryCount: number
+  ledgerCount: number
+  event: { season_id: string; date: string; name: string }
+}):
+  | { ok: true; stages: { M: 'checkin'; W: 'checkin' } }
+  | { ok: false; reason: 'week1_frozen' | 'not_scheduled' | 'not_clean' } {
+  if (!refuseWeek1Finance({ event: input.event, action: 'activate' }).ok) {
+    return { ok: false, reason: 'week1_frozen' }
+  }
+  if (input.status !== 'scheduled') {
+    return { ok: false, reason: 'not_scheduled' }
+  }
+  if (input.entryCount > 0 || input.ledgerCount > 0) {
+    return { ok: false, reason: 'not_clean' }
+  }
+  return { ok: true, stages: { M: 'checkin', W: 'checkin' } }
+}
+
+export function closeAdmission(input: {
+  legacyPending: boolean
+  week1: boolean
+  laterPosted: boolean
+}):
+  | { ok: true }
+  | { ok: false; reason: 'legacy_pending' | 'week1_frozen' | 'chronology' } {
+  if (input.legacyPending) {
+    return { ok: false, reason: 'legacy_pending' }
+  }
+  if (input.week1) {
+    return { ok: false, reason: 'week1_frozen' }
+  }
+  if (input.laterPosted) {
+    return { ok: false, reason: 'chronology' }
+  }
+  return { ok: true }
+}
+
+export function idempotentCloseResult<T, R>(input: {
+  stored: { completed: boolean; hash: string; response?: R } | null
+  hash: string
+  fresh: boolean
+  result: T
+}):
+  | { action: 'collision' }
+  | { action: 'cached'; result: R | undefined }
+  | { action: 'stale' }
+  | { action: 'proceed'; result: T } {
+  const { stored, hash, fresh, result } = input
+  if (stored !== null) {
+    if (stored.hash !== hash) {
+      return { action: 'collision' }
+    }
+    if (stored.completed) {
+      return { action: 'cached', result: stored.response }
+    }
+  }
+  if (!fresh) {
+    return { action: 'stale' }
+  }
+  return { action: 'proceed', result }
+}
+
+export function planCorrection(input: {
+  event: { season_id: string; date: string; name: string }
+  bookedCash: number
+  targetCash: number
+  externalPerfect4?: number
+}):
+  | {
+      ok: false
+      reason: 'week1_frozen'
+      legs: Leg[]
+    }
+  | {
+      ok: true
+      cashDelta: number
+      passThroughPerfect4: number
+      legs: Leg[]
+    } {
+  if (!refuseWeek1Finance({ event: input.event, action: 'correct' }).ok) {
+    return { ok: false, reason: 'week1_frozen', legs: [] }
+  }
+  const cashDelta = cents(input.targetCash - input.bookedCash)
+  const passThroughPerfect4 = input.externalPerfect4 ?? 0
+  if (cashDelta === 0) {
+    return {
+      ok: true,
+      cashDelta: 0,
+      passThroughPerfect4,
+      legs: [],
+    }
+  }
+  const leg: Leg = {
+    division: 'M',
+    fund: 'purse',
+    kind: 'adjustment',
+    amount: cents(-cashDelta),
+    note: 'Correction',
+    player_id: null,
+  }
+  return {
+    ok: true,
+    cashDelta,
+    passThroughPerfect4,
+    legs: [leg],
+  }
+}
+
+export function cashWindow(input: {
+  cashDue: number
+  acknowledged: boolean
+  confirmation?: string
+  handled: number
+  applyFailed?: boolean
+}): {
+  state: 'applied' | 'cash confirmed, posting pending' | 'awaiting'
+  actionable: number
+  confirmationOk: boolean
+} {
+  const confirmationOk =
+    input.confirmation === 'All cash differences shown have been physically settled.'
+
+  if (confirmationOk && input.handled === input.cashDue) {
+    if (input.applyFailed) {
+      return {
+        state: 'cash confirmed, posting pending',
+        actionable: 0,
+        confirmationOk,
+      }
+    }
+    return {
+      state: 'applied',
+      actionable: 0,
+      confirmationOk,
+    }
+  }
+
+  return {
+    state: 'awaiting',
+    actionable: cents(input.cashDue - input.handled),
+    confirmationOk,
+  }
+}
+
+export function closeoutReader(input: {
+  closed: boolean
+  sharedPosted: boolean
+  correctionPending: boolean
+  deficit: number
+}): {
+  closed: boolean
+  sharedPosted: boolean
+  correctionPending: boolean
+  fundingNeeded: string | null
+} {
+  return {
+    closed: input.closed,
+    sharedPosted: input.sharedPosted,
+    correctionPending: input.correctionPending,
+    fundingNeeded:
+      input.deficit > 0
+        ? `funding needed: $${input.deficit.toFixed(2)}; no payout posted`
+        : null,
+  }
+}
+
