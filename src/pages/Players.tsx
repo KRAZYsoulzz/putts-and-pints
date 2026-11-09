@@ -3,7 +3,7 @@ import { Edit2, Plus, Trash2 } from 'lucide-react'
 import { useData, must } from '../lib/store'
 import { supabase } from '../lib/supabase'
 import { askConfirm, messageOf } from '../lib/notify'
-import { bestTotal, clampScore, MAX_18, MAX_FINAL, totals } from '../lib/scoring'
+import { bestTotal, clampScore, historicalEighteenWrite, isSeason9Week1, MAX_18, MAX_FINAL, totals } from '../lib/scoring'
 import { duplicateName, normalizeName, parseTag, tagTakenOnRoster } from '../lib/validation'
 import {
   AWARDS,
@@ -225,18 +225,30 @@ export default function Players() {
     if (!tagIn.ok) { setEntryError(tagIn.error); return }
     if (!tagOut.ok) { setEntryError(tagOut.error); return }
     setEntryError('')
+
+    const entryEvent = events.find((e) => e.id === editEntry.event_id)
+    const isWeek1 = isSeason9Week1(entryEvent)
+    const write18 = historicalEighteenWrite(editEntry, score(entryForm.score_18, MAX_18))
+
+    const updatePayload: Record<string, unknown> = {
+      place: entryForm.place,
+      payout: entryForm.payout,
+      points: entryForm.points,
+      awards: entryForm.awards,
+      tag_in: tagIn.value,
+      tag_out: tagOut.value,
+    }
+
+    if (!isWeek1) {
+      updatePayload.made_final = entryForm.made_final
+      updatePayload.score_final = score(entryForm.score_final, MAX_FINAL)
+      if (!write18.omit) {
+        updatePayload.score_18 = write18.score_18
+      }
+    }
+
     try {
-      await must(supabase.from('pp_entries').update({
-        made_final: entryForm.made_final,
-        place: entryForm.place,
-        payout: entryForm.payout,
-        points: entryForm.points,
-        awards: entryForm.awards,
-        tag_in: tagIn.value,
-        tag_out: tagOut.value,
-        score_18: score(entryForm.score_18, MAX_18),
-        score_final: score(entryForm.score_final, MAX_FINAL),
-      }).eq('id', editEntry.id))
+      await must(supabase.from('pp_entries').update(updatePayload).eq('id', editEntry.id))
     } catch (err) {
       setEntryError(messageOf(err))
       return
@@ -248,6 +260,11 @@ export default function Players() {
   // Delete Historical Entry
   const handleDeleteEntry = async () => {
     if (!editEntry) return
+    const entryEvent = events.find((e) => e.id === editEntry.event_id)
+    if (isSeason9Week1(entryEvent)) {
+      setEntryError('Week 1 scores stay as played.')
+      return
+    }
     const ok = await askConfirm('Scores and finishes for this night will be removed.', { title: 'Delete this entry?', confirmLabel: 'Delete', danger: true })
     if (!ok) return
     try {
@@ -586,64 +603,88 @@ export default function Players() {
       )}
 
       {/* Edit Historical Entry / Scores Dialog */}
-      {editEntry && (
-        <Dialog title="Edit Event Entry & Scores" onClose={() => setEditEntry(null)}>
-          <div className="stack">
-            <div className="eyebrow" style={{ color: 'var(--orange)' }}>
-              18-Holes Round Scores
-            </div>
+      {editEntry && (() => {
+        const entryEvent = events.find((e) => e.id === editEntry.event_id)
+        const isWeek1 = isSeason9Week1(entryEvent)
+        const eighteenWrite = historicalEighteenWrite(editEntry, entryForm.score_18 ?? null)
+        const disable18 = isWeek1 || eighteenWrite.omit
+        const disableFinal = isWeek1
 
-            <div className="grid-cols" style={{ gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
-              <div className="field">
-                <span>18-hole total (0-100)</span>
-                <input
-                  className="input num"
-                  type="number"
-                  min="0"
-                  max="100"
-                  value={entryForm.score_18 ?? ''}
-                  onChange={(e) =>
-                    setEntryForm((prev) => ({
-                      ...prev,
-                      score_18: e.target.value === '' ? null : parseInt(e.target.value, 10),
-                    }))
-                  }
-                />
+        return (
+          <Dialog title="Edit Event Entry & Scores" onClose={() => setEditEntry(null)}>
+            <div className="stack">
+              {isWeek1 && (
+                <div className="note" style={{ marginBottom: 4 }}>
+                  Week 1 scores stay as played.
+                </div>
+              )}
+              {!isWeek1 && eighteenWrite.omit && (
+                <div className="note" style={{ marginBottom: 4 }}>
+                  This 18 is Front plus Back, so it can't be edited here.
+                </div>
+              )}
+
+              <div className="eyebrow" style={{ color: 'var(--orange)' }}>
+                18-Holes Round Scores
               </div>
-            </div>
 
-            <div className="eyebrow" style={{ color: 'var(--teal)', marginTop: 8 }}>
-              Final 9 Round
-            </div>
-
-            <div className="row" style={{ justifyContent: 'space-between' }}>
-              <span style={{ fontSize: 13 }}>Qualified for Final 9</span>
-              <Toggle
-                on={!!entryForm.made_final}
-                onChange={(v) => setEntryForm((prev) => ({ ...prev, made_final: v }))}
-              />
-            </div>
-
-            {entryForm.made_final && (
               <div className="grid-cols" style={{ gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
                 <div className="field">
-                  <span>Final 9 total (0-50)</span>
+                  <span>18-hole total (0-100)</span>
                   <input
                     className="input num"
                     type="number"
                     min="0"
-                    max="50"
-                    value={entryForm.score_final ?? ''}
+                    max="100"
+                    disabled={disable18}
+                    value={entryForm.score_18 ?? ''}
                     onChange={(e) =>
                       setEntryForm((prev) => ({
                         ...prev,
-                        score_final: e.target.value === '' ? null : parseInt(e.target.value, 10),
+                        score_18: e.target.value === '' ? null : parseInt(e.target.value, 10),
                       }))
                     }
                   />
                 </div>
+              </div>
+
+              <div className="eyebrow" style={{ color: 'var(--teal)', marginTop: 8 }}>
+                Final 9 Round
+              </div>
+
+              <div className="row" style={{ justifyContent: 'space-between' }}>
+                <span style={{ fontSize: 13 }}>Qualified for Final 9</span>
+                <Toggle
+                  on={!!entryForm.made_final}
+                  onChange={(v) => {
+                    if (!disableFinal) {
+                      setEntryForm((prev) => ({ ...prev, made_final: v }))
+                    }
+                  }}
+                />
+              </div>
+
+              {(entryForm.made_final || isWeek1) && (
+                <div className="grid-cols" style={{ gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
+                  <div className="field">
+                    <span>Final 9 total (0-50)</span>
+                    <input
+                      className="input num"
+                      type="number"
+                      min="0"
+                      max="50"
+                      disabled={disableFinal}
+                      value={entryForm.score_final ?? ''}
+                      onChange={(e) =>
+                        setEntryForm((prev) => ({
+                          ...prev,
+                          score_final: e.target.value === '' ? null : parseInt(e.target.value, 10),
+                        }))
+                      }
+                    />
+                  </div>
                 </div>
-            )}
+              )}
 
             <div className="eyebrow" style={{ marginTop: 8 }}>
               Finish Placements, Winnings &amp; Tags
@@ -756,7 +797,7 @@ export default function Players() {
             </div>
           </div>
         </Dialog>
-      )}
+      )})()}
 
       {/* Add New Player Dialog */}
       {addModal && (

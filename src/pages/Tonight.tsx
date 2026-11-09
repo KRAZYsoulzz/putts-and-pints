@@ -25,7 +25,7 @@ import {
   type Player,
   type PPEvent,
 } from '../lib/types'
-import { byEntryOrder, canConfirmCut, cents, computeNineCommit, displayedBack, displayedFront, effectiveCut, eighteenGridRows, final9EntryOrder, isOpeningTagNight, liveNightTotal, MAX_FINAL, MAX_NINE, qualifiers, suggestedCut, tonightBoard, totals, type Ranked } from '../lib/scoring'
+import { byEntryOrder, canConfirmCut, cents, computeNineCommit, displayedBack, displayedFront, effectiveCut, eighteenGridRows, final9EntryOrder, isOpeningTagNight, isSeason9Week1, liveNightTotal, MAX_FINAL, MAX_NINE, qualifiers, suggestedCut, tonightBoard, totals, week1AllowsScorePatch, type Ranked } from '../lib/scoring'
 import { completeRefresh, requestRefresh, type ScoreBoard } from '../lib/score-refresh'
 import { balances, clampPaidPlaces, displayedPerfectRound, displayedSharedPot, divisionResult, eventLedgerPosted, effectiveBar, eventMoney, nightBonusCost, otherDivisionNights, paidPlaceCount, payoutPool, payoutsForPlaceCount, placeBudget, placeRemainder, postedBonusCost, postedPlaceRemainder, postedRemainderBackup, suggestedPaidPlaces } from '../lib/money'
 import { duplicateName, friendlyError, normalizeName, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../lib/validation'
@@ -102,6 +102,9 @@ export default function Tonight() {
   }
 
   const saveScore = (id: string, patch: Partial<Entry>) => {
+    if (isSeason9Week1(event) && !week1AllowsScorePatch(event, patch)) {
+      return Promise.resolve(false)
+    }
     scoreSaves.current += 1
     setScoreSaveCount(scoreSaves.current)
     return patchEntry(id, patch).finally(() => {
@@ -238,6 +241,7 @@ export default function Tonight() {
   // Fill a sensible half-field cut once and mark those qualifiers.
   useEffect(() => {
     if (!event || event.status !== 'final9' || !isAdmin) return
+    if (isSeason9Week1(event)) return
     for (const d of DIVS) {
       const field = entries.filter(e => e.event_id === event.id && e.division === d)
       if (!field.length) continue
@@ -398,6 +402,7 @@ export default function Tonight() {
 
   const toggleAward = async (award: Award) => {
     if (!contextMenu) return
+    if (isSeason9Week1(event)) return
     const cur = contextMenu.entry.awards || []
     const next = cur.includes(award) ? cur.filter(a => a !== award) : [...cur, award]
     await patchEntry(contextMenu.entry.id, { awards: next })
@@ -468,6 +473,7 @@ export default function Tonight() {
   const canProceedToCut = canConfirmCut(entries.filter(e => e.event_id === event.id))
 
   const applyCutAndProceed = async () => {
+    if (isSeason9Week1(event)) return
     if (!canConfirmCut(entries.filter(e => e.event_id === event.id))) return
     const patch: Partial<PPEvent> = { status: 'final9' }
     for (const d of DIVS) {
@@ -494,6 +500,7 @@ export default function Tonight() {
       )
 
   const stepCut = (delta: number) => {
+    if (isSeason9Week1(event)) return
     const size = Math.max(1, divEntries.length)
     const base = cutRef.current[division] ?? shownCut
     const next = Math.min(size, Math.max(1, base + delta))
@@ -900,16 +907,20 @@ export default function Tonight() {
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
                 <button
                   className="btn btn-primary"
-                  disabled={!canProceedToCut}
+                  disabled={!canProceedToCut || isSeason9Week1(event)}
                   onClick={applyCutAndProceed}
                 >
                   Go to The Cut & Final 9 <ChevronRight size={16} />
                 </button>
-                {!canProceedToCut && (
+                {isSeason9Week1(event) ? (
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    Week 1 scores stay as played.
+                  </span>
+                ) : !canProceedToCut ? (
                   <span className="muted" style={{ fontSize: 12 }}>
                     Checked-in players still need a completed 18.
                   </span>
-                )}
+                ) : null}
               </div>
             </div>
           </div>
@@ -919,6 +930,7 @@ export default function Tonight() {
             playerById={playerById}
             settings={settings}
             mode="18"
+            disabledScores={isSeason9Week1(event)}
             onContextMenu={handleContextMenu}
             onScore={saveScore}
             onDirty={markScoreDirty}
@@ -964,9 +976,13 @@ export default function Tonight() {
             playerById={playerById}
             settings={settings}
             mode="final"
+            disabledScores={isSeason9Week1(event)}
             onContextMenu={handleContextMenu}
             onScore={saveScore}
-            onToggleFinal={entry => patchEntry(entry.id, { made_final: !entry.made_final })}
+            onToggleFinal={entry => {
+              if (isSeason9Week1(event)) return
+              void patchEntry(entry.id, { made_final: !entry.made_final })
+            }}
             onDirty={markScoreDirty}
           />
         </div>
@@ -982,7 +998,8 @@ export default function Tonight() {
           </div>
           {DIVS.map(d => {
             const dEntries = entries.filter(e => e.event_id === event.id && e.division === d)
-            const board = tonightBoard(dEntries, settings, event.status)
+            const savedCut = d === 'M' ? event.final_cut_men : event.final_cut_women
+            const board = tonightBoard(dEntries, settings, event.status, savedCut)
             const entryMap = new Map(dEntries.map(ent => [ent.id, ent]))
             const renderRow = (row: typeof board.completed[number]) => {
               const ent = entryMap.get(row.id)
@@ -1445,12 +1462,13 @@ function RefreshScores({ blocked, status, onRefresh }: {
   )
 }
 
-function ScoreTable({ rows, rankedById, playerById, settings, mode, onContextMenu, onScore, onToggleFinal, onDirty }: {
+function ScoreTable({ rows, rankedById, playerById, settings, mode, disabledScores, onContextMenu, onScore, onToggleFinal, onDirty }: {
   rows: Entry[]
   rankedById: Map<string, Ranked>
   playerById: Map<string, Player>
   settings: ReturnType<typeof useData>['settings']
   mode: '18' | 'final'
+  disabledScores?: boolean
   onContextMenu: (e: MouseEvent, entry: Entry) => void
   onScore: (id: string, patch: Partial<Entry>) => Promise<boolean>
   onToggleFinal?: (entry: Entry) => void
@@ -1461,6 +1479,11 @@ function ScoreTable({ rows, rankedById, playerById, settings, mode, onContextMen
     : null
   return (
     <div className="panel">
+      {disabledScores && (
+        <div className="note" style={{ margin: '12px 16px' }}>
+          Week 1 scores stay as played.
+        </div>
+      )}
       <div className="table-wrap">
         <table className="table">
           <thead>
@@ -1526,6 +1549,7 @@ function ScoreTable({ rows, rankedById, playerById, settings, mode, onContextMen
                       <ScoreInput
                         value={displayedFront(ent)}
                         max={MAX_NINE}
+                        disabled={disabledScores}
                         onDirty={dirty => onDirty(ent.id, dirty)}
                         onCommit={n => onScore(ent.id, computeNineCommit(ent, 'front', n))}
                       />
@@ -1534,6 +1558,7 @@ function ScoreTable({ rows, rankedById, playerById, settings, mode, onContextMen
                       <ScoreInput
                         value={displayedBack(ent)}
                         max={MAX_NINE}
+                        disabled={disabledScores}
                         onDirty={dirty => onDirty(ent.id, dirty)}
                         onCommit={n => onScore(ent.id, computeNineCommit(ent, 'back', n))}
                       />
@@ -1553,12 +1578,12 @@ function ScoreTable({ rows, rankedById, playerById, settings, mode, onContextMen
                   <td className="place">{place ?? '—'}</td>
                   <td className="strong">{p?.name}</td>
                   <td className="c">
-                    <button className="btn btn-sm btn-ghost" style={{ fontSize: 11 }} onClick={() => onToggleFinal?.(ent)}>
+                    <button className="btn btn-sm btn-ghost" style={{ fontSize: 11 }} disabled={disabledScores} onClick={() => { if (!disabledScores) onToggleFinal?.(ent) }}>
                       {ent.made_final ? <span className="chip chip-teal">Finalist</span> : <span className="faint">Cut</span>}
                     </button>
                   </td>
                   <td className="c bl strong">{t.t18 ?? '—'}</td>
-                  <td className="c bl"><ScoreInput value={ent.made_final ? t.f : null} max={MAX_FINAL} disabled={!ent.made_final} onDirty={dirty => onDirty(ent.id, dirty)} onCommit={n => onScore(ent.id, { score_final: n })} /></td>
+                  <td className="c bl"><ScoreInput value={ent.made_final ? t.f : null} max={MAX_FINAL} disabled={!ent.made_final || disabledScores} onDirty={dirty => onDirty(ent.id, dirty)} onCommit={n => onScore(ent.id, { score_final: n })} /></td>
                   <td className="c bl big" style={{ color: nightTot != null ? 'var(--orange)' : 'var(--text-3)' }}>{nightTot != null ? nightTot : ''}</td>
                 </tr>
               )

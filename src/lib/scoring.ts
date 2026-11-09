@@ -268,6 +268,7 @@ export function tonightBoard(
   entries: Entry[],
   settings: Settings,
   status: 'scheduled' | 'checkin' | 'scoring' | 'final9' | 'results' | 'complete' | EventStatus,
+  storedCut?: number | null,
 ): TonightBoard {
   const provisional = status === 'scheduled' || status === 'checkin' || status === 'scoring'
 
@@ -314,7 +315,7 @@ export function tonightBoard(
 
   let cutAfterId: string | null = null
   if (provisional) {
-    const qualIds = qualifiers(entries, effectiveCut(null, entries.length, settings), settings)
+    const qualIds = qualifiers(entries, effectiveCut(storedCut ?? null, entries.length, settings), settings)
     for (let i = completed.length - 1; i >= 0; i--) {
       if (qualIds.has(completed[i].id)) {
         cutAfterId = completed[i].id
@@ -388,3 +389,40 @@ export function isOpeningTagNight(
   )[0]
   return first.id === eventId
 }
+
+export function isSeason9Week1(
+  event: { season_id?: string | null; event_date?: string | null; name?: string | null } | null | undefined,
+): boolean {
+  if (!event) return false
+  return (
+    event.season_id === '81298495-f87c-4d7c-a344-89b97e587d9b' &&
+    event.event_date === '2026-11-05' &&
+    event.name === 'Week 1'
+  )
+}
+
+export function week1AllowsScorePatch(
+  event: { season_id?: string | null; event_date?: string | null; name?: string | null } | null | undefined,
+  patch: Partial<Entry>,
+): boolean {
+  if (!isSeason9Week1(event)) return true
+  const scoreKeys: (keyof Entry)[] = [
+    'score_front',
+    'score_back',
+    'score_18',
+    'score_final',
+    'made_final',
+  ]
+  return !scoreKeys.some(k => Object.prototype.hasOwnProperty.call(patch, k))
+}
+
+export function historicalEighteenWrite(
+  entry: Entry,
+  next: number | null,
+): { omit: true } | { omit: false; score_18: number | null } {
+  if (entry.score_front != null || entry.score_back != null) {
+    return { omit: true }
+  }
+  return { omit: false, score_18: next }
+}
+

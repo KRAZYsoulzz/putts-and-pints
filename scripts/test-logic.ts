@@ -1,7 +1,7 @@
 // Quick sanity checks for the rules engine. Run: npx tsx scripts/test-logic.ts
 import assert from 'node:assert/strict'
 import { DEFAULT_SETTINGS as S } from '../src/lib/settings'
-import { bestTotal, byEntryOrder, cents, clampScore, effectiveCut, eighteenGridRows, final9EntryOrder, initialTagAssignment, isOpeningTagNight, qualifiers, rank18, rankFinal, redistributeTags, suggestedCut, totals, displayedFront, displayedBack, computeNineCommit, canConfirmCut, liveNightTotal, tonightBoard } from '../src/lib/scoring'
+import { bestTotal, byEntryOrder, cents, clampScore, effectiveCut, eighteenGridRows, final9EntryOrder, initialTagAssignment, isOpeningTagNight, qualifiers, rank18, rankFinal, redistributeTags, suggestedCut, totals, displayedFront, displayedBack, computeNineCommit, canConfirmCut, liveNightTotal, tonightBoard, isSeason9Week1, week1AllowsScorePatch, historicalEighteenWrite } from '../src/lib/scoring'
 import { applyScoreEdit, draftAfterScoreSave, runScoreEdit } from '../src/lib/score-edit'
 import { completeRefresh, requestRefresh } from '../src/lib/score-refresh'
 import { balances, clampPaidPlaces, displayedPerfectRound, displayedSharedPot, divisionResult, effectiveBar, eventLedgerPosted, eventMoney, nightBonusCost, otherDivisionNights, paidPlaceCount, payoutPool, payoutsForPlaceCount, placeBudget, postedBonusCost, splitEvenly, suggestedPaidPlaces, suggestedPayouts, type DivisionNight } from '../src/lib/money'
@@ -1250,5 +1250,54 @@ assert.equal(afterZero.provisional, false)
 assert.equal(afterZero.completed.find(row => row.id === 'fin-b')?.finalNine, 0)
 assert.equal(afterZero.completed.find(row => row.id === 'fin-b')?.night, 40)
 assert.deepEqual(afterZero.completed.map(row => row.id), ['fin-b', 'fin-a'])
+
+const cutHi = e({ id: 'cut-hi', created_at: '2026-11-08T17:00:00.000Z', score_18: 50, score_front: null, score_back: null })
+const cutMid = e({ id: 'cut-mid', created_at: '2026-11-08T18:00:00.000Z', score_18: 40, score_front: null, score_back: null })
+const cutLow = e({ id: 'cut-low', created_at: '2026-11-08T19:00:00.000Z', score_18: 30, score_front: null, score_back: null })
+const cutTail = e({ id: 'cut-tail', created_at: '2026-11-08T20:00:00.000Z', score_18: 20, score_front: null, score_back: null })
+const savedCutField = [cutTail, cutHi, cutLow, cutMid]
+assert.equal(tonightBoard(savedCutField, S, 'scoring', 1).cutAfterId, 'cut-hi', 'saved cut 1 keeps only the lead, not the half-field line')
+assert.equal(tonightBoard(savedCutField, S, 'scoring', 1).provisional, true)
+assert.equal(tonightBoard(savedCutField, S, 'scoring').cutAfterId, 'cut-mid', 'missing saved cut still uses the half-field default')
+assert.equal(tonightBoard(savedCutField, S, 'scoring', 0).cutAfterId, 'cut-mid', 'stored 0 is unset and uses the half-field default')
+assert.equal(tonightBoard(savedCutField, S, 'scoring', 3).cutAfterId, 'cut-low')
+const cutUp = { ...S, cutRounding: 'up' as const }
+assert.equal(tonightBoard([cutHi, cutMid, cutLow], S, 'scoring').cutAfterId, 'cut-hi', 'round-down half of 3 is 1')
+assert.equal(tonightBoard([cutHi, cutMid, cutLow], cutUp, 'scoring').cutAfterId, 'cut-mid', 'round-up half of 3 is 2')
+const lineTieA = e({ id: 'line-a', created_at: '2026-11-08T18:10:00.000Z', score_18: 40, score_front: null, score_back: null })
+const lineTieB = e({ id: 'line-b', created_at: '2026-11-08T18:20:00.000Z', score_18: 40, score_front: null, score_back: null })
+const tieLead = e({ id: 'line-lead', created_at: '2026-11-08T18:00:00.000Z', score_18: 55, score_front: null, score_back: null })
+assert.equal(tonightBoard([lineTieB, tieLead, lineTieA], S, 'scoring', 2).cutAfterId, 'line-b', 'cut 2 includes both players tied on place 2')
+const cutPartial = e({ id: 'cut-partial', created_at: '2026-11-08T16:30:00.000Z', score_front: 50, score_back: null, score_18: null })
+const incompleteCut = tonightBoard([cutPartial, cutHi, cutMid], S, 'scoring', 1)
+assert.deepEqual(incompleteCut.partial.map(row => row.id), ['cut-partial'])
+assert.equal(incompleteCut.cutAfterId, 'cut-hi', 'a front-only row is outside the cut')
+assert.equal(incompleteCut.provisional, true)
+cutHi.made_final = true
+const confirmedCustom = tonightBoard([cutHi, cutMid, cutLow, cutTail], S, 'final9', 4)
+assert.equal(confirmedCustom.provisional, false)
+assert.equal(confirmedCustom.cutAfterId, 'cut-hi', 'a confirmed cut follows made_final, not the numeric cut')
+
+const season9 = '81298495-f87c-4d7c-a344-89b97e587d9b'
+const week1Event = { season_id: season9, event_date: '2026-11-05', name: 'Week 1' }
+assert.equal(isSeason9Week1(week1Event), true)
+assert.equal(isSeason9Week1({ season_id: season9, event_date: '2026-11-19', name: 'Week 2' }), false)
+assert.equal(isSeason9Week1({ season_id: season9, event_date: '2026-11-05', name: 'Black Friday Dubs' }), false)
+assert.equal(isSeason9Week1({ season_id: 'other-season', event_date: '2026-11-05', name: 'Week 1' }), false)
+assert.equal(week1AllowsScorePatch(week1Event, { score_front: 40 }), false)
+assert.equal(week1AllowsScorePatch(week1Event, { score_back: null }), false)
+assert.equal(week1AllowsScorePatch(week1Event, { score_18: 70 }), false)
+assert.equal(week1AllowsScorePatch(week1Event, { score_final: 0 }), false)
+assert.equal(week1AllowsScorePatch(week1Event, { made_final: true }), false)
+assert.equal(week1AllowsScorePatch(week1Event, { paid: false }), true)
+assert.equal(week1AllowsScorePatch(week1Event, { payout: 10, points: 8, place: 1 }), true)
+assert.equal(week1AllowsScorePatch({ season_id: season9, event_date: '2026-11-19', name: 'Week 2' }, { score_front: 40 }), true)
+
+const derivedEighteen = e({ score_front: 40, score_back: 30, score_18: 70 })
+assert.deepEqual(historicalEighteenWrite(derivedEighteen, 99), { omit: true })
+const legacyEighteen = e({ score_18: 77, score_front: null, score_back: null })
+assert.deepEqual(historicalEighteenWrite(legacyEighteen, 80), { omit: false, score_18: 80 })
+const oneNine = e({ score_front: 40, score_back: null, score_18: null })
+assert.deepEqual(historicalEighteenWrite(oneNine, 40), { omit: true })
 
 console.log('All rules checks passed ✔')
