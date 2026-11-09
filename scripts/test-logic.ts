@@ -1612,6 +1612,7 @@ await import('../src/lib/closeout-protocol.test')
 await import('../src/lib/closeout-week1.test')
 await import('../src/lib/closeout-gaps.test')
 await import('../src/lib/standings.test')
+await import('../src/lib/cards.test')
 
 console.log('All rules checks passed ✔')
 
