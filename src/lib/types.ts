@@ -118,6 +118,17 @@ export interface PPEvent {
   payouts_women: number[]
   settings_snapshot: Settings | null
   notes: string | null
+  created_at?: string
+  pp_close_mode?: 'legacy' | 'split'
+  pp_stage_men?: string | null
+  pp_stage_women?: string | null
+  pp_closed_men?: boolean
+  pp_closed_women?: boolean
+  pp_reserve_p4_men?: number
+  pp_reserve_p5_men?: number
+  pp_reserve_p4_women?: number
+  pp_reserve_p5_women?: number
+  pp_shared_pots_posted?: boolean
 }
 
 export interface Entry {

@@ -1034,4 +1034,13 @@ assert.equal(postedBonusCost([
   { event_id: 'night', division: 'W', fund: 'purse', kind: 'transfer', amount: -3, note: 'Place payout remainder to the Perfect Round pot' },
 ], 'night', 'W'), 5)
 
+await import('../src/lib/closeout.test')
+await import('../src/lib/closeout-money.test')
+await import('../src/lib/closeout-plan.test')
+await import('../src/lib/closeout-fixtures.test')
+await import('../src/lib/closeout-protocol.test')
+await import('../src/lib/closeout-week1.test')
+await import('../src/lib/closeout-gaps.test')
+
 console.log('All rules checks passed ✔')
+
