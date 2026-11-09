@@ -1,13 +1,40 @@
 import { useMemo, useState } from 'react'
-import { Tag as TagIcon } from 'lucide-react'
+import { ArrowDown, ArrowUp, RotateCcw, Tag as TagIcon } from 'lucide-react'
 import { useData } from '../lib/store'
-import { bestTotal } from '../lib/scoring'
 import type { Division } from '../lib/types'
 import { DivisionSeg, PageHead, Stat, money, ordinal } from '../components/ui'
+import {
+  buildOfficialStandings,
+  nextSortState,
+  sortStandingsRows,
+  type StandingsSortColumn,
+  type StandingsSortState,
+} from '../lib/standings'
+
+const COLUMNS: {
+  key: StandingsSortColumn
+  label: string
+  align?: 'c' | 'r'
+  borderLeft?: boolean
+  width?: number
+}[] = [
+  { key: 'default', label: 'Plc', width: 45 },
+  { key: 'player', label: 'Player' },
+  { key: 'events', label: 'Events', align: 'c' },
+  { key: 'wins', label: '1st Wins', align: 'c' },
+  { key: 'best18', label: 'Best 18', align: 'c' },
+  { key: 'best27', label: 'Best 27', align: 'c' },
+  { key: 'winnings', label: 'Winnings', align: 'r', borderLeft: true },
+  { key: 'points', label: 'Points', align: 'c', borderLeft: true, width: 70 },
+]
 
 export default function Standings() {
   const { season, entries, events, playerById, tags, records } = useData()
   const [division, setDivision] = useState<Division>('M')
+  const [sortState, setSortState] = useState<StandingsSortState>({
+    column: 'default',
+    direction: 'desc',
+  })
 
   // Completed events in active season
   const completedEventIds = useMemo(
@@ -15,45 +42,20 @@ export default function Standings() {
     [events],
   )
 
-  // Aggregate stats per player
-  const leaderboard = useMemo(() => {
-    const statsMap = new Map<
-      string,
-      {
-        playerId: string
-        points: number
-        winnings: number
-        eventsPlayed: number
-        firstPlaces: number
-        highScore: number | null
-      }
-    >()
+  // Official standings sorted by default tie-breakers with shared places
+  const officialLeaderboard = useMemo(() => {
+    return buildOfficialStandings({
+      entries,
+      events,
+      division,
+      playerById,
+    })
+  }, [entries, events, division, playerById])
 
-    for (const ent of entries) {
-      if (!completedEventIds.has(ent.event_id) || ent.division !== division) continue
-      const existing = statsMap.get(ent.player_id) ?? {
-        playerId: ent.player_id,
-        points: 0,
-        winnings: 0,
-        eventsPlayed: 0,
-        firstPlaces: 0,
-        highScore: null,
-      }
-
-      existing.points += ent.points || 0
-      existing.winnings += ent.payout || 0
-      existing.eventsPlayed += 1
-      if (ent.place === 1) existing.firstPlaces += 1
-      statsMap.set(ent.player_id, existing)
-    }
-
-    for (const row of statsMap.values()) {
-      const mine = entries.filter(e => completedEventIds.has(e.event_id) && e.player_id === row.playerId && e.division === division)
-      row.highScore = bestTotal(mine, 'total')
-    }
-
-    return Array.from(statsMap.values()).sort((a, b) => b.points - a.points || b.firstPlaces - a.firstPlaces || b.winnings - a.winnings)
-  }, [entries, completedEventIds, division])
+  // View leaderboard (sorted by selected column, preserving official place rank)
+  const displayedLeaderboard = useMemo(() => {
+    return sortStandingsRows(officialLeaderboard, sortState)
+  }, [officialLeaderboard, sortState])
 
   // Current tags for this division
   const activeTags = useMemo(() => {
@@ -64,6 +66,10 @@ export default function Standings() {
       })
       .sort((a, b) => a.tag_number - b.tag_number)
   }, [tags, playerById, division])
+
+  const handleHeaderClick = (column: StandingsSortColumn) => {
+    setSortState((prev) => nextSortState(prev, column))
+  }
 
   return (
     <div className="standings-page">
@@ -83,8 +89,8 @@ export default function Standings() {
         />
         <Stat
           label="Leader"
-          value={leaderboard[0] ? playerById.get(leaderboard[0].playerId)?.name : '—'}
-          sub={leaderboard[0] ? `${leaderboard[0].points} season pts` : 'No events yet'}
+          value={officialLeaderboard[0] ? officialLeaderboard[0].playerName : '—'}
+          sub={officialLeaderboard[0] ? `${officialLeaderboard[0].points} season pts` : 'No events yet'}
         />
         <Stat
           label="Events Completed"
@@ -101,43 +107,113 @@ export default function Standings() {
       <div className="grid-2">
         {/* Main Points Leaderboard */}
         <div className="panel">
-          <div className="panel-head">
-            <span className="eyebrow">{division === 'M' ? "Men's" : "Women's"} Points Leaderboard</span>
-            <span className="faint" style={{ fontSize: 12 }}>Top 5 earn points each event (10, 8, 6, 4, 2)</span>
+          <div
+            className="panel-head"
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: 8,
+            }}
+          >
+            <div>
+              <span className="eyebrow">{division === 'M' ? "Men's" : "Women's"} Points Leaderboard</span>
+              <span className="faint" style={{ fontSize: 12, marginLeft: 8 }}>
+                Top 5 earn points each event (10, 8, 6, 4, 2)
+              </span>
+            </div>
+            {sortState.column !== 'default' && (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                style={{ fontSize: 11, padding: '2px 8px', height: 26 }}
+                onClick={() => setSortState({ column: 'default', direction: 'desc' })}
+                title="Reset to official standings"
+              >
+                <RotateCcw size={12} style={{ marginRight: 4 }} /> Reset sort
+              </button>
+            )}
           </div>
 
           <div className="table-wrap">
-            <table className="table">
+            <table className="table standings-table">
               <thead>
                 <tr>
-                  <th style={{ width: 45 }}>Plc</th>
-                  <th>Player</th>
-                  <th className="c">Events</th>
-                  <th className="c">1st Wins</th>
-                  <th className="c">Best 27</th>
-                  <th className="r bl">Winnings</th>
-                  <th className="c bl" style={{ width: 70 }}>Points</th>
+                  {COLUMNS.map((col) => {
+                    const isActive = sortState.column === col.key
+                    const isPlc = col.key === 'default'
+                    const className = [
+                      'sortable',
+                      col.align ? col.align : '',
+                      col.borderLeft ? 'bl' : '',
+                      isActive ? 'active-sort' : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ')
+
+                    return (
+                      <th
+                        key={col.key}
+                        className={className}
+                        style={{
+                          width: col.width,
+                          cursor: 'pointer',
+                          userSelect: 'none',
+                        }}
+                        onClick={() => handleHeaderClick(col.key)}
+                        title={isPlc ? 'Click to reset to default official rank' : `Sort by ${col.label}`}
+                        aria-sort={
+                          isActive
+                            ? sortState.direction === 'asc'
+                              ? 'ascending'
+                              : 'descending'
+                            : 'none'
+                        }
+                      >
+                        <span>{col.label}</span>
+                        {isActive && (
+                          <span className="sort-arrow">
+                            {sortState.direction === 'asc' ? (
+                              <ArrowUp size={11} />
+                            ) : (
+                              <ArrowDown size={11} />
+                            )}
+                          </span>
+                        )}
+                      </th>
+                    )
+                  })}
                 </tr>
               </thead>
               <tbody>
-                {leaderboard.length === 0 ? (
+                {displayedLeaderboard.length === 0 ? (
                   <tr>
-                    <td colSpan={7} style={{ textAlign: 'center', padding: '36px 0' }} className="muted">
+                    <td
+                      colSpan={8}
+                      style={{ textAlign: 'center', padding: '36px 0' }}
+                      className="muted"
+                    >
                       No completed events yet this season. Points will appear once an event is finalized.
                     </td>
                   </tr>
                 ) : (
-                  leaderboard.map((item, idx) => {
-                    const p = playerById.get(item.playerId)
-                    const isLeader = idx === 0
+                  displayedLeaderboard.map((item) => {
+                    const isLeader = item.place === 1
                     return (
                       <tr key={item.playerId} className={isLeader ? 'leader' : ''}>
-                        <td className="place">{ordinal(idx + 1)}</td>
-                        <td className="strong">{p?.name ?? 'Unknown'}</td>
+                        <td className="place">{ordinal(item.place)}</td>
+                        <td className="strong player-cell" title={item.playerName}>
+                          {item.playerName}
+                        </td>
                         <td className="c">{item.eventsPlayed}</td>
                         <td className="c">{item.firstPlaces > 0 ? `${item.firstPlaces}x` : '—'}</td>
-                        <td className="c">{item.highScore == null ? '—' : item.highScore}</td>
-                        <td className="r bl num" style={{ color: item.winnings > 0 ? 'var(--teal)' : 'var(--text-3)' }}>
+                        <td className="c">{item.best18 != null ? item.best18 : '—'}</td>
+                        <td className="c">{item.best27 != null ? item.best27 : '—'}</td>
+                        <td
+                          className="r bl num"
+                          style={{ color: item.winnings > 0 ? 'var(--teal)' : 'var(--text-3)' }}
+                        >
                           {item.winnings > 0 ? money(item.winnings) : '—'}
                         </td>
                         <td className="c bl big" style={{ color: 'var(--orange)' }}>

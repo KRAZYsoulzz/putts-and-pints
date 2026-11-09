@@ -359,6 +359,30 @@ input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
 .leaderboard-table .big { font-size: 14px; }
 .leaderboard-table tr.cut-line td { height: 18px; }
 
+/* Standings table sortable headers & phone responsiveness */
+.standings-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+  transition: color var(--t);
+}
+.standings-table th.sortable:hover {
+  color: var(--text);
+}
+.standings-table th.active-sort {
+  color: var(--orange);
+}
+.standings-table .sort-arrow {
+  display: inline-flex;
+  vertical-align: middle;
+  margin-left: 3px;
+}
+.standings-table .player-cell {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ==========================================================================
    Responsive — tablet / phone
    ========================================================================== */
@@ -396,5 +420,25 @@ input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
   .table td { height: 48px; }
   .leaderboard-grid { grid-template-columns: 1fr; }
   .leaderboard-table td { height: 28px; }
+  .standings-table th,
+  .standings-table td {
+    padding: 0 5px;
+    height: 38px;
+    font-size: 12px;
+  }
+  .standings-table th {
+    height: 32px;
+    font-size: 9.5px;
+    padding: 0 4px;
+  }
+  .standings-table .place {
+    font-size: 15px;
+  }
+  .standings-table .big {
+    font-size: 16px;
+  }
+  .standings-table .player-cell {
+    max-width: 105px;
+  }
   .hide-sm { display: none; }
 }
