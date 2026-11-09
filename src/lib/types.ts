@@ -134,6 +134,8 @@ export interface Entry {
   r2_b2: number | null
   f_b1: number | null
   f_b2: number | null
+  score_front: number | null
+  score_back: number | null
   /** Scorers enter only these two totals. Older nights keep the per-basket columns below. */
   score_18: number | null
   score_final: number | null

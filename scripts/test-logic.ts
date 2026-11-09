@@ -1,7 +1,7 @@
 // Quick sanity checks for the rules engine. Run: npx tsx scripts/test-logic.ts
 import assert from 'node:assert/strict'
 import { DEFAULT_SETTINGS as S } from '../src/lib/settings'
-import { bestTotal, byEntryOrder, cents, clampScore, effectiveCut, eighteenGridRows, initialTagAssignment, isOpeningTagNight, qualifiers, rank18, rankFinal, redistributeTags, suggestedCut, totals } from '../src/lib/scoring'
+import { bestTotal, byEntryOrder, cents, clampScore, effectiveCut, eighteenGridRows, final9EntryOrder, initialTagAssignment, isOpeningTagNight, qualifiers, rank18, rankFinal, redistributeTags, suggestedCut, totals, displayedFront, displayedBack, computeNineCommit, canConfirmCut, liveNightTotal, tonightBoard } from '../src/lib/scoring'
 import { applyScoreEdit, draftAfterScoreSave, runScoreEdit } from '../src/lib/score-edit'
 import { completeRefresh, requestRefresh } from '../src/lib/score-refresh'
 import { balances, clampPaidPlaces, displayedPerfectRound, displayedSharedPot, divisionResult, effectiveBar, eventLedgerPosted, eventMoney, nightBonusCost, otherDivisionNights, paidPlaceCount, payoutPool, payoutsForPlaceCount, placeBudget, postedBonusCost, splitEvenly, suggestedPaidPlaces, suggestedPayouts, type DivisionNight } from '../src/lib/money'
@@ -14,7 +14,8 @@ const e = (p: Partial<Entry>): Entry => ({
   id: `e${++n}`, event_id: 'ev', player_id: `p${n}`, division: 'M', paid: true,
   tag_in: null, tag_out: null, r1_b1: null, r1_b2: null, r2_b1: null, r2_b2: null,
   f_b1: null, f_b2: null, score_18: null, score_final: null, awards: [],
-  made_final: false, tiebreak: null, place: null, payout: 0, points: 0, ...p,
+  made_final: false, tiebreak: null, place: null, payout: 0, points: 0,
+  score_front: null, score_back: null, ...p,
 })
 const zero = { perfect_round: 0, backup: 0, perfect5: 0, perfect4: 0, high_score: 0, tag_fund: 0, purse: 0 }
 
@@ -1033,5 +1034,221 @@ assert.equal(postedBonusCost([
   { event_id: 'night', division: 'W', fund: 'purse', kind: 'transfer', amount: -5, note: 'Perfect 5 funded from the payout pool' },
   { event_id: 'night', division: 'W', fund: 'purse', kind: 'transfer', amount: -3, note: 'Place payout remainder to the Perfect Round pot' },
 ], 'night', 'W'), 5)
+
+// Director Final 9 scoring list order:
+// Finalists by initial-18 rank place ascending, ties in check-in order,
+// place 0 finalists after those, then non-finalists in check-in order.
+const blankFin = e({ id: 'blank-fin', created_at: '2026-11-08T00:00:00.000Z', score_18: null, made_final: true, score_final: null })
+const earlyCut = e({ id: 'early-cut', created_at: '2026-11-08T00:30:00.000Z', score_18: 80, made_final: false, score_final: null })
+const tieEarly = e({ id: 'tie-early', created_at: '2026-11-08T01:00:00.000Z', score_18: 40, made_final: true, score_final: null })
+const tieLate = e({ id: 'tie-late', created_at: '2026-11-08T02:00:00.000Z', score_18: 40, made_final: true, score_final: 30 })
+const leader = e({ id: 'leader', created_at: '2026-11-08T03:00:00.000Z', score_18: 55, made_final: true, score_final: null })
+const lateCut = e({ id: 'late-cut', created_at: '2026-11-08T04:00:00.000Z', score_18: 10, made_final: false, score_final: null })
+const zero18 = e({ id: 'zero-18', created_at: '2026-11-08T05:00:00.000Z', score_18: 0, made_final: true, score_final: null })
+const f9Field = [blankFin, earlyCut, tieEarly, tieLate, leader, lateCut, zero18]
+
+const f9R18 = new Map(rank18(f9Field, S).map(r => [r.entry.id, r.place]))
+assert.equal(f9R18.get('early-cut'), 1)
+assert.equal(f9R18.get('leader'), 2)
+assert.equal(f9R18.get('tie-early'), 3)
+assert.equal(f9R18.get('tie-late'), 3)
+assert.equal(f9R18.get('late-cut'), 5)
+assert.equal(f9R18.get('zero-18'), 6)
+assert.equal(f9R18.get('blank-fin'), 0)
+
+assert.deepEqual(
+  eighteenGridRows(f9Field, S).map(row => row.id),
+  ['blank-fin', 'early-cut', 'tie-early', 'tie-late', 'leader', 'late-cut', 'zero-18'],
+  'eighteenGridRows on the same field is still check-in order',
+)
+
+const f9FieldCopy = [...f9Field]
+const f9Ordered = final9EntryOrder(f9FieldCopy, S)
+assert.deepEqual(f9FieldCopy.map(x => x.id), f9Field.map(x => x.id), 'original array order is unchanged after calling final9EntryOrder')
+assert.deepEqual(
+  f9Ordered.map(x => x.id),
+  ['leader', 'tie-early', 'tie-late', 'zero-18', 'blank-fin', 'early-cut', 'late-cut'],
+  'finalists by initial-18 place, blank finalists next, non-finalists in check-in order',
+)
+
+leader.score_final = 0
+tieLate.score_final = 50
+const f9RfPlaces = new Map(rankFinal(f9Field, S).map(r => [r.entry.id, r.place]))
+assert.notEqual(f9RfPlaces.get('leader'), f9RfPlaces.get('tie-late'), 'rankFinal places differ after score_final changes')
+assert.ok((f9RfPlaces.get('leader') ?? 0) > 0, 'a typed Final 9 of 0 is real for rankFinal')
+assert.deepEqual(
+  final9EntryOrder(f9Field, S).map(x => x.id),
+  ['leader', 'tie-early', 'tie-late', 'zero-18', 'blank-fin', 'early-cut', 'late-cut'],
+  'score_final changes do not move final9EntryOrder',
+)
+
+const mb = e({ id: 'm-b', created_at: '2026-11-08T06:00:00.000Z', score_18: 36, made_final: true })
+const ma = e({ id: 'm-a', created_at: '2026-11-08T06:00:00.000Z', score_18: 36, made_final: true })
+assert.deepEqual(
+  final9EntryOrder([mb, ma], S).map(x => x.id),
+  ['m-a', 'm-b'],
+  'equal created_at finalist tie broken by id localeCompare',
+)
+
+const backLowFin = e({ id: 'back-low', score_18: 36, r2_b1: 10, r2_b2: 0, r1_b1: 10, r1_b2: 16, created_at: '2026-11-08T07:00:00.000Z', made_final: true })
+const backHighFin = e({ id: 'back-high', score_18: 36, r2_b1: 20, r2_b2: 0, r1_b1: 10, r1_b2: 6, created_at: '2026-11-08T08:00:00.000Z', made_final: true })
+assert.deepEqual(
+  final9EntryOrder([backHighFin, backLowFin], S).map(x => x.id),
+  ['back-low', 'back-high'],
+  'default cut include keeps earlier check-in first despite worse back 9',
+)
+const cutCbSettings = { ...S, ties: { ...S.ties, cut: 'countback' as const } }
+const cbPlaces = new Map(rank18([backLowFin, backHighFin], cutCbSettings).map(r => [r.entry.id, r.place]))
+assert.notEqual(cbPlaces.get('back-high'), cbPlaces.get('back-low'), 'countback cut assigns different rank18 places')
+assert.deepEqual(
+  final9EntryOrder([backLowFin, backHighFin], cutCbSettings).map(x => x.id),
+  ['back-high', 'back-low'],
+  'countback cut ranks better back 9 first in final9EntryOrder even if checked in later',
+)
+
+const blankCut = e({ id: 'blank-cut', created_at: '2026-11-07T23:50:00.000Z', score_18: null, made_final: false })
+assert.deepEqual(
+  final9EntryOrder([blankCut, blankFin, leader, lateCut], S).map(x => x.id),
+  ['leader', 'blank-fin', 'blank-cut', 'late-cut'],
+  'non-finalist with null score_18 stays in non-finalist check-in group, not with blank finalist',
+)
+
+const cutPlayoffSettings = { ...S, ties: { ...S.ties, cut: 'playoff' as const } }
+const playEarly = e({ id: 'play-early', score_18: 36, tiebreak: 2, created_at: '2026-11-08T09:00:00.000Z', made_final: true })
+const playLate = e({ id: 'play-late', score_18: 36, tiebreak: 1, created_at: '2026-11-08T10:00:00.000Z', made_final: true })
+assert.deepEqual(
+  final9EntryOrder([playEarly, playLate], cutPlayoffSettings).map(x => x.id),
+  ['play-late', 'play-early'],
+  'playoff cut lists later check-in with lower tiebreak first',
+)
+
+const playSameB = e({ id: 'play-same-b', score_18: 36, tiebreak: 1, created_at: '2026-11-08T11:00:00.000Z', made_final: true })
+const playSameA = e({ id: 'play-same-a', score_18: 36, tiebreak: 1, created_at: '2026-11-08T11:00:00.000Z', made_final: true })
+assert.deepEqual(
+  final9EntryOrder([playSameB, playSameA], cutPlayoffSettings).map(x => x.id),
+  ['play-same-a', 'play-same-b'],
+  'equal tiebreak numbers keep id localeCompare order',
+)
+
+const playNullEarly = e({ id: 'play-null-early', score_18: 36, tiebreak: null, created_at: '2026-11-08T12:00:00.000Z', made_final: true })
+const playNullLate = e({ id: 'play-null-late', score_18: 36, tiebreak: null, created_at: '2026-11-08T13:00:00.000Z', made_final: true })
+assert.deepEqual(
+  final9EntryOrder([playNullLate, playNullEarly], cutPlayoffSettings).map(x => x.id),
+  ['play-null-early', 'play-null-late'],
+  'null tiebreaks keep check-in order even when cut is playoff',
+)
+
+// Front 9 / Back 9. Completed 18 is both new nines, or a legacy score_18
+// with both new columns empty. A partial nine must not become a basket 18.
+const partialBaskets = e({
+  score_front: 40,
+  score_back: null,
+  score_18: null,
+  r1_b1: 20,
+  r1_b2: 10,
+  r2_b1: 20,
+  r2_b2: 10,
+})
+assert.equal(totals(partialBaskets).t18, null, 'partial front must not fall back to basket sum')
+assert.equal(totals(partialBaskets).r1, 30)
+assert.equal(totals(partialBaskets).r2, 30)
+
+const bothNines = e({ score_front: 40, score_back: 30, score_18: null })
+assert.equal(totals(bothNines).t18, 70, 'both nines complete the 18')
+assert.equal(totals(bothNines).total, 70)
+
+const frontOnly = e({ score_front: 50, score_back: null, score_18: null })
+assert.equal(totals(frontOnly).t18, null, 'front only is not a completed 18')
+
+const legacy77 = e({ score_18: 77, score_front: null, score_back: null })
+assert.equal(totals(legacy77).t18, 77, 'legacy score_18 stays the completed 18')
+assert.equal(totals(e({ score_18: 90, score_front: null, score_back: null, r1_b1: 1, r1_b2: 1, r2_b1: 1, r2_b2: 1 })).t18, 90)
+
+const tied36a = e({ id: 'n36-a', created_at: '2026-11-08T14:00:00.000Z', score_front: 20, score_back: 16, score_18: 36 })
+const tied36b = e({ id: 'n36-b', created_at: '2026-11-08T15:00:00.000Z', score_front: 10, score_back: 26, score_18: 36 })
+const tied36c = e({ id: 'n36-c', created_at: '2026-11-08T16:00:00.000Z', score_18: 36, score_front: null, score_back: null })
+const front50 = e({ id: 'front-50', created_at: '2026-11-08T13:00:00.000Z', score_front: 50, score_back: null, score_18: null })
+const nineField = [front50, tied36c, tied36a, tied36b]
+const ninePlaces = new Map(rank18(nineField, S).map(r => [r.entry.id, r.place]))
+assert.equal(ninePlaces.get('front-50'), 0, 'front-only is unplaced')
+assert.equal(ninePlaces.get('n36-a'), 1)
+assert.equal(ninePlaces.get('n36-b'), 1)
+assert.equal(ninePlaces.get('n36-c'), 1)
+assert.equal(qualifiers([tied36a, tied36b], 1, S).size, 2, 'cut include keeps both players tied at the line')
+
+const week1 = e({
+  id: 'week1-row',
+  event_id: '81298495-f87c-4d7c-a344-89b97e587d9b',
+  score_18: 77,
+  score_front: null,
+  score_back: null,
+})
+const migrated = { ...week1 }
+assert.equal(migrated.score_front, null, 'migrate step must not invent a front')
+assert.equal(migrated.score_back, null, 'migrate step must not invent a back')
+assert.equal(totals(migrated).t18, 77)
+
+assert.equal(displayedFront(legacy77), null, 'legacy score_18 does not invent a front')
+assert.equal(displayedBack(legacy77), null, 'legacy score_18 does not invent a back')
+assert.equal(displayedFront(partialBaskets), 40)
+assert.equal(displayedBack(partialBaskets), null, 'partial back stays blank instead of a basket nine')
+const basketsOnly = e({ r1_b1: 20, r1_b2: 10, r2_b1: 15, r2_b2: 10, score_18: null, score_front: null, score_back: null })
+assert.equal(displayedFront(basketsOnly), 30)
+assert.equal(displayedBack(basketsOnly), 25)
+assert.equal(displayedFront(e({ score_18: 90, score_front: null, score_back: null, r1_b1: 1, r1_b2: 1, r2_b1: 1, r2_b2: 1 })), null)
+
+assert.deepEqual(
+  computeNineCommit(e({ score_front: 40, score_back: 30, score_18: 70 }), 'back', null),
+  { score_back: null, score_18: null },
+)
+assert.deepEqual(
+  computeNineCommit(e({ score_front: 40, score_back: null, score_18: 77 }), 'front', null),
+  { score_front: null },
+)
+assert.deepEqual(
+  computeNineCommit(e({ score_front: null, score_back: null, score_18: 77 }), 'front', 40),
+  { score_front: 40 },
+)
+assert.deepEqual(
+  computeNineCommit(e({ score_front: 40, score_back: null, score_18: 77 }), 'back', 30),
+  { score_back: 30, score_18: 70 },
+)
+const cleared = {
+  ...e({ score_front: 40, score_back: 30, score_18: 70 }),
+  ...computeNineCommit(e({ score_front: 40, score_back: 30, score_18: 70 }), 'back', null),
+}
+assert.equal(totals(cleared).t18, null, 'clearing a derived nine drops the stale 18')
+
+assert.equal(liveNightTotal(e({ score_18: 36, made_final: true, score_final: null, score_front: null, score_back: null })), null)
+assert.equal(liveNightTotal(e({ score_18: 36, made_final: true, score_final: 0, score_front: null, score_back: null })), 36)
+assert.equal(liveNightTotal(e({ score_18: 36, made_final: true, score_final: 12, score_front: null, score_back: null })), 48)
+assert.equal(canConfirmCut([]), true)
+assert.equal(canConfirmCut([frontOnly]), false)
+assert.equal(canConfirmCut([bothNines]), true)
+
+const boardScoring = tonightBoard(nineField, S, 'scoring')
+assert.equal(boardScoring.provisional, true)
+assert.deepEqual(boardScoring.completed.map(row => row.id), ['n36-a', 'n36-b', 'n36-c'])
+assert.deepEqual(boardScoring.partial.map(row => row.id), ['front-50'])
+assert.equal(boardScoring.partial[0].place, null)
+assert.equal(boardScoring.partial[0].front, 50)
+assert.equal(boardScoring.partial[0].back, null)
+assert.equal(boardScoring.partial[0].t18, null)
+assert.equal(boardScoring.completed[0].id === 'front-50', false)
+assert.equal(boardScoring.cutAfterId, 'n36-c')
+
+const finA = e({ id: 'fin-a', created_at: '2026-11-08T21:00:00.000Z', score_18: 36, score_front: null, score_back: null, made_final: true, score_final: null })
+const finB = e({ id: 'fin-b', created_at: '2026-11-08T22:00:00.000Z', score_18: 40, score_front: null, score_back: null, made_final: true, score_final: null })
+assert.deepEqual(tonightBoard([finA, finB], S, 'final9').completed.map(row => row.id), ['fin-b', 'fin-a'])
+assert.equal(tonightBoard([finA, finB], S, 'final9').completed.find(row => row.id === 'fin-a')?.night, null)
+finA.score_final = 12
+assert.deepEqual(tonightBoard([finA, finB], S, 'final9').completed.map(row => row.id), ['fin-b', 'fin-a'])
+assert.equal(tonightBoard([finA, finB], S, 'final9').completed.find(row => row.id === 'fin-a')?.night, 48)
+finB.score_final = 0
+const afterZero = tonightBoard([finA, finB], S, 'final9')
+assert.equal(afterZero.provisional, false)
+assert.equal(afterZero.completed.find(row => row.id === 'fin-b')?.finalNine, 0)
+assert.equal(afterZero.completed.find(row => row.id === 'fin-b')?.night, 40)
+assert.deepEqual(afterZero.completed.map(row => row.id), ['fin-b', 'fin-a'])
 
 console.log('All rules checks passed ✔')

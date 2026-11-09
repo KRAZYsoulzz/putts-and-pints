@@ -227,11 +227,15 @@ export default function Players() {
     setEntryError('')
     try {
       await must(supabase.from('pp_entries').update({
-        ...entryForm,
-        score_18: score(entryForm.score_18, MAX_18),
-        score_final: score(entryForm.score_final, MAX_FINAL),
+        made_final: entryForm.made_final,
+        place: entryForm.place,
+        payout: entryForm.payout,
+        points: entryForm.points,
+        awards: entryForm.awards,
         tag_in: tagIn.value,
         tag_out: tagOut.value,
+        score_18: score(entryForm.score_18, MAX_18),
+        score_final: score(entryForm.score_final, MAX_FINAL),
       }).eq('id', editEntry.id))
     } catch (err) {
       setEntryError(messageOf(err))

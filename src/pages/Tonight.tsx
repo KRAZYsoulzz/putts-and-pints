@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import {
   Check,
   ChevronRight,
@@ -25,7 +25,7 @@ import {
   type Player,
   type PPEvent,
 } from '../lib/types'
-import { byEntryOrder, cents, effectiveCut, eighteenGridRows, isOpeningTagNight, MAX_18, MAX_FINAL, qualifiers, suggestedCut, totals, type Ranked } from '../lib/scoring'
+import { byEntryOrder, canConfirmCut, cents, computeNineCommit, displayedBack, displayedFront, effectiveCut, eighteenGridRows, final9EntryOrder, isOpeningTagNight, liveNightTotal, MAX_FINAL, MAX_NINE, qualifiers, suggestedCut, tonightBoard, totals, type Ranked } from '../lib/scoring'
 import { completeRefresh, requestRefresh, type ScoreBoard } from '../lib/score-refresh'
 import { balances, clampPaidPlaces, displayedPerfectRound, displayedSharedPot, divisionResult, eventLedgerPosted, effectiveBar, eventMoney, nightBonusCost, otherDivisionNights, paidPlaceCount, payoutPool, payoutsForPlaceCount, placeBudget, placeRemainder, postedBonusCost, postedPlaceRemainder, postedRemainderBackup, suggestedPaidPlaces } from '../lib/money'
 import { duplicateName, friendlyError, normalizeName, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../lib/validation'
@@ -139,6 +139,10 @@ export default function Tonight() {
     [entries, event?.id, division],
   )
   const orderedEntries = useMemo(() => [...divEntries].sort(byEntryOrder), [divEntries])
+  const final9Entries = useMemo(
+    () => final9EntryOrder(divEntries, settings),
+    [divEntries, settings],
+  )
 
   const counts = useMemo(() => {
     const active = entries.filter(e => e.event_id === event?.id)
@@ -461,7 +465,10 @@ export default function Tonight() {
     }
   }
 
+  const canProceedToCut = canConfirmCut(entries.filter(e => e.event_id === event.id))
+
   const applyCutAndProceed = async () => {
+    if (!canConfirmCut(entries.filter(e => e.event_id === event.id))) return
     const patch: Partial<PPEvent> = { status: 'final9' }
     for (const d of DIVS) {
       const field = entries.filter(e => e.event_id === event.id && e.division === d)
@@ -881,7 +888,7 @@ export default function Tonight() {
             <div>
               <h2 className="display section-title">18-Holes Scoring Grid</h2>
               <p className="muted" style={{ fontSize: 13, marginTop: 4 }}>
-                Basket 1 is 0–30, Basket 2 is 0–20. Rows stay in check-in order while you type. Right-click a player to award a bonus.
+                Front 9 and Back 9, each 0–50, rows staying in check-in order. Right-click a player to award a bonus.
               </p>
             </div>
             <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
@@ -890,9 +897,20 @@ export default function Tonight() {
                 status={refreshStatus}
                 onRefresh={refreshScores}
               />
-              <button className="btn btn-primary" onClick={applyCutAndProceed}>
-                Go to The Cut & Final 9 <ChevronRight size={16} />
-              </button>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+                <button
+                  className="btn btn-primary"
+                  disabled={!canProceedToCut}
+                  onClick={applyCutAndProceed}
+                >
+                  Go to The Cut & Final 9 <ChevronRight size={16} />
+                </button>
+                {!canProceedToCut && (
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    Checked-in players still need a completed 18.
+                  </span>
+                )}
+              </div>
             </div>
           </div>
           <ScoreTable
@@ -941,7 +959,7 @@ export default function Tonight() {
             </div>
           </div>
           <ScoreTable
-            rows={orderedEntries}
+            rows={final9Entries}
             rankedById={rankedById}
             playerById={playerById}
             settings={settings}
@@ -954,7 +972,110 @@ export default function Tonight() {
         </div>
       )}
 
-      {(event.status === 'results' || event.status === 'complete' || !isAdmin) && (
+      {!isAdmin && event.status !== 'complete' ? (
+        <div className="section stack" style={{ gap: 28 }}>
+          <div>
+            <h2 className="display section-title">Tonight's Leaderboard</h2>
+            <p className="muted" style={{ fontSize: 13, marginTop: 4 }}>
+              Live scoring and cut standings. Completed rounds are ranked, followed by partial rounds and players on the course.
+            </p>
+          </div>
+          {DIVS.map(d => {
+            const dEntries = entries.filter(e => e.event_id === event.id && e.division === d)
+            const board = tonightBoard(dEntries, settings, event.status)
+            const entryMap = new Map(dEntries.map(ent => [ent.id, ent]))
+            const renderRow = (row: typeof board.completed[number]) => {
+              const ent = entryMap.get(row.id)
+              const p = ent ? playerById.get(ent.player_id) : null
+              return (
+                <tr key={row.id} className={row.place === 1 ? 'leader' : ''}>
+                  <td className="place">{row.place != null && row.place > 0 ? ordinal(row.place) : '—'}</td>
+                  <td className="strong">
+                    {p?.name ?? 'Unknown Player'}
+                    {ent?.awards && ent.awards.length > 0 && (
+                      <span className="chips">
+                        {ent.awards.map(a => <span key={a} className="chip chip-teal">{AWARD_SHORT[a]}</span>)}
+                      </span>
+                    )}
+                  </td>
+                  <td className="c">{row.front != null ? row.front : '—'}</td>
+                  <td className="c">{row.back != null ? row.back : '—'}</td>
+                  <td className="c bl strong">{row.t18 != null ? row.t18 : '—'}</td>
+                  <td className="c bl">{row.finalNine != null ? row.finalNine : '—'}</td>
+                  <td className="c bl big">{row.night != null ? row.night : '—'}</td>
+                </tr>
+              )
+            }
+            const allEmpty = board.completed.length === 0 && board.partial.length === 0 && board.unscored.length === 0
+            return (
+              <div key={d} className="stack" style={{ gap: 12 }}>
+                <div className="row" style={{ justifyContent: 'space-between' }}>
+                  <h3 className="display" style={{ fontSize: 20 }}>
+                    {d === 'M' ? "Men's Division" : "Women's Division"}
+                  </h3>
+                  <span className="muted" style={{ fontSize: 13 }}>
+                    {dEntries.length} {dEntries.length === 1 ? 'player' : 'players'}
+                  </span>
+                </div>
+                <div className="panel">
+                  <div className="table-wrap">
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th style={{ width: 45 }}>Plc</th>
+                          <th>Player</th>
+                          <th className="c" style={{ width: 80 }}>Front 9</th>
+                          <th className="c" style={{ width: 80 }}>Back 9</th>
+                          <th className="c bl" style={{ width: 80 }}>18 Total</th>
+                          <th className="c bl" style={{ width: 80 }}>Final 9</th>
+                          <th className="c bl" style={{ width: 90 }}>Night Total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {allEmpty ? (
+                          <tr>
+                            <td colSpan={7} style={{ textAlign: 'center', padding: '36px 0' }} className="muted">
+                              No players checked into this division yet.
+                            </td>
+                          </tr>
+                        ) : (
+                          <>
+                            {board.completed.map(row => (
+                              <Fragment key={row.id}>
+                                {renderRow(row)}
+                                {row.id === board.cutAfterId && (
+                                  <tr className="cut-line">
+                                    <td
+                                      colSpan={7}
+                                      style={{
+                                        textAlign: 'center',
+                                        background: 'var(--surface-2)',
+                                        padding: '6px 12px',
+                                        fontSize: 12,
+                                        fontWeight: 600,
+                                        color: 'var(--orange)',
+                                        letterSpacing: '0.04em',
+                                      }}
+                                    >
+                                      Cut line ({board.provisional ? 'provisional' : 'confirmed'})
+                                    </td>
+                                  </tr>
+                                )}
+                              </Fragment>
+                            ))}
+                            {board.partial.map(row => renderRow(row))}
+                            {board.unscored.map(row => renderRow(row))}
+                          </>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      ) : (event.status === 'results' || event.status === 'complete') && (
         <div className="section">
           <div className="section-head">
             <div>
@@ -1349,11 +1470,15 @@ function ScoreTable({ rows, rankedById, playerById, settings, mode, onContextMen
                   <th style={{ width: 45 }}>Plc</th>
                   <th>Player</th>
                   <th className="c">Tag</th>
-                  <th className="c bl" style={{ width: 110 }}>18 Total</th>
+                  <th className="c bl" style={{ width: 85 }}>Front 9</th>
+                  <th className="c bl" style={{ width: 85 }}>Back 9</th>
+                  <th className="c bl" style={{ width: 85 }}>18 Total</th>
                   <th className="c bl" style={{ width: 140 }}>Awards</th>
                 </tr>
                 <tr>
                   <th></th><th></th><th></th>
+                  <th className="c bl" title="Front 9, 50 points maximum">/ 50</th>
+                  <th className="c bl" title="Back 9, 50 points maximum">/ 50</th>
                   <th className="c bl" title="18 holes, 100 points maximum">/ 100</th>
                   <th className="c bl">Right-Click</th>
                 </tr>
@@ -1397,7 +1522,23 @@ function ScoreTable({ rows, rankedById, playerById, settings, mode, onContextMen
                       )}
                     </td>
                     <td className="c faint">{p?.in_tags && ent.tag_in ? `#${ent.tag_in}` : 'No tag'}</td>
-                    <td className="c bl"><ScoreInput value={t.t18} max={MAX_18} onDirty={dirty => onDirty(ent.id, dirty)} onCommit={n => onScore(ent.id, { score_18: n })} /></td>
+                    <td className="c bl">
+                      <ScoreInput
+                        value={displayedFront(ent)}
+                        max={MAX_NINE}
+                        onDirty={dirty => onDirty(ent.id, dirty)}
+                        onCommit={n => onScore(ent.id, computeNineCommit(ent, 'front', n))}
+                      />
+                    </td>
+                    <td className="c bl">
+                      <ScoreInput
+                        value={displayedBack(ent)}
+                        max={MAX_NINE}
+                        onDirty={dirty => onDirty(ent.id, dirty)}
+                        onCommit={n => onScore(ent.id, computeNineCommit(ent, 'back', n))}
+                      />
+                    </td>
+                    <td className="c bl strong">{t.t18 != null ? t.t18 : ''}</td>
                     <td className="c bl">
                       <button className="btn btn-ghost btn-sm" style={{ fontSize: 11 }} onClick={e => onContextMenu(e, ent)}>
                         <Sparkles size={12} /> Awards
@@ -1406,6 +1547,7 @@ function ScoreTable({ rows, rankedById, playerById, settings, mode, onContextMen
                   </tr>
                 )
               }
+              const nightTot = liveNightTotal(ent)
               return (
                 <tr key={ent.id} onContextMenu={e => onContextMenu(e, ent)} className={`${!ent.made_final ? 'out' : ''} ${place === 1 ? 'leader' : ''}`}>
                   <td className="place">{place ?? '—'}</td>
@@ -1417,7 +1559,7 @@ function ScoreTable({ rows, rankedById, playerById, settings, mode, onContextMen
                   </td>
                   <td className="c bl strong">{t.t18 ?? '—'}</td>
                   <td className="c bl"><ScoreInput value={ent.made_final ? t.f : null} max={MAX_FINAL} disabled={!ent.made_final} onDirty={dirty => onDirty(ent.id, dirty)} onCommit={n => onScore(ent.id, { score_final: n })} /></td>
-                  <td className="c bl big" style={{ color: t.total != null ? 'var(--orange)' : 'var(--text-3)' }}>{t.total ?? '—'}</td>
+                  <td className="c bl big" style={{ color: nightTot != null ? 'var(--orange)' : 'var(--text-3)' }}>{nightTot != null ? nightTot : ''}</td>
                 </tr>
               )
             })}

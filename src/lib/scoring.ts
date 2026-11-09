@@ -1,10 +1,11 @@
-import type { CountbackKey, CutTieMode, Entry, Settings, TieMode } from './types'
+import type { CountbackKey, CutTieMode, Entry, EventStatus, Settings, TieMode } from './types'
 
 // ---------------------------------------------------------------------------
 // Scores
 // ---------------------------------------------------------------------------
 export const MAX_18 = 100
 export const MAX_FINAL = 50
+export const MAX_NINE = 50
 
 const nine = (b1: number | null, b2: number | null) => (b1 == null || b2 == null ? null : b1 + b2)
 
@@ -42,16 +43,74 @@ export interface Totals {
 }
 
 /**
- * New nights store two totals (score_18, score_final). Nights scored before that
- * only have the per-basket columns, so fall back to summing those.
+ * New nights store two totals (score_18, score_final) or Front/Back 9 totals.
+ * Nights scored before that only have the per-basket columns, so fall back to summing those.
  */
 export function totals(e: Entry): Totals {
   const r1 = nine(e.r1_b1, e.r1_b2)
   const r2 = nine(e.r2_b1, e.r2_b2)
   const f = e.made_final ? (e.score_final ?? nine(e.f_b1, e.f_b2)) : null
-  const t18 = e.score_18 ?? (r1 != null && r2 != null ? r1 + r2 : null)
+  let t18: number | null
+  if (e.score_front != null || e.score_back != null) {
+    t18 = e.score_front != null && e.score_back != null ? e.score_front + e.score_back : null
+  } else if (e.score_18 != null) {
+    t18 = e.score_18
+  } else {
+    t18 = r1 != null && r2 != null ? r1 + r2 : null
+  }
   const total = t18 == null ? null : t18 + (f ?? 0)
   return { r1, r2, f, t18, total }
+}
+
+export function displayedFront(e: Entry): number | null {
+  if (e.score_front != null || e.score_back != null) {
+    return e.score_front
+  }
+  if (e.score_18 != null) {
+    return null
+  }
+  return nine(e.r1_b1, e.r1_b2)
+}
+
+export function displayedBack(e: Entry): number | null {
+  if (e.score_front != null || e.score_back != null) {
+    return e.score_back
+  }
+  if (e.score_18 != null) {
+    return null
+  }
+  return nine(e.r2_b1, e.r2_b2)
+}
+
+export function computeNineCommit(current: Entry, which: 'front' | 'back', nextVal: number | null): Partial<Entry> {
+  const patch: Partial<Entry> = {
+    [which === 'front' ? 'score_front' : 'score_back']: nextVal,
+  }
+  const nextFront = which === 'front' ? nextVal : current.score_front
+  const nextBack = which === 'back' ? nextVal : current.score_back
+
+  if (nextFront != null && nextBack != null) {
+    patch.score_18 = nextFront + nextBack
+  } else if (
+    current.score_front != null &&
+    current.score_back != null &&
+    current.score_18 === current.score_front + current.score_back
+  ) {
+    patch.score_18 = null
+  }
+
+  return patch
+}
+
+export function canConfirmCut(entries: Entry[]): boolean {
+  return entries.every(e => totals(e).t18 != null)
+}
+
+export function liveNightTotal(e: Entry): number | null {
+  const t = totals(e)
+  if (t.t18 == null) return null
+  if (e.made_final && e.score_final == null) return null
+  return t.total
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +195,23 @@ export function eighteenGridRows(entries: Entry[], s: Settings): { id: string; p
   return [...entries].sort(byEntryOrder).map(ent => ({ id: ent.id, place: places.get(ent.id) ?? 0 }))
 }
 
+export function final9EntryOrder(entries: Entry[], settings: Settings): Entry[] {
+  const places = new Map(rank18(entries, settings).map(r => [r.entry.id, r.place]))
+  return [...entries].sort((a, b) => {
+    if (a.made_final !== b.made_final) return a.made_final ? -1 : 1
+    if (a.made_final) {
+      const pa = places.get(a.id) ?? 0
+      const pb = places.get(b.id) ?? 0
+      if (pa !== pb) {
+        if (pa === 0) return 1
+        if (pb === 0) return -1
+        return pa - pb
+      }
+    }
+    return byEntryOrder(a, b)
+  })
+}
+
 /** Ranking after the 18 (used for the cut). */
 export function rank18(entries: Entry[], s: Settings): Ranked[] {
   const cutMode: Record<CutTieMode, TieMode> = { include: 'split', playoff: 'playoff', countback: 'countback' }
@@ -168,6 +244,95 @@ export function qualifiers(entries: Entry[], cut: number, s: Settings): Set<stri
       .filter(r => r.place <= cut)
       .map(r => r.entry.id),
   )
+}
+
+export interface TonightBoardRow {
+  id: string
+  place: number | null
+  front: number | null
+  back: number | null
+  t18: number | null
+  finalNine: number | null
+  night: number | null
+}
+
+export interface TonightBoard {
+  completed: TonightBoardRow[]
+  partial: TonightBoardRow[]
+  unscored: TonightBoardRow[]
+  provisional: boolean
+  cutAfterId: string | null
+}
+
+export function tonightBoard(
+  entries: Entry[],
+  settings: Settings,
+  status: 'scheduled' | 'checkin' | 'scoring' | 'final9' | 'results' | 'complete' | EventStatus,
+): TonightBoard {
+  const provisional = status === 'scheduled' || status === 'checkin' || status === 'scoring'
+
+  const r18 = rank18(entries, settings)
+  const completed: TonightBoardRow[] = r18
+    .filter(r => r.totals.t18 != null)
+    .map(r => ({
+      id: r.entry.id,
+      place: r.place,
+      front: displayedFront(r.entry),
+      back: displayedBack(r.entry),
+      t18: r.totals.t18,
+      finalNine: r.entry.made_final && typeof r.entry.score_final === 'number' ? r.entry.score_final : null,
+      night: liveNightTotal(r.entry),
+    }))
+
+  const partialEntries: Entry[] = []
+  const unscoredEntries: Entry[] = []
+
+  for (const e of entries) {
+    if (totals(e).t18 != null) continue
+    if (e.score_front != null || e.score_back != null) {
+      partialEntries.push(e)
+    } else {
+      unscoredEntries.push(e)
+    }
+  }
+
+  partialEntries.sort(byEntryOrder)
+  unscoredEntries.sort(byEntryOrder)
+
+  const toRow = (e: Entry): TonightBoardRow => ({
+    id: e.id,
+    place: null,
+    front: displayedFront(e),
+    back: displayedBack(e),
+    t18: null,
+    finalNine: e.made_final && typeof e.score_final === 'number' ? e.score_final : null,
+    night: liveNightTotal(e),
+  })
+
+  const partial = partialEntries.map(toRow)
+  const unscored = unscoredEntries.map(toRow)
+
+  let cutAfterId: string | null = null
+  if (provisional) {
+    const qualIds = qualifiers(entries, effectiveCut(null, entries.length, settings), settings)
+    for (let i = completed.length - 1; i >= 0; i--) {
+      if (qualIds.has(completed[i].id)) {
+        cutAfterId = completed[i].id
+        break
+      }
+    }
+  } else {
+    const entryMap = new Map(entries.map(e => [e.id, e]))
+    for (let i = completed.length - 1; i >= 0; i--) {
+      const e = entryMap.get(completed[i].id)
+      if (e?.made_final) {
+        cutAfterId = completed[i].id
+        break
+      }
+    }
+  }
+
+  return { completed, partial, unscored, provisional, cutAfterId }
 }
 
 // ---------------------------------------------------------------------------
