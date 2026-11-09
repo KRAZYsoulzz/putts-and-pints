@@ -1,7 +1,7 @@
 // Quick sanity checks for the rules engine. Run: npx tsx scripts/test-logic.ts
 import assert from 'node:assert/strict'
 import { DEFAULT_SETTINGS as S } from '../src/lib/settings'
-import { bestTotal, byEntryOrder, cents, clampScore, effectiveCut, eighteenGridRows, final9EntryOrder, initialTagAssignment, isOpeningTagNight, qualifiers, rank18, rankFinal, redistributeTags, suggestedCut, totals, displayedFront, displayedBack, computeNineCommit, canConfirmCut, liveNightTotal, tonightBoard, isSeason9Week1, week1AllowsScorePatch, historicalEighteenWrite } from '../src/lib/scoring'
+import { bestTotal, byEntryOrder, cents, clampScore, effectiveCut, eighteenGridRows, final9EntryOrder, initialTagAssignment, isOpeningTagNight, qualifiers, rank18, rankFinal, redistributeTags, suggestedCut, totals, displayedFront, displayedBack, computeNineCommit, canConfirmCut, liveNightTotal, tonightBoard, isSeason9Week1, week1AllowsScorePatch, historicalEighteenWrite, week1AllowsEventPatch, week1AllowsCheckin, week1AllowsEntryDelete, week1AllowsFinalize, week1AllowsPlayerDelete, cutConfirmationReady, applyScoreDirty, applyNineToLatest, mergeNinePatch } from '../src/lib/scoring'
 import { applyScoreEdit, draftAfterScoreSave, runScoreEdit } from '../src/lib/score-edit'
 import { completeRefresh, requestRefresh } from '../src/lib/score-refresh'
 import { balances, clampPaidPlaces, displayedPerfectRound, displayedSharedPot, divisionResult, effectiveBar, eventLedgerPosted, eventMoney, nightBonusCost, otherDivisionNights, paidPlaceCount, payoutPool, payoutsForPlaceCount, placeBudget, postedBonusCost, splitEvenly, suggestedPaidPlaces, suggestedPayouts, type DivisionNight } from '../src/lib/money'
@@ -1289,9 +1289,46 @@ assert.equal(week1AllowsScorePatch(week1Event, { score_back: null }), false)
 assert.equal(week1AllowsScorePatch(week1Event, { score_18: 70 }), false)
 assert.equal(week1AllowsScorePatch(week1Event, { score_final: 0 }), false)
 assert.equal(week1AllowsScorePatch(week1Event, { made_final: true }), false)
-assert.equal(week1AllowsScorePatch(week1Event, { paid: false }), true)
-assert.equal(week1AllowsScorePatch(week1Event, { payout: 10, points: 8, place: 1 }), true)
+
+const cbNine = { ...S, ties: { ...S.ties, cut: 'countback' as const } }
+const nineA = e({ id: 'nine-a', created_at: '2026-11-08T01:00:00.000Z', score_front: 40, score_back: 30, score_18: 70 })
+const nineB = e({ id: 'nine-b', created_at: '2026-11-08T02:00:00.000Z', score_front: 30, score_back: 40, score_18: 70 })
+const countbackNinePlaces = new Map(rank18([nineA, nineB], cbNine).map(r => [r.entry.id, r.place]))
+assert.equal(countbackNinePlaces.get('nine-b'), 1, 'countback second nine uses the new back nine')
+assert.equal(countbackNinePlaces.get('nine-a'), 2)
+const basketA = e({ id: 'bask-a', created_at: '2026-11-08T03:00:00.000Z', score_18: 36, score_front: null, score_back: null, r2_b1: 10, r2_b2: 0, r1_b1: 10, r1_b2: 16 })
+const basketB = e({ id: 'bask-b', created_at: '2026-11-08T04:00:00.000Z', score_18: 36, score_front: null, score_back: null, r2_b1: 20, r2_b2: 0, r1_b1: 10, r1_b2: 6 })
+const baskPlaces = new Map(rank18([basketA, basketB], cbNine).map(r => [r.entry.id, r.place]))
+assert.equal(baskPlaces.get('bask-b'), 1, 'basket second nine still breaks a totals tie')
+assert.equal(baskPlaces.get('bask-a'), 2)
+
+const leaderCut = e({ id: 'leader-cut', created_at: '2026-11-08T05:00:00.000Z', score_18: 50, score_front: null, score_back: null, made_final: false })
+const lowerFin = e({ id: 'lower-fin', created_at: '2026-11-08T06:00:00.000Z', score_18: 40, score_front: null, score_back: null, made_final: true })
+const mixedCut = tonightBoard([leaderCut, lowerFin], S, 'final9', 1)
+assert.deepEqual(mixedCut.completed.map(r => r.id), ['lower-fin', 'leader-cut'], 'confirmed finalists stay together even if a higher score was cut')
+assert.equal(mixedCut.cutAfterId, 'lower-fin')
+const tieFinEarly = e({ id: 'tie-fin-a', created_at: '2026-11-08T07:00:00.000Z', score_18: 36, score_front: null, score_back: null, made_final: true })
+const tieOut = e({ id: 'tie-out', created_at: '2026-11-08T08:00:00.000Z', score_18: 36, score_front: null, score_back: null, made_final: false })
+const tieFinLate = e({ id: 'tie-fin-b', created_at: '2026-11-08T09:00:00.000Z', score_18: 36, score_front: null, score_back: null, made_final: true })
+const tiedFlags = tonightBoard([tieOut, tieFinLate, tieFinEarly], S, 'final9', 2)
+assert.deepEqual(tiedFlags.completed.map(r => r.id), ['tie-fin-a', 'tie-fin-b', 'tie-out'])
+assert.equal(tiedFlags.cutAfterId, 'tie-fin-b')
+
+const conflicted = e({ id: 'conflicted', score_front: 41, score_back: 32, score_18: 72 })
+const clearConflictFront = computeNineCommit(conflicted, 'front', null)
+assert.equal(clearConflictFront.score_18, null, 'a mismatched derived 18 is cleared when a nine is removed')
+const afterConflictFront = { ...conflicted, ...clearConflictFront }
+const clearConflictBack = computeNineCommit(afterConflictFront, 'back', null)
+assert.equal(totals({ ...afterConflictFront, ...clearConflictBack }).t18, null, 'clearing both nines must not revive a stale 18')
+
+assert.equal(week1AllowsScorePatch(week1Event, { paid: false }), false)
+assert.equal(week1AllowsScorePatch(week1Event, { payout: 10, points: 8, place: 1 }), false)
 assert.equal(week1AllowsScorePatch({ season_id: season9, event_date: '2026-11-19', name: 'Week 2' }, { score_front: 40 }), true)
+assert.equal(week1AllowsScorePatch(week1Event, { awards: [] }), false)
+assert.equal(week1AllowsScorePatch(week1Event, { tag_in: 4 }), false)
+assert.equal(week1AllowsScorePatch(week1Event, { tag_out: 4 }), false)
+assert.equal(week1AllowsScorePatch(week1Event, { points: 2 }), false)
+assert.equal(week1AllowsScorePatch({ season_id: season9, event_date: '2026-11-19', name: 'Week 2' }, { paid: false, payout: 10, place: 1, points: 2, awards: [], tag_in: 4 }), true)
 
 const derivedEighteen = e({ score_front: 40, score_back: 30, score_18: 70 })
 assert.deepEqual(historicalEighteenWrite(derivedEighteen, 99), { omit: true })
@@ -1299,5 +1336,32 @@ const legacyEighteen = e({ score_18: 77, score_front: null, score_back: null })
 assert.deepEqual(historicalEighteenWrite(legacyEighteen, 80), { omit: false, score_18: 80 })
 const oneNine = e({ score_front: 40, score_back: null, score_18: null })
 assert.deepEqual(historicalEighteenWrite(oneNine, 40), { omit: true })
+
+assert.equal(week1AllowsEventPatch(week1Event, { status: 'results' }), false)
+assert.equal(week1AllowsCheckin(week1Event), false)
+assert.equal(week1AllowsEntryDelete(week1Event), false)
+assert.equal(week1AllowsFinalize(week1Event), false)
+assert.equal(week1AllowsEventPatch({ season_id: season9, event_date: '2026-11-19', name: 'Week 2' }, { status: 'scoring' }), true)
+assert.equal(week1AllowsPlayerDelete([{ event_id: 'w1' }], [{ id: 'w1', season_id: season9, event_date: '2026-11-05', name: 'Week 1' }]), false)
+assert.equal(week1AllowsPlayerDelete([{ event_id: 'w2' }], [{ id: 'w2', season_id: season9, event_date: '2026-11-19', name: 'Week 2' }]), true)
+const ready = { dirty: 0, saves: 0, refreshing: false }
+assert.equal(cutConfirmationReady([bothNines], ready), true)
+assert.equal(cutConfirmationReady([bothNines], { dirty: 1, saves: 0, refreshing: false }), false)
+assert.equal(cutConfirmationReady([frontOnly], ready), false)
+let dirtyKeys = new Set<string>()
+dirtyKeys = applyScoreDirty(dirtyKeys, 'p1', 'front', true)
+dirtyKeys = applyScoreDirty(dirtyKeys, 'p1', 'back', true)
+dirtyKeys = applyScoreDirty(dirtyKeys, 'p1', 'back', false)
+assert.equal(dirtyKeys.has('p1:front'), true)
+assert.equal(dirtyKeys.has('p1:back'), false)
+let synced = e({ score_front: 40, score_back: 30, score_18: 70 })
+synced = applyNineToLatest(synced, 'front', 41)
+synced = applyNineToLatest(synced, 'back', 32)
+assert.equal(synced.score_18, 73)
+const stalePatch = computeNineCommit(e({ score_front: 40, score_back: 30, score_18: 70 }), 'back', 32)
+const merged = mergeNinePatch(e({ score_front: 41, score_back: 30, score_18: 71 }), stalePatch)
+assert.equal(merged.score_front, 41)
+assert.equal(merged.score_back, 32)
+assert.equal(merged.score_18, 73)
 
 console.log('All rules checks passed ✔')

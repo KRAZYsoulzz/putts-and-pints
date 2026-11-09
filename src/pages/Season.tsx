@@ -3,8 +3,9 @@ import { useNavigate } from 'react-router-dom'
 import { CheckCircle2, Pencil, Plus, Sparkles, Trash2 } from 'lucide-react'
 import { useData, must } from '../lib/store'
 import { supabase } from '../lib/supabase'
-import { askConfirm, messageOf, reportInfo } from '../lib/notify'
+import { askConfirm, messageOf, reportError, reportInfo } from '../lib/notify'
 import { normalizeName } from '../lib/validation'
+import { isSeason9Week1 } from '../lib/scoring'
 import { Dialog, MoneyInput, PageHead, fmtDate } from '../components/ui'
 import type { Division, Fund, PPEvent } from '../lib/types'
 
@@ -116,6 +117,10 @@ export default function SeasonPage() {
       setEventError('Pick a date before saving.')
       return
     }
+    if (isSeason9Week1(editEvent)) {
+      setEventError('Week 1 scores stay as played.')
+      return
+    }
     const name = normalizeName(editName)
     setEventError('')
     try {
@@ -130,11 +135,19 @@ export default function SeasonPage() {
 
   const deleteSeason = async () => {
     if (!season) return
+    if (events.some(e => isSeason9Week1(e))) {
+      reportError('Week 1 scores stay as played.')
+      return
+    }
     const ok = await askConfirm(
       `Delete ${season.name}? Its events, tags, and ledger rows are removed. Players stay on the roster.`,
       { title: 'Delete season', confirmLabel: 'Delete season', danger: true },
     )
     if (!ok) return
+    if (events.some(e => isSeason9Week1(e))) {
+      reportError('Week 1 scores stay as played.')
+      return
+    }
     try {
       await must(supabase.from('pp_seasons').delete().eq('id', season.id))
     } catch {
@@ -247,11 +260,19 @@ export default function SeasonPage() {
                               className="btn btn-ghost btn-sm btn-icon btn-danger"
                               aria-label={`Delete ${ev.name || ev.event_date}`}
                               onClick={async () => {
+                                if (isSeason9Week1(ev)) {
+                                  reportError('Week 1 scores stay as played.')
+                                  return
+                                }
                                 const ok = await askConfirm(
                                   `Delete ${ev.name?.trim() || fmtDate(ev.event_date)}? Scores and ledger rows for that night are removed.`,
                                   { title: 'Delete event', confirmLabel: 'Delete', danger: true },
                                 )
                                 if (!ok) return
+                                if (isSeason9Week1(ev)) {
+                                  reportError('Week 1 scores stay as played.')
+                                  return
+                                }
                                 try {
                                   await must(supabase.from('pp_events').delete().eq('id', ev.id))
                                 } catch {
@@ -304,6 +325,11 @@ export default function SeasonPage() {
       {editEvent && (
         <Dialog title="Edit Event" onClose={() => setEditEvent(null)}>
           <div className="stack">
+            {isSeason9Week1(editEvent) && (
+              <div className="note" style={{ marginBottom: 4 }}>
+                Week 1 scores stay as played.
+              </div>
+            )}
             <div className="field">
               <span>Event name (optional)</span>
               <input className="input" type="text" value={editName} onChange={e => setEditName(e.target.value)} placeholder="e.g. Week 4" autoFocus />

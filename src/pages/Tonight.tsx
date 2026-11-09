@@ -25,7 +25,7 @@ import {
   type Player,
   type PPEvent,
 } from '../lib/types'
-import { byEntryOrder, canConfirmCut, cents, computeNineCommit, displayedBack, displayedFront, effectiveCut, eighteenGridRows, final9EntryOrder, isOpeningTagNight, isSeason9Week1, liveNightTotal, MAX_FINAL, MAX_NINE, qualifiers, suggestedCut, tonightBoard, totals, week1AllowsScorePatch, type Ranked } from '../lib/scoring'
+import { applyScoreDirty, byEntryOrder, canConfirmCut, cents, computeNineCommit, cutConfirmationReady, displayedBack, displayedFront, effectiveCut, eighteenGridRows, final9EntryOrder, isOpeningTagNight, isSeason9Week1, liveNightTotal, MAX_FINAL, MAX_NINE, qualifiers, suggestedCut, tonightBoard, totals, week1AllowsScorePatch, type Ranked } from '../lib/scoring'
 import { completeRefresh, requestRefresh, type ScoreBoard } from '../lib/score-refresh'
 import { balances, clampPaidPlaces, displayedPerfectRound, displayedSharedPot, divisionResult, eventLedgerPosted, effectiveBar, eventMoney, nightBonusCost, otherDivisionNights, paidPlaceCount, payoutPool, payoutsForPlaceCount, placeBudget, placeRemainder, postedBonusCost, postedPlaceRemainder, postedRemainderBackup, suggestedPaidPlaces } from '../lib/money'
 import { duplicateName, friendlyError, normalizeName, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../lib/validation'
@@ -95,9 +95,8 @@ export default function Tonight() {
     status: refreshStatus,
   })
 
-  const markScoreDirty = (id: string, dirty: boolean) => {
-    if (dirty) dirtyScores.current.add(id)
-    else dirtyScores.current.delete(id)
+  const markScoreDirty = (id: string, field: 'front' | 'back' | 'final', dirty: boolean) => {
+    dirtyScores.current = applyScoreDirty(dirtyScores.current, id, field, dirty)
     setScoreDirtyCount(dirtyScores.current.size)
   }
 
@@ -213,6 +212,7 @@ export default function Tonight() {
   // Suggest payouts the first time a night reaches results, instead of leaving every place at $0.
   useEffect(() => {
     if (!event || event.status !== 'results' || !isAdmin) return
+    if (isSeason9Week1(event)) return
     if (prefilled.current.has(event.id)) return
     if ((event.payouts_men?.length ?? 0) > 0 && (event.payouts_women?.length ?? 0) > 0) {
       prefilled.current.add(event.id)
@@ -297,6 +297,11 @@ export default function Tonight() {
                     if (!upDate) throw new Error('Pick a date.')
                     const name = normalizeName(upName) || null
                     if (upEditId) {
+                      const target = events.find(ev => ev.id === upEditId)
+                      if (isSeason9Week1(target)) {
+                        reportError('Week 1 scores stay as played.')
+                        return
+                      }
                       await must(supabase.from('pp_events').update({ event_date: upDate, name }).eq('id', upEditId).eq('status', 'scheduled').select().single())
                     } else {
                       await must(supabase.from('pp_events').insert({ season_id: season.id, status: 'scheduled', event_date: upDate, name }).select().single())
@@ -311,40 +316,49 @@ export default function Tonight() {
                   {upEditId && <button className="btn" type="button" onClick={() => { setUpEditId(null); setUpDate(''); setUpName('') }}>Cancel</button>}
                 </form>
               )}
-              {events.filter(e => e.status === 'scheduled').map(ev => (
-                <div key={ev.id} style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 6 }}>
-                  <span>{ev.event_date}</span>
-                  <span style={{ flex: 1 }}>{ev.name ?? ''}</span>
-                  {isAdmin && (
-                    <button className="btn" onClick={async () => {
-                      try {
-                        openEvent(null)
-                        await must(supabase.from('pp_events').update({
-                          status: 'checkin',
-                          settings_snapshot: settings,
-                          bar_match_men: 0,
-                          bar_match_women: 0,
-                          bar_match_men_manual: false,
-                          bar_match_women_manual: false,
-                        }).eq('id', ev.id).select().single())
-                        reload()
-                      } catch (err) { reportError(messageOf(err)) }
-                    }}>Start</button>
-                  )}
-                  {isAdmin && (
-                    <button className="btn" onClick={() => { setUpEditId(ev.id); setUpDate(ev.event_date); setUpName(ev.name ?? '') }}>Edit</button>
-                  )}
-                  {isAdmin && (
-                    <button className="btn" onClick={async () => {
-                      if (!(await askConfirm(`Delete ${ev.name ?? 'event'} on ${ev.event_date}?`, { danger: true, confirmLabel: 'Delete' }))) return
-                      try {
-                        await must(supabase.from('pp_events').delete().eq('id', ev.id).eq('status', 'scheduled').select())
-                        reload()
-                      } catch (err) { reportError(messageOf(err)) }
-                    }}>Delete</button>
-                  )}
-                </div>
-              ))}
+              {events.filter(e => e.status === 'scheduled').map(ev => {
+                const isW1 = isSeason9Week1(ev)
+                return (
+                  <div key={ev.id} style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 6 }}>
+                    <span>{ev.event_date}</span>
+                    <span style={{ flex: 1 }}>{ev.name ?? ''}</span>
+                    {isAdmin && (
+                      <button className="btn" disabled={isW1} onClick={async () => {
+                        if (isW1) return
+                        try {
+                          openEvent(null)
+                          await must(supabase.from('pp_events').update({
+                            status: 'checkin',
+                            settings_snapshot: settings,
+                            bar_match_men: 0,
+                            bar_match_women: 0,
+                            bar_match_men_manual: false,
+                            bar_match_women_manual: false,
+                          }).eq('id', ev.id).select().single())
+                          reload()
+                        } catch (err) { reportError(messageOf(err)) }
+                      }}>Start</button>
+                    )}
+                    {isAdmin && (
+                      <button className="btn" disabled={isW1} onClick={() => {
+                        if (isW1) return
+                        setUpEditId(ev.id); setUpDate(ev.event_date); setUpName(ev.name ?? '')
+                      }}>Edit</button>
+                    )}
+                    {isAdmin && (
+                      <button className="btn" disabled={isW1} onClick={async () => {
+                        if (isW1) return
+                        if (!(await askConfirm(`Delete ${ev.name ?? 'event'} on ${ev.event_date}?`, { danger: true, confirmLabel: 'Delete' }))) return
+                        if (isW1) return
+                        try {
+                          await must(supabase.from('pp_events').delete().eq('id', ev.id).eq('status', 'scheduled').select())
+                          reload()
+                        } catch (err) { reportError(messageOf(err)) }
+                      }}>Delete</button>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           )}
         </div>
@@ -410,6 +424,7 @@ export default function Tonight() {
   }
 
   const handleCheckinPlayer = async (pId: string, pDiv: Division, known?: { in_tags?: boolean }) => {
+    if (isSeason9Week1(event)) return false
     if (checkingIn.current.has(pId)) return false
     if (entries.some(e => e.event_id === event.id && e.player_id === pId)) return false
     checkingIn.current.add(pId)
@@ -444,6 +459,7 @@ export default function Tonight() {
   }
 
   const handleCreateAndCheckin = async (name: string, pDiv: Division) => {
+    if (isSeason9Week1(event)) return
     const clean = normalizeName(name)
     if (!clean) { setCreateError('Enter a player name.'); return }
     if (duplicateName(clean, players)) { setCreateError(`“${clean}” is already on the roster.`); return }
@@ -460,7 +476,30 @@ export default function Tonight() {
     }
   }
 
-  const setStatus = (status: EventStatus) => patchEvent(event.id, { status })
+  const setStatus = async (status: EventStatus) => {
+    if (isSeason9Week1(event)) return
+    if (status === 'final9' || status === 'results') {
+      const evEntries = entries.filter(e => e.event_id === event.id)
+      const pending = { dirty: dirtyScores.current.size, saves: scoreSaves.current, refreshing: refreshLock.current }
+      if (!cutConfirmationReady(evEntries, pending)) return
+      if (event.status === 'checkin' || event.status === 'scoring') {
+        const patch: Partial<PPEvent> = { status }
+        for (const d of DIVS) {
+          const field = entries.filter(e => e.event_id === event.id && e.division === d)
+          const stored = d === 'M' ? event.final_cut_men : event.final_cut_women
+          const cut = effectiveCut(stored, field.length, settings)
+          if (field.length > 0 && stored !== cut) {
+            if (d === 'M') patch.final_cut_men = cut
+            else patch.final_cut_women = cut
+          }
+          await applyCut(cut, field)
+        }
+        await patchEvent(event.id, patch)
+        return
+      }
+    }
+    await patchEvent(event.id, { status })
+  }
 
   const applyCut = async (cut: number, field: Entry[]) => {
     const ids = qualifiers(field, cut, settingsRef.current)
@@ -470,11 +509,16 @@ export default function Tonight() {
     }
   }
 
-  const canProceedToCut = canConfirmCut(entries.filter(e => e.event_id === event.id))
+  const canProceedToCut = cutConfirmationReady(
+    entries.filter(e => e.event_id === event.id),
+    { dirty: scoreDirtyCount, saves: scoreSaveCount, refreshing: refreshLock.current },
+  )
 
   const applyCutAndProceed = async () => {
     if (isSeason9Week1(event)) return
-    if (!canConfirmCut(entries.filter(e => e.event_id === event.id))) return
+    const evEntries = entries.filter(e => e.event_id === event.id)
+    const pending = { dirty: dirtyScores.current.size, saves: scoreSaves.current, refreshing: refreshLock.current }
+    if (!cutConfirmationReady(evEntries, pending)) return
     const patch: Partial<PPEvent> = { status: 'final9' }
     for (const d of DIVS) {
       const field = entries.filter(e => e.event_id === event.id && e.division === d)
@@ -534,6 +578,7 @@ export default function Tonight() {
   }
 
   const savePayout = (idx: number, val: number) => {
+    if (isSeason9Week1(event)) return
     const next = Array.from({ length: Math.max(payoutsList.length, idx + 1) }, (_, i) => Number(payoutsList[i] ?? 0))
     next[idx] = val
     while (next.length > 0 && next[next.length - 1] === 0) next.pop()
@@ -549,6 +594,7 @@ export default function Tonight() {
   }
 
   const stepPaidPlaces = (delta: number) => {
+    if (isSeason9Week1(event)) return
     const field = counts[division]
     if (field <= 0) return
     const base = paidCountRef.current.key === placeKey ? paidCountRef.current.n : paidPlaces
@@ -568,6 +614,7 @@ export default function Tonight() {
   }
 
   const useSuggested = () => {
+    if (isSeason9Week1(event)) return
     // Re-split the current pool across the place count on screen.
     clearPayoutNote()
     const amounts = payoutsForPlaceCount(pool, paidPlaces)
@@ -597,6 +644,7 @@ export default function Tonight() {
   }
 
   const handleFinalize = async () => {
+    if (isSeason9Week1(event)) return
     for (const d of DIVS) {
       const group = entries.filter(e => e.event_id === event.id && e.division === d)
       const list = divisionPayouts(event, d)
@@ -731,12 +779,15 @@ export default function Tonight() {
             <button className="btn btn-ghost btn-sm" onClick={() => openEvent(null)}>Back to tonight</button>
           )}
           {isAdmin && event.status === 'complete' && (
-            <button className="btn btn-ghost btn-sm" onClick={async () => {
+            <button className="btn btn-ghost btn-sm" disabled={isSeason9Week1(event)} onClick={async () => {
+              if (isSeason9Week1(event)) return
               const ok = await askConfirm(
                 'Scores can be edited again. Finalizing a second time replaces this night’s ledger rows.',
                 { title: 'Reopen event?', confirmLabel: 'Reopen' },
               )
-              if (ok) await patchEvent(event.id, { status: 'results' })
+              if (!ok) return
+              if (isSeason9Week1(event)) return
+              await patchEvent(event.id, { status: 'results' })
             }}>
               <RotateCcw size={14} /> Reopen Event
             </button>
@@ -770,13 +821,25 @@ export default function Tonight() {
       </div>
 
       {isAdmin && event.status !== 'complete' && (
-        <div className="steps">
-          {STEPS.map(s => (
-            <button key={s.status} className={event.status === s.status ? 'on' : ''} onClick={() => setStatus(s.status)}>
-              <span className="step-n">{s.label.slice(0, 1)}</span>
-              {s.label.slice(3)}
-            </button>
-          ))}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <div className="steps">
+            {STEPS.map(s => (
+              <button
+                key={s.status}
+                disabled={isSeason9Week1(event)}
+                className={event.status === s.status ? 'on' : ''}
+                onClick={() => setStatus(s.status)}
+              >
+                <span className="step-n">{s.label.slice(0, 1)}</span>
+                {s.label.slice(3)}
+              </button>
+            ))}
+          </div>
+          {isSeason9Week1(event) && (
+            <span className="muted" style={{ fontSize: 13 }}>
+              Week 1 scores stay as played.
+            </span>
+          )}
         </div>
       )}
 
@@ -826,21 +889,38 @@ export default function Tonight() {
                               name={p?.name ?? 'player'}
                               siblings={nightEntries}
                               inTags={p?.in_tags === true}
-                              onCommit={tag => patchEntry(ent.id, { tag_in: tag })}
+                              disabled={isSeason9Week1(event)}
+                              onCommit={tag => {
+                                if (isSeason9Week1(event)) return
+                                patchEntry(ent.id, { tag_in: tag })
+                              }}
                             />
                           </td>
                           <td className="c">
-                            <button className={`btn btn-sm ${ent.paid ? 'btn-ghost' : 'btn-danger'}`} onClick={() => patchEntry(ent.id, { paid: !ent.paid })}>
+                            <button
+                              className={`btn btn-sm ${ent.paid ? 'btn-ghost' : 'btn-danger'}`}
+                              disabled={isSeason9Week1(event)}
+                              onClick={() => {
+                                if (isSeason9Week1(event)) return
+                                patchEntry(ent.id, { paid: !ent.paid })
+                              }}
+                            >
                               {ent.paid ? <Check size={14} color="var(--teal)" /> : 'Unpaid'}
                             </button>
                           </td>
                           <td className="r">
-                            <button className="btn btn-ghost btn-sm btn-danger" onClick={async () => {
-                              const ok = await askConfirm(`Remove ${p?.name ?? 'this player'} from tonight?`, { title: 'Remove player', confirmLabel: 'Remove', danger: true })
-                              if (!ok) return
-                              await must(supabase.from('pp_entries').delete().eq('id', ent.id))
-                              reload()
-                            }}>
+                            <button
+                              className="btn btn-ghost btn-sm btn-danger"
+                              disabled={isSeason9Week1(event)}
+                              onClick={async () => {
+                                if (isSeason9Week1(event)) return
+                                const ok = await askConfirm(`Remove ${p?.name ?? 'this player'} from tonight?`, { title: 'Remove player', confirmLabel: 'Remove', danger: true })
+                                if (!ok) return
+                                if (isSeason9Week1(event)) return
+                                await must(supabase.from('pp_entries').delete().eq('id', ent.id))
+                                reload()
+                              }}
+                            >
                               Remove
                             </button>
                           </td>
@@ -861,9 +941,11 @@ export default function Tonight() {
                 <span>{division === 'M' ? "Men's" : "Women's"} Bar Match Contribution</span>
                 <MoneyInput
                   value={barAmount}
+                  disabled={isSeason9Week1(event)}
                   aria-label={`${division === 'M' ? "Men's" : "Women's"} bar match`}
                   onReject={setBarError}
                   onChange={val => {
+                    if (isSeason9Week1(event)) return
                     setBarError('')
                     void patchEvent(event.id, division === 'M'
                       ? { bar_match_men: val, bar_match_men_manual: true }
@@ -877,11 +959,11 @@ export default function Tonight() {
                 <small>
                   {(division === 'M' ? event.bar_match_men_manual : event.bar_match_women_manual)
                     ? <>Typed in by hand. Automatic would be {money(moneyCalc.barSplit[division])}.{' '}
-                        <button type="button" className="btn btn-ghost btn-sm" onClick={() => void patchEvent(event.id, division === 'M' ? { bar_match_men_manual: false } : { bar_match_women_manual: false })}>Use automatic</button></>
+                        <button type="button" className="btn btn-ghost btn-sm" disabled={isSeason9Week1(event)} onClick={() => { if (isSeason9Week1(event)) return; void patchEvent(event.id, division === 'M' ? { bar_match_men_manual: false } : { bar_match_women_manual: false }) }}>Use automatic</button></>
                     : <>Automatic from entries: {money(moneyCalc.barSplit[division])}. Type an amount to override.</>}
                 </small>
               </div>
-              <button style={{ marginTop: 16 }} className="btn btn-primary btn-block" disabled={divEntries.length === 0} onClick={() => setStatus('scoring')}>
+              <button style={{ marginTop: 16 }} className="btn btn-primary btn-block" disabled={divEntries.length === 0 || isSeason9Week1(event)} onClick={() => setStatus('scoring')}>
                 Start 18-Holes Scoring <ChevronRight size={16} />
               </button>
             </div>
@@ -955,17 +1037,22 @@ export default function Tonight() {
               />
               <div className="row" role="group" aria-labelledby="final-cut-label" style={{ background: 'var(--surface-1)', padding: '4px 10px', borderRadius: 6, border: '1px solid var(--line)' }}>
                 <span id="final-cut-label" className="eyebrow" style={{ marginRight: 6 }}>Qualifiers cut</span>
-                <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Fewer qualifiers" onClick={() => stepCut(-1)} disabled={shownCut <= 1}>
+                <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Fewer qualifiers" onClick={() => stepCut(-1)} disabled={isSeason9Week1(event) || shownCut <= 1}>
                   <Minus size={14} />
                 </button>
                 <span className="num strong" style={{ margin: '0 8px', fontSize: 16, minWidth: 16, textAlign: 'center' }} aria-live="polite" aria-atomic="true">
                   {shownCut}
                 </span>
-                <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="More qualifiers" onClick={() => stepCut(1)} disabled={shownCut >= Math.max(1, divEntries.length)}>
+                <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="More qualifiers" onClick={() => stepCut(1)} disabled={isSeason9Week1(event) || shownCut >= Math.max(1, divEntries.length)}>
                   <Plus size={14} />
                 </button>
               </div>
-              <button className="btn btn-primary" onClick={() => setStatus('results')}>
+              {isSeason9Week1(event) && (
+                <span className="muted" style={{ fontSize: 12 }}>
+                  Week 1 scores stay as played.
+                </span>
+              )}
+              <button className="btn btn-primary" disabled={isSeason9Week1(event)} onClick={() => setStatus('results')}>
                 Advance to Results <ChevronRight size={16} />
               </button>
             </div>
@@ -1105,7 +1192,7 @@ export default function Tonight() {
               </p>
             </div>
             {isAdmin && event.status !== 'complete' && (
-              <button className="btn btn-primary" disabled={isFinalizing || overPool} onClick={handleFinalize}>
+              <button className="btn btn-primary" disabled={isFinalizing || overPool || isSeason9Week1(event)} onClick={handleFinalize}>
                 <Lock size={16} /> {isFinalizing ? 'Finalizing...' : 'Finalize & Post Event'}
               </button>
             )}
@@ -1192,13 +1279,13 @@ export default function Tonight() {
                     <>
                       <div className="row" role="group" aria-labelledby="paid-places-label" style={{ background: 'var(--surface-1)', padding: '4px 10px', borderRadius: 6, border: '1px solid var(--line)', marginBottom: 6 }}>
                         <span id="paid-places-label" className="eyebrow" style={{ marginRight: 6 }}>Paid places</span>
-                        <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Fewer paid places" onClick={() => stepPaidPlaces(-1)} disabled={paidPlaces <= 1}>
+                        <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Fewer paid places" onClick={() => stepPaidPlaces(-1)} disabled={isSeason9Week1(event) || paidPlaces <= 1}>
                           <Minus size={14} />
                         </button>
                         <span className="num strong" style={{ margin: '0 8px', fontSize: 16, minWidth: 16, textAlign: 'center' }} aria-live="polite" aria-atomic="true">
                           {paidPlaces}
                         </span>
-                        <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="More paid places" onClick={() => stepPaidPlaces(1)} disabled={paidPlaces >= counts[division]}>
+                        <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="More paid places" onClick={() => stepPaidPlaces(1)} disabled={isSeason9Week1(event) || paidPlaces >= counts[division]}>
                           <Plus size={14} />
                         </button>
                       </div>
@@ -1209,7 +1296,7 @@ export default function Tonight() {
                   )}
                   <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
                     <span style={{ fontSize: 12, color: 'var(--text-2)' }}>Place payout amounts</span>
-                    <button type="button" className="btn btn-ghost btn-sm" onClick={useSuggested} disabled={paidPlaces <= 0}>Use suggested</button>
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={useSuggested} disabled={paidPlaces <= 0 || isSeason9Week1(event)}>Use suggested</button>
                   </div>
                   <div className="stack" style={{ gap: 6 }}>
                     {Array.from({ length: paidPlaces }, (_, idx) => (
@@ -1218,6 +1305,7 @@ export default function Tonight() {
                         <div style={{ width: 120 }}>
                           <MoneyInput
                             value={Number(payoutsList[idx] ?? 0)}
+                            disabled={isSeason9Week1(event)}
                             aria-label={`${ordinal(idx + 1)} place payout`}
                             silentInvalid
                             onEdit={clearPayoutNote}
@@ -1389,25 +1477,26 @@ function StartEventDialog({ name, date, onName, onDate, onClose, onCreate }: {
   )
 }
 
-function TagInCell({ entry, name, siblings, inTags, onCommit }: {
+function TagInCell({ entry, name, siblings, inTags, disabled, onCommit }: {
   entry: Entry
   name: string
   siblings: Entry[]
   inTags: boolean
+  disabled?: boolean
   onCommit: (tag: number | null) => void
 }) {
   const [draft, setDraft] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const shown = draft ?? (entry.tag_in ?? '')
-  if (!inTags) {
+  if (!inTags || disabled) {
     return (
       <input
         className="score"
-        style={{ width: 72 }}
+        style={{ width: inTags ? 60 : 72 }}
         disabled
         readOnly
         aria-label={`Tag in for ${name}`}
-        value="No tag"
+        value={!inTags ? 'No tag' : (entry.tag_in ? `#${entry.tag_in}` : 'None')}
       />
     )
   }
@@ -1472,7 +1561,7 @@ function ScoreTable({ rows, rankedById, playerById, settings, mode, disabledScor
   onContextMenu: (e: MouseEvent, entry: Entry) => void
   onScore: (id: string, patch: Partial<Entry>) => Promise<boolean>
   onToggleFinal?: (entry: Entry) => void
-  onDirty: (id: string, dirty: boolean) => void
+  onDirty: (id: string, field: 'front' | 'back' | 'final', dirty: boolean) => void
 }) {
   const eighteenPlace = mode === '18'
     ? new Map(eighteenGridRows(rows, settings).map(row => [row.id, row.place]))
@@ -1550,7 +1639,7 @@ function ScoreTable({ rows, rankedById, playerById, settings, mode, disabledScor
                         value={displayedFront(ent)}
                         max={MAX_NINE}
                         disabled={disabledScores}
-                        onDirty={dirty => onDirty(ent.id, dirty)}
+                        onDirty={dirty => onDirty(ent.id, 'front', dirty)}
                         onCommit={n => onScore(ent.id, computeNineCommit(ent, 'front', n))}
                       />
                     </td>
@@ -1559,7 +1648,7 @@ function ScoreTable({ rows, rankedById, playerById, settings, mode, disabledScor
                         value={displayedBack(ent)}
                         max={MAX_NINE}
                         disabled={disabledScores}
-                        onDirty={dirty => onDirty(ent.id, dirty)}
+                        onDirty={dirty => onDirty(ent.id, 'back', dirty)}
                         onCommit={n => onScore(ent.id, computeNineCommit(ent, 'back', n))}
                       />
                     </td>
@@ -1583,7 +1672,7 @@ function ScoreTable({ rows, rankedById, playerById, settings, mode, disabledScor
                     </button>
                   </td>
                   <td className="c bl strong">{t.t18 ?? '—'}</td>
-                  <td className="c bl"><ScoreInput value={ent.made_final ? t.f : null} max={MAX_FINAL} disabled={!ent.made_final || disabledScores} onDirty={dirty => onDirty(ent.id, dirty)} onCommit={n => onScore(ent.id, { score_final: n })} /></td>
+                  <td className="c bl"><ScoreInput value={ent.made_final ? t.f : null} max={MAX_FINAL} disabled={!ent.made_final || disabledScores} onDirty={dirty => onDirty(ent.id, 'final', dirty)} onCommit={n => onScore(ent.id, { score_final: n })} /></td>
                   <td className="c bl big" style={{ color: nightTot != null ? 'var(--orange)' : 'var(--text-3)' }}>{nightTot != null ? nightTot : ''}</td>
                 </tr>
               )

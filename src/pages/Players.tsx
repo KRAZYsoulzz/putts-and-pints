@@ -3,7 +3,7 @@ import { Edit2, Plus, Trash2 } from 'lucide-react'
 import { useData, must } from '../lib/store'
 import { supabase } from '../lib/supabase'
 import { askConfirm, messageOf } from '../lib/notify'
-import { bestTotal, clampScore, historicalEighteenWrite, isSeason9Week1, MAX_18, MAX_FINAL, totals } from '../lib/scoring'
+import { bestTotal, clampScore, historicalEighteenWrite, isSeason9Week1, MAX_18, MAX_FINAL, totals, week1AllowsPlayerDelete } from '../lib/scoring'
 import { duplicateName, normalizeName, parseTag, tagTakenOnRoster } from '../lib/validation'
 import {
   AWARDS,
@@ -171,7 +171,12 @@ export default function Players() {
   // Delete Player
   const handleDeletePlayer = async () => {
     if (!editPlayer) return
-    const hasEntries = entries.some((e) => e.player_id === editPlayer.id)
+    const playerEntries = entries.filter((e) => e.player_id === editPlayer.id)
+    if (!week1AllowsPlayerDelete(playerEntries, events)) {
+      setEditError('Week 1 scores stay as played.')
+      return
+    }
+    const hasEntries = playerEntries.length > 0
     const confirmMsg = hasEntries
       ? `Warning: ${editPlayer.name} has tournament entry records. Deleting them will delete all associated scores and history. Are you sure?`
       : `Delete ${editPlayer.name}? This cannot be undone.`
@@ -212,6 +217,11 @@ export default function Players() {
   // Save Historical Entry Edits
   const handleSaveEntry = async () => {
     if (!editEntry) return
+    const entryEvent = events.find((e) => e.id === editEntry.event_id)
+    if (isSeason9Week1(entryEvent)) {
+      setEntryError('Week 1 scores stay as played.')
+      return
+    }
     const score = (v: number | null | undefined, max: number) =>
       v == null || Number.isNaN(v) ? null : clampScore(String(v), max)
     const tag = (v: number | null | undefined, label: string) => {
@@ -697,6 +707,7 @@ export default function Players() {
                   className="input num"
                   type="number"
                   placeholder="e.g. 1"
+                  disabled={isWeek1}
                   value={entryForm.place ?? ''}
                   onChange={(e) =>
                     setEntryForm((prev) => ({
@@ -710,6 +721,7 @@ export default function Players() {
                 <span>Payout ($)</span>
                 <MoneyInput
                   value={entryForm.payout ?? 0}
+                  disabled={isWeek1}
                   onChange={(v) => setEntryForm((prev) => ({ ...prev, payout: v }))}
                 />
               </div>
@@ -719,6 +731,7 @@ export default function Players() {
                   className="input num"
                   type="number"
                   step="0.5"
+                  disabled={isWeek1}
                   value={entryForm.points ?? 0}
                   onChange={(e) =>
                     setEntryForm((prev) => ({
@@ -736,6 +749,7 @@ export default function Players() {
                 <input
                   className="input num"
                   type="number"
+                  disabled={isWeek1}
                   value={entryForm.tag_in ?? ''}
                   onChange={(e) =>
                     setEntryForm((prev) => ({
@@ -750,6 +764,7 @@ export default function Players() {
                 <input
                   className="input num"
                   type="number"
+                  disabled={isWeek1}
                   value={entryForm.tag_out ?? ''}
                   onChange={(e) =>
                     setEntryForm((prev) => ({
@@ -771,9 +786,11 @@ export default function Players() {
                     <button
                       key={a}
                       type="button"
+                      disabled={isWeek1}
                       className={`chip ${has ? 'chip-teal' : ''}`}
-                      style={{ cursor: 'pointer' }}
+                      style={{ cursor: isWeek1 ? 'default' : 'pointer' }}
                       onClick={() => {
+                        if (isWeek1) return
                         const cur = entryForm.awards || []
                         const next = has ? cur.filter((x) => x !== a) : [...cur, a]
                         setEntryForm((prev) => ({ ...prev, awards: next }))

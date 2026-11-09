@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js'
 import { supabase } from './supabase'
 import { resolveSettings } from './settings'
-import { totals } from './scoring'
+import { totals, week1AllowsEventPatch, week1AllowsScorePatch } from './scoring'
 import { reportError } from './notify'
 import { friendlyError } from './validation'
 import type { Division, Entry, LedgerRow, PPEvent, Player, Season, Settings, Tag } from './types'
@@ -253,6 +253,11 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
   const patchEntry = useCallback(async (id: string, patch: Partial<Entry>) => {
     if (!isAdmin) return false
+    const entry = entries.find(e => e.id === id)
+    const entryEvent = entry ? events.find(ev => ev.id === entry.event_id) : null
+    if (!week1AllowsScorePatch(entryEvent, patch)) {
+      return false
+    }
     writes.current += 1
     setEntries(prev => prev.map(e => (e.id === id ? { ...e, ...patch } : e)))
     const { error } = await supabase.from('pp_entries').update(patch).eq('id', id)
@@ -262,10 +267,14 @@ export function DataProvider({ children }: { children: ReactNode }) {
     }
     finishWrite(!!error)
     return !error
-  }, [isAdmin, finishWrite])
+  }, [isAdmin, entries, events, finishWrite])
 
   const patchEvent = useCallback(async (id: string, patch: Partial<PPEvent>) => {
     if (!isAdmin) return
+    const targetEvent = events.find(ev => ev.id === id)
+    if (!week1AllowsEventPatch(targetEvent, patch)) {
+      return
+    }
     writes.current += 1
     setEvents(prev => prev.map(e => (e.id === id ? { ...e, ...patch } : e)))
     const { error } = await supabase.from('pp_events').update(patch).eq('id', id)
@@ -274,7 +283,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       reportError(friendlyError(error.message))
     }
     finishWrite(!!error)
-  }, [isAdmin, finishWrite])
+  }, [isAdmin, events, finishWrite])
 
   const saveTag = useCallback(async (playerId: string, tagNumber: number | null) => {
     if (!isAdmin) {

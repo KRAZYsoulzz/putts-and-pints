@@ -91,15 +91,69 @@ export function computeNineCommit(current: Entry, which: 'front' | 'back', nextV
 
   if (nextFront != null && nextBack != null) {
     patch.score_18 = nextFront + nextBack
-  } else if (
-    current.score_front != null &&
-    current.score_back != null &&
-    current.score_18 === current.score_front + current.score_back
-  ) {
+  } else if (current.score_front != null && current.score_back != null) {
     patch.score_18 = null
   }
 
   return patch
+}
+
+export function applyNineToLatest(
+  latest: Entry,
+  which: 'front' | 'back',
+  next: number | null,
+): Entry {
+  const patch = computeNineCommit(latest, which, next)
+  return { ...latest, ...patch }
+}
+
+export function mergeNinePatch(latest: Entry, patch: Partial<Entry>): Entry {
+  const hasFront = Object.prototype.hasOwnProperty.call(patch, 'score_front')
+  const hasBack = Object.prototype.hasOwnProperty.call(patch, 'score_back')
+  const nextFront = hasFront ? (patch.score_front ?? null) : latest.score_front
+  const nextBack = hasBack ? (patch.score_back ?? null) : latest.score_back
+
+  let next18: number | null
+  if (nextFront != null && nextBack != null) {
+    next18 = nextFront + nextBack
+  } else if (latest.score_front != null && latest.score_back != null) {
+    next18 = null
+  } else {
+    next18 = latest.score_18
+  }
+
+  return {
+    ...latest,
+    score_front: nextFront,
+    score_back: nextBack,
+    score_18: next18,
+  }
+}
+
+export interface PendingCutState {
+  dirty: number
+  saves: number
+  refreshing: boolean
+}
+
+export function cutConfirmationReady(entries: Entry[], pending: PendingCutState): boolean {
+  return canConfirmCut(entries) && pending.dirty === 0 && pending.saves === 0 && !pending.refreshing
+}
+
+export function applyScoreDirty(
+  keys: Set<string>,
+  entryId: string,
+  field: 'front' | 'back' | 'final',
+  dirty: boolean,
+): Set<string> {
+  const next = new Set(keys)
+  const key = `${entryId}:${field}`
+  if (dirty) {
+    next.add(key)
+  } else {
+    next.delete(key)
+  }
+  return next
 }
 
 export function canConfirmCut(entries: Entry[]): boolean {
@@ -118,8 +172,11 @@ export function liveNightTotal(e: Entry): number | null {
 // ---------------------------------------------------------------------------
 function countbackValue(e: Entry, key: CountbackKey): number {
   const t = totals(e)
+  const hasNewNine = e.score_front != null || e.score_back != null
+  const r1Val = hasNewNine ? e.score_front : t.r1
+  const r2Val = hasNewNine ? e.score_back : t.r2
   const map: Record<CountbackKey, number | null> = {
-    final9: t.f, r2: t.r2, r1: t.r1,
+    final9: t.f, r2: r2Val, r1: r1Val,
     f_b1: e.made_final ? e.f_b1 : null, r2_b1: e.r2_b1, r1_b1: e.r1_b1,
   }
   return map[key] ?? -1
@@ -273,17 +330,43 @@ export function tonightBoard(
   const provisional = status === 'scheduled' || status === 'checkin' || status === 'scoring'
 
   const r18 = rank18(entries, settings)
-  const completed: TonightBoardRow[] = r18
-    .filter(r => r.totals.t18 != null)
-    .map(r => ({
-      id: r.entry.id,
-      place: r.place,
-      front: displayedFront(r.entry),
-      back: displayedBack(r.entry),
-      t18: r.totals.t18,
-      finalNine: r.entry.made_final && typeof r.entry.score_final === 'number' ? r.entry.score_final : null,
-      night: liveNightTotal(r.entry),
-    }))
+  const completedEntries = r18.filter(r => r.totals.t18 != null)
+
+  const toRow = (r: Ranked): TonightBoardRow => ({
+    id: r.entry.id,
+    place: r.place,
+    front: displayedFront(r.entry),
+    back: displayedBack(r.entry),
+    t18: r.totals.t18,
+    finalNine: r.entry.made_final && typeof r.entry.score_final === 'number' ? r.entry.score_final : null,
+    night: liveNightTotal(r.entry),
+  })
+
+  let completed: TonightBoardRow[]
+  let cutAfterId: string | null = null
+
+  if (provisional) {
+    completed = completedEntries.map(toRow)
+    const qualIds = qualifiers(entries, effectiveCut(storedCut ?? null, entries.length, settings), settings)
+    for (let i = completed.length - 1; i >= 0; i--) {
+      if (qualIds.has(completed[i].id)) {
+        cutAfterId = completed[i].id
+        break
+      }
+    }
+  } else {
+    const finalists: TonightBoardRow[] = []
+    const nonFinalists: TonightBoardRow[] = []
+    for (const r of completedEntries) {
+      if (r.entry.made_final) {
+        finalists.push(toRow(r))
+      } else {
+        nonFinalists.push(toRow(r))
+      }
+    }
+    completed = [...finalists, ...nonFinalists]
+    cutAfterId = finalists.length > 0 ? finalists[finalists.length - 1].id : null
+  }
 
   const partialEntries: Entry[] = []
   const unscoredEntries: Entry[] = []
@@ -300,7 +383,7 @@ export function tonightBoard(
   partialEntries.sort(byEntryOrder)
   unscoredEntries.sort(byEntryOrder)
 
-  const toRow = (e: Entry): TonightBoardRow => ({
+  const toUnfinishedRow = (e: Entry): TonightBoardRow => ({
     id: e.id,
     place: null,
     front: displayedFront(e),
@@ -310,28 +393,8 @@ export function tonightBoard(
     night: liveNightTotal(e),
   })
 
-  const partial = partialEntries.map(toRow)
-  const unscored = unscoredEntries.map(toRow)
-
-  let cutAfterId: string | null = null
-  if (provisional) {
-    const qualIds = qualifiers(entries, effectiveCut(storedCut ?? null, entries.length, settings), settings)
-    for (let i = completed.length - 1; i >= 0; i--) {
-      if (qualIds.has(completed[i].id)) {
-        cutAfterId = completed[i].id
-        break
-      }
-    }
-  } else {
-    const entryMap = new Map(entries.map(e => [e.id, e]))
-    for (let i = completed.length - 1; i >= 0; i--) {
-      const e = entryMap.get(completed[i].id)
-      if (e?.made_final) {
-        cutAfterId = completed[i].id
-        break
-      }
-    }
-  }
+  const partial = partialEntries.map(toUnfinishedRow)
+  const unscored = unscoredEntries.map(toUnfinishedRow)
 
   return { completed, partial, unscored, provisional, cutAfterId }
 }
@@ -403,17 +466,44 @@ export function isSeason9Week1(
 
 export function week1AllowsScorePatch(
   event: { season_id?: string | null; event_date?: string | null; name?: string | null } | null | undefined,
-  patch: Partial<Entry>,
+  patch: Partial<Entry> | Record<string, unknown>,
 ): boolean {
   if (!isSeason9Week1(event)) return true
-  const scoreKeys: (keyof Entry)[] = [
-    'score_front',
-    'score_back',
-    'score_18',
-    'score_final',
-    'made_final',
-  ]
-  return !scoreKeys.some(k => Object.prototype.hasOwnProperty.call(patch, k))
+  return !patch || Object.keys(patch).length === 0
+}
+
+export function week1AllowsEventPatch(
+  event: { season_id?: string | null; event_date?: string | null; name?: string | null } | null | undefined,
+  patch: Record<string, unknown>,
+): boolean {
+  if (!isSeason9Week1(event)) return true
+  return !patch || Object.keys(patch).length === 0
+}
+
+export function week1AllowsCheckin(
+  event: { season_id?: string | null; event_date?: string | null; name?: string | null } | null | undefined,
+): boolean {
+  return !isSeason9Week1(event)
+}
+
+export function week1AllowsEntryDelete(
+  event: { season_id?: string | null; event_date?: string | null; name?: string | null } | null | undefined,
+): boolean {
+  return !isSeason9Week1(event)
+}
+
+export function week1AllowsFinalize(
+  event: { season_id?: string | null; event_date?: string | null; name?: string | null } | null | undefined,
+): boolean {
+  return !isSeason9Week1(event)
+}
+
+export function week1AllowsPlayerDelete(
+  playerEntries: { event_id: string }[],
+  events: { id: string; season_id?: string | null; event_date?: string | null; name?: string | null }[],
+): boolean {
+  const eventMap = new Map(events.map(ev => [ev.id, ev]))
+  return !playerEntries.some(e => isSeason9Week1(eventMap.get(e.event_id)))
 }
 
 export function historicalEighteenWrite(
