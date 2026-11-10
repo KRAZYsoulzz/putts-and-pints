@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { QRCodeSVG } from 'qrcode.react'
-import { CalendarDays, Coins, Download, Flag, LogIn, LogOut, QrCode, Settings2, Trophy, Users } from 'lucide-react'
+import { CalendarDays, Coins, Download, Flag, LogIn, LogOut, QrCode, Settings2, Trophy, Tv, Users } from 'lucide-react'
 import { useData } from '../lib/store'
 import { Dialog } from './ui'
 
@@ -85,6 +85,11 @@ export default function Shell() {
         </nav>
 
         <div className="sidebar-foot">
+          {isAdmin && (
+            <button className="btn btn-ghost btn-block" style={{ justifyContent: 'flex-start' }} onClick={() => nav('/tv')}>
+              <Tv size={16} strokeWidth={1.75} /> Projector view
+            </button>
+          )}
           {!isStandalone && (
             <button className="btn btn-ghost btn-block" style={{ justifyContent: 'flex-start' }} onClick={() => void handleInstall()}>
               <Download size={16} strokeWidth={1.75} /> Install app
@@ -106,6 +111,9 @@ export default function Shell() {
         <img src="/logo.jpg" alt="" />
         <span className="display brand-name">Putts &amp; Pints</span>
         <span className="spacer" />
+        {isAdmin && (
+          <button className="btn btn-ghost btn-sm btn-icon" onClick={() => nav('/tv')} aria-label="Projector view" title="Projector view"><Tv size={18} /></button>
+        )}
         {!isStandalone && (
           <button className="btn btn-ghost btn-sm btn-icon" onClick={() => void handleInstall()} aria-label="Install app" title="Install app"><Download size={18} /></button>
         )}

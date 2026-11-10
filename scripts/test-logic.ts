@@ -1699,6 +1699,11 @@ const changedFiles = [
   'src/lib/settings.ts',
   'src/pages/Pots.tsx',
   'src/pages/Standings.tsx',
+  'src/lib/projector.ts',
+  'src/lib/projector.test.ts',
+  'src/App.tsx',
+  'src/components/Shell.tsx',
+  'src/styles/app.css',
   'supabase/pp_009_score_front_back.sql',
   'supabase/pp_finance_010_division_closeout.sql',
 ]
@@ -1726,6 +1731,7 @@ await import('../src/lib/closeout-week1.test')
 await import('../src/lib/closeout-gaps.test')
 await import('../src/lib/standings.test')
 await import('../src/lib/cards.test')
+await import('../src/lib/projector.test')
 
 console.log('All rules checks passed ✔')
 
