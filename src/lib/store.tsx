@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js'
 import { supabase } from './supabase'
 import { resolveSettings } from './settings'
-import { mergeNinePatch, totals, week1AllowsEventPatch, week1AllowsScorePatch } from './scoring'
+import { mergeNinePatch, seasonHighScoreRecord, week1AllowsEventPatch, week1AllowsScorePatch } from './scoring'
 import { reportError } from './notify'
 import { friendlyError } from './validation'
 import type { Division, Entry, LedgerRow, PPEvent, Player, Season, Settings, Tag } from './types'
@@ -27,6 +27,7 @@ interface Data {
   openEvent: (id: string | null) => void
   /** Best 27-hole total from completed events, per division */
   records: Record<Division, number | null>
+  recordHolders: Record<Division, string[]>
   reload: () => Promise<'applied' | 'busy' | 'error'>
   patchEntry: (id: string, patch: Partial<Entry>) => Promise<boolean>
   patchEvent: (id: string, patch: Partial<PPEvent>) => Promise<void>
@@ -362,21 +363,19 @@ export function DataProvider({ children }: { children: ReactNode }) {
   // Derived ------------------------------------------------------------------
   const value = useMemo<Data>(() => {
     const season = seasons.find(s => s.active) ?? null
-    const done = new Set(events.filter(e => e.status === 'complete').map(e => e.id))
-    const records: Record<Division, number | null> = { M: null, W: null }
-    for (const e of entries) {
-      if (!done.has(e.event_id)) continue
-      const t = totals(e).total
-      if (t != null && (records[e.division] == null || t > (records[e.division] as number))) records[e.division] = t
-    }
+    const playerMap = new Map(players.map(p => [p.id, p]))
+    const menHs = seasonHighScoreRecord({ entries, events, division: 'M', playerById: playerMap })
+    const womenHs = seasonHighScoreRecord({ entries, events, division: 'W', playerById: playerMap })
+    const records: Record<Division, number | null> = { M: menHs.score, W: womenHs.score }
+    const recordHolders: Record<Division, string[]> = { M: menHs.holders, W: womenHs.holders }
     return {
       loading, session, isAdmin, seasons, season,
       settings: resolveSettings(season?.settings),
-      players, playerById: new Map(players.map(p => [p.id, p])),
+      players, playerById: playerMap,
       tags, events, entries, ledger,
       liveEvent: events.find(e => e.status !== 'complete' && e.status !== 'scheduled') ?? null,
       viewEventId, openEvent,
-      records, reload, patchEntry, patchEvent, saveTag, authReady, signOut,
+      records, recordHolders, reload, patchEntry, patchEvent, saveTag, authReady, signOut,
     }
   }, [loading, session, isAdmin, authReady, seasons, players, tags, events, entries, ledger, viewEventId, openEvent, reload, patchEntry, patchEvent, saveTag, signOut])
 

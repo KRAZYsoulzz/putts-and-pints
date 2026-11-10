@@ -1127,8 +1127,9 @@ export default function Tonight() {
     { division, entries: divEntries, balances: priorBalances },
     ...otherDivisionNights(division, event.id, entries, ledger),
   ]
-  const perfect5Pot = displayedSharedPot('perfect5', sharedPotNights, settings)
-  const perfect4Pot = displayedSharedPot('perfect4', sharedPotNights, settings)
+  const priorLedger = ledger.filter(r => r.event_id !== event.id)
+  const perfect5Pot = displayedSharedPot('perfect5', sharedPotNights, settings, priorLedger)
+  const perfect4Pot = displayedSharedPot('perfect4', sharedPotNights, settings, priorLedger)
 
   const viewingOther = viewEventId != null && liveEvent != null && viewEventId !== liveEvent.id
   const eventLabel = event.name?.trim() || 'Tonight’s Tournament'

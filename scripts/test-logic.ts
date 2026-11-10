@@ -2,13 +2,14 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { DEFAULT_SETTINGS as S } from '../src/lib/settings'
-import { bestTotal, byEntryOrder, cents, clampScore, effectiveCut, eighteenGridRows, final9EntryOrder, initialTagAssignment, isOpeningTagNight, qualifiers, rank18, rankFinal, redistributeTags, suggestedCut, totals, displayedFront, displayedBack, computeNineCommit, canConfirmCut, liveNightTotal, tonightBoard, isSeason9Week1, week1AllowsScorePatch, historicalEighteenWrite, week1AllowsEventPatch, week1AllowsCheckin, week1AllowsEntryDelete, week1AllowsFinalize, week1AllowsPlayerDelete, canDeletePlayer, historicalEntryUpdatePayload, canAdvanceToStatus, cutConfirmationReady, applyScoreDirty, applyNineToLatest, mergeNinePatch } from '../src/lib/scoring'
+import { bestTotal, byEntryOrder, cents, clampScore, effectiveCut, eighteenGridRows, final9EntryOrder, initialTagAssignment, isOpeningTagNight, qualifiers, rank18, rankFinal, redistributeTags, suggestedCut, totals, displayedFront, displayedBack, computeNineCommit, canConfirmCut, liveNightTotal, tonightBoard, isSeason9Week1, week1AllowsScorePatch, historicalEighteenWrite, week1AllowsEventPatch, week1AllowsCheckin, week1AllowsEntryDelete, week1AllowsFinalize, week1AllowsPlayerDelete, canDeletePlayer, historicalEntryUpdatePayload, canAdvanceToStatus, cutConfirmationReady, applyScoreDirty, applyNineToLatest, mergeNinePatch, seasonHighScoreRecord, entryScore27 } from '../src/lib/scoring'
+import { calculatePlayerBests } from '../src/lib/standings'
 import { applyScoreEdit, draftAfterScoreSave, runScoreEdit } from '../src/lib/score-edit'
 import { completeRefresh, requestRefresh } from '../src/lib/score-refresh'
-import { balances, clampPaidPlaces, displayedPerfectRound, displayedSharedPot, divisionResult, effectiveBar, eventLedgerPosted, eventMoney, nightBonusCost, otherDivisionNights, paidPlaceCount, payoutPool, payoutsForPlaceCount, placeBudget, postedBonusCost, splitEvenly, suggestedPaidPlaces, suggestedPayouts, type DivisionNight } from '../src/lib/money'
+import { balances, sharedPotBalance, clampPaidPlaces, displayedPerfectRound, displayedSharedPot, divisionResult, effectiveBar, eventLedgerPosted, eventMoney, nightBonusCost, otherDivisionNights, paidPlaceCount, payoutPool, payoutsForPlaceCount, placeBudget, postedBonusCost, splitEvenly, suggestedPaidPlaces, suggestedPayouts, type DivisionNight } from '../src/lib/money'
 import { duplicateName, friendlyError, parseMoney, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../src/lib/validation'
 import { buyingTagAfter, checkinTagIn, freshBuyingTag, newPlayerInsert } from '../src/lib/newPlayer'
-import type { Entry } from '../src/lib/types'
+import type { Entry, LedgerRow, PPEvent, Player, Settings } from '../src/lib/types'
 
 let n = 0
 const e = (p: Partial<Entry>): Entry => ({
@@ -1574,6 +1575,114 @@ assert.equal(totals(step2Clear).t18, null, 'legacy summed basket values must not
 assert.equal(displayedFront(step2Clear), null)
 assert.equal(displayedBack(step2Clear), null)
 
+// Item: Shared Pot totals across divisions (including division: null)
+const sharedPotLedger: LedgerRow[] = [
+  { id: 'l1', season_id: 's', event_id: null, player_id: null, division: 'M', fund: 'perfect5', kind: 'carryover', amount: 30, note: null, created_at: '2026-11-01' },
+  { id: 'l2', season_id: 's', event_id: null, player_id: null, division: 'W', fund: 'perfect5', kind: 'carryover', amount: 15, note: null, created_at: '2026-11-01' },
+  { id: 'l3', season_id: 's', event_id: null, player_id: null, division: null, fund: 'perfect5', kind: 'carryover', amount: 25, note: null, created_at: '2026-11-02' },
+  { id: 'l4', season_id: 's', event_id: null, player_id: null, division: null, fund: 'perfect4', kind: 'carryover', amount: 50, note: null, created_at: '2026-11-02' },
+  { id: 'l5', season_id: 's', event_id: null, player_id: null, division: 'M', fund: 'perfect_round', kind: 'carryover', amount: 120, note: null, created_at: '2026-11-01' },
+  { id: 'l6', season_id: 's', event_id: null, player_id: null, division: 'W', fund: 'perfect_round', kind: 'carryover', amount: 40, note: null, created_at: '2026-11-01' },
+]
+
+assert.equal(sharedPotBalance(sharedPotLedger, 'perfect5'), 70, 'shared perfect 5 sums M (30), W (15), and null (25)')
+assert.equal(sharedPotBalance(sharedPotLedger, 'perfect4'), 50, 'shared perfect 4 sums null division rows')
+assert.equal(balances(sharedPotLedger, 'M').perfect_round, 120, 'perfect round stays per-division for M')
+assert.equal(balances(sharedPotLedger, 'W').perfect_round, 40, 'perfect round stays per-division for W')
+
+// Item: Pot visibility helpers & defaults
+const testVisSettings: Settings = {
+  ...S,
+  potsVisibility: {
+    perfect_round: true,
+    backup: true,
+    perfect5: true,
+    perfect4: true,
+    high_score: true,
+    tag_fund: true,
+    purse: true,
+  },
+  pp_pot_visibility: {
+    perfect_round_W: false,
+    perfect4: false,
+  },
+}
+assert.equal(testVisSettings.pp_pot_visibility?.perfect_round_W, false)
+assert.equal(testVisSettings.pp_pot_visibility?.perfect4, false)
+assert.equal(testVisSettings.potsVisibility.perfect5, true)
+
+// Item: Season High Score Record computation
+const mockEvents: PPEvent[] = [
+  { id: 'ev-w1', season_id: 's9', event_date: '2026-11-05', name: 'Week 1', status: 'complete', created_at: '2026-11-05' },
+  { id: 'ev-w2', season_id: 's9', event_date: '2026-11-12', name: 'Week 2', status: 'scoring', pp_closed_men: true, pp_closed_women: false, created_at: '2026-11-12' },
+  { id: 'ev-w3', season_id: 's9', event_date: '2026-11-19', name: 'Week 3', status: 'active', pp_closed_men: false, pp_closed_women: false, created_at: '2026-11-19' },
+]
+const mockPlayers: Player[] = [
+  { id: 'p-dirk', name: 'Dirk Tailford', division: 'M', active: true, in_tags: true, created_at: '' },
+  { id: 'p-ferg', name: 'J Ferguson', division: 'M', active: true, in_tags: true, created_at: '' },
+  { id: 'p-alice', name: 'Alice Walker', division: 'W', active: true, in_tags: true, created_at: '' },
+  { id: 'p-unfin', name: 'Unfinished Man', division: 'M', active: true, in_tags: true, created_at: '' },
+]
+const mockPlayerById = new Map(mockPlayers.map(p => [p.id, p]))
+
+const mockEntries: Entry[] = [
+  // Week 1 (complete) - Dirk 74, Alice 68
+  e({ id: 'en-1', event_id: 'ev-w1', player_id: 'p-dirk', division: 'M', score_18: 48, score_final: 26, made_final: true }),
+  e({ id: 'en-2', event_id: 'ev-w1', player_id: 'p-alice', division: 'W', score_18: 46, score_final: 22, made_final: true }),
+  // Week 2 (Men closed, Women open) - Ferg ties Dirk at 74
+  e({ id: 'en-3', event_id: 'ev-w2', player_id: 'p-ferg', division: 'M', score_front: 25, score_back: 23, score_18: 48, score_final: 26, made_final: true }),
+  e({ id: 'en-4', event_id: 'ev-w2', player_id: 'p-alice', division: 'W', score_front: 26, score_back: 25, score_18: 51, score_final: 25, made_final: true }),
+  // Week 3 (Active, neither closed) - 80 points should be ignored
+  e({ id: 'en-5', event_id: 'ev-w3', player_id: 'p-unfin', division: 'M', score_18: 50, score_final: 30, made_final: true }),
+  // Non-finalist with high 18 score (55)
+  e({ id: 'en-6', event_id: 'ev-w1', player_id: 'p-nonfin', division: 'M', score_18: 55, score_final: null, made_final: false }),
+]
+
+const menHighScore = seasonHighScoreRecord({ entries: mockEntries, events: mockEvents, division: 'M', playerById: mockPlayerById })
+assert.equal(menHighScore.score, 74, 'Men high score is 74 (Dirk and Ferg tied)')
+assert.deepEqual(menHighScore.holders, ['Dirk Tailford', 'J Ferguson'], 'both tied players are listed as record holders')
+
+const womenHighScore = seasonHighScoreRecord({ entries: mockEntries, events: mockEvents, division: 'W', playerById: mockPlayerById })
+assert.equal(womenHighScore.score, 68, 'Women high score ignores unclosed Week 2 and active Week 3')
+assert.deepEqual(womenHighScore.holders, ['Alice Walker'])
+
+// Item: Legacy Week 1 entry fallback (only score_18 and score_final, all basket columns null)
+const legacyWeek1Finalist = e({
+  score_18: 49,
+  score_final: 23,
+  made_final: true,
+  r1_b1: null,
+  r1_b2: null,
+  r2_b1: null,
+  r2_b2: null,
+  f_b1: null,
+  f_b2: null,
+  score_front: null,
+  score_back: null,
+})
+assert.equal(totals(legacyWeek1Finalist).t18, 49, 'legacy entry falls back to score_18 for t18')
+assert.equal(totals(legacyWeek1Finalist).total, 72, 'legacy finalist falls back to score_18 + score_final for 27 total')
+assert.equal(entryScore27(legacyWeek1Finalist), 72, 'entryScore27 gives 72 for legacy finalist')
+
+const legacyWeek1NonFinalist = e({
+  score_18: 52,
+  score_final: null,
+  made_final: false,
+  r1_b1: null,
+  r1_b2: null,
+  r2_b1: null,
+  r2_b2: null,
+  f_b1: null,
+  f_b2: null,
+  score_front: null,
+  score_back: null,
+})
+assert.equal(totals(legacyWeek1NonFinalist).t18, 52, 'legacy non-finalist falls back to score_18')
+assert.equal(entryScore27(legacyWeek1NonFinalist), null, 'entryScore27 is null for non-finalist')
+const legacyBests = calculatePlayerBests([legacyWeek1Finalist, legacyWeek1NonFinalist])
+assert.equal(legacyBests.best18, 52, 'best18 is max across legacy entries')
+assert.equal(legacyBests.best27, 72, 'best27 only considers made_final entry')
+
 // Item 8: Changed files must be clean UTF-8 without BOM or mojibake
 const utf8Decoder = new TextDecoder('utf-8', { fatal: true })
 const changedFiles = [
@@ -1586,6 +1695,10 @@ const changedFiles = [
   'src/components/ui.tsx',
   'scripts/test-logic.ts',
   'scripts/smoke-scoring.tsx',
+  'src/lib/money.ts',
+  'src/lib/settings.ts',
+  'src/pages/Pots.tsx',
+  'src/pages/Standings.tsx',
   'supabase/pp_009_score_front_back.sql',
   'supabase/pp_finance_010_division_closeout.sql',
 ]

@@ -3,7 +3,8 @@ import { Edit2, Plus, Trash2 } from 'lucide-react'
 import { useData, must } from '../lib/store'
 import { supabase } from '../lib/supabase'
 import { askConfirm, messageOf } from '../lib/notify'
-import { bestTotal, canDeletePlayer, historicalEighteenWrite, historicalEntryUpdatePayload, isSeason9Week1, totals, week1AllowsPlayerDelete } from '../lib/scoring'
+import { canDeletePlayer, entryScore27, historicalEighteenWrite, historicalEntryUpdatePayload, isSeason9Week1, totals, week1AllowsPlayerDelete } from '../lib/scoring'
+import { calculatePlayerBests } from '../lib/standings'
 import { duplicateName, normalizeName, parseTag, tagTakenOnRoster } from '../lib/validation'
 import {
   AWARDS,
@@ -82,8 +83,8 @@ export default function Players() {
       points,
       winnings,
       currentTag,
-      best18: bestTotal(playerEntries, 't18'),
-      best27: bestTotal(playerEntries, 'total'),
+      best18: calculatePlayerBests(playerEntries).best18,
+      best27: calculatePlayerBests(playerEntries).best27,
       awardsCount,
     }
   }, [selectedPlayer, entries, tags])
@@ -499,7 +500,7 @@ export default function Players() {
                           <tr key={ent.id}>
                             <td className="faint">{ev?.event_date ?? 'Event'}</td>
                             <td className="c">{t.t18 ?? '—'}</td>
-                            <td className="c">{t.total ?? '—'}</td>
+                            <td className="c">{entryScore27(ent) ?? '—'}</td>
                             <td className="c strong">{ent.place ? ordinal(ent.place) : '—'}</td>
                             <td className="r num" style={{ color: ent.payout > 0 ? 'var(--teal)' : 'var(--text-3)' }}>
                               {ent.payout > 0 ? money(ent.payout) : '—'}
