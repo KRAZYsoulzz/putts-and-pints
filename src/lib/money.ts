@@ -17,6 +17,14 @@ export function balances(ledger: LedgerRow[], division: Division): Balances {
   return b
 }
 
+/** Total balance across all ledger rows for a fund regardless of division. */
+export function sharedPotBalance(ledger: readonly LedgerRow[], fund: Fund): number {
+  return cents(ledger
+    .filter(r => r.fund === fund)
+    .reduce((sum, r) => sum + Number(r.amount), 0)
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Event money
 // ---------------------------------------------------------------------------
@@ -204,8 +212,15 @@ function sharedAwardPlan(nights: DivisionNight[], type: SharedAward, s: Settings
 }
 
 /** Combined carryover plus the one flat bonus. This is the pot a winner splits, before anyone is marked. */
-export function displayedSharedPot(type: SharedAward, nights: DivisionNight[], s: Settings): number {
-  const carry = cents(nights.reduce((sum, night) => sum + (night.balances[type] || 0), 0))
+export function displayedSharedPot(
+  type: SharedAward,
+  nights: DivisionNight[],
+  s: Settings,
+  priorLedger?: readonly LedgerRow[],
+): number {
+  const carry = priorLedger
+    ? sharedPotBalance(priorLedger, type)
+    : cents(nights.reduce((sum, night) => sum + (night.balances[type] || 0), 0))
   const flat = type === 'perfect5' ? s.bonus.perfect5 : s.bonus.perfect4
   return cents(carry + flat)
 }

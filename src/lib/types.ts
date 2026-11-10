@@ -74,6 +74,7 @@ export interface Settings {
   paidEvery: number
   ties: { placement: TieMode; cut: CutTieMode; countback: CountbackKey[] }
   potsVisibility: Record<Fund, boolean>
+  pp_pot_visibility?: Record<string, boolean>
 }
 
 export interface Season {

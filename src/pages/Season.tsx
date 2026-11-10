@@ -22,14 +22,12 @@ export default function SeasonPage() {
   const [eventError, setEventError] = useState('')
   const [carryError, setCarryError] = useState('')
 
-  // Carryover form state
+  // Carryover form state (Perfect 4 and 5 are shared pots across divisions)
   const [carryover, setCarryover] = useState({
     prM: 0,
     prW: 0,
-    p5M: 0,
-    p5W: 0,
-    p4M: 0,
-    p4W: 0,
+    p5: 0,
+    p4: 0,
     hsM: 0,
     hsW: 0,
   })
@@ -68,13 +66,11 @@ export default function SeasonPage() {
       setCarryError('Create or activate a season before saving carryovers.')
       return
     }
-    const entriesToPost: { division: Division; fund: Fund; amount: number; note: string }[] = [
+    const entriesToPost: { division: Division | null; fund: Fund; amount: number; note: string }[] = [
       { division: 'M', fund: 'perfect_round', amount: carryover.prM, note: 'Carried over from last year' },
       { division: 'W', fund: 'perfect_round', amount: carryover.prW, note: 'Carried over from last year' },
-      { division: 'M', fund: 'perfect5', amount: carryover.p5M, note: 'Carried over from last year' },
-      { division: 'W', fund: 'perfect5', amount: carryover.p5W, note: 'Carried over from last year' },
-      { division: 'M', fund: 'perfect4', amount: carryover.p4M, note: 'Carried over from last year' },
-      { division: 'W', fund: 'perfect4', amount: carryover.p4W, note: 'Carried over from last year' },
+      { division: null, fund: 'perfect5', amount: carryover.p5, note: 'Carried over from last year' },
+      { division: null, fund: 'perfect4', amount: carryover.p4, note: 'Carried over from last year' },
       { division: 'M', fund: 'high_score', amount: carryover.hsM, note: 'Carried over from last year' },
       { division: 'W', fund: 'high_score', amount: carryover.hsW, note: 'Carried over from last year' },
     ]
@@ -374,33 +370,19 @@ export default function SeasonPage() {
                 />
               </div>
 
-              <div className="field">
-                <span>Men's Perfect 5</span>
+              <div className="field" style={{ gridColumn: 'span 2' }}>
+                <span>Perfect 5 Pot (Shared)</span>
                 <MoneyInput
-                  value={carryover.p5M}
-                  onChange={(v) => setCarryover((prev) => ({ ...prev, p5M: v }))}
-                />
-              </div>
-              <div className="field">
-                <span>Women's Perfect 5</span>
-                <MoneyInput
-                  value={carryover.p5W}
-                  onChange={(v) => setCarryover((prev) => ({ ...prev, p5W: v }))}
+                  value={carryover.p5}
+                  onChange={(v) => setCarryover((prev) => ({ ...prev, p5: v }))}
                 />
               </div>
 
-              <div className="field">
-                <span>Men's Perfect 4</span>
+              <div className="field" style={{ gridColumn: 'span 2' }}>
+                <span>Perfect 4 Pot (Shared)</span>
                 <MoneyInput
-                  value={carryover.p4M}
-                  onChange={(v) => setCarryover((prev) => ({ ...prev, p4M: v }))}
-                />
-              </div>
-              <div className="field">
-                <span>Women's Perfect 4</span>
-                <MoneyInput
-                  value={carryover.p4W}
-                  onChange={(v) => setCarryover((prev) => ({ ...prev, p4W: v }))}
+                  value={carryover.p4}
+                  onChange={(v) => setCarryover((prev) => ({ ...prev, p4: v }))}
                 />
               </div>
 

@@ -255,6 +255,7 @@ export default function SettingsPage() {
                       setForm((s) => ({
                         ...s,
                         potsVisibility: { ...s.potsVisibility, [item.key]: val },
+                        pp_pot_visibility: { ...(s.pp_pot_visibility ?? {}), [item.key]: val },
                       }))
                     }
                   />

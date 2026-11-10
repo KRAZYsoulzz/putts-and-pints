@@ -442,3 +442,118 @@ input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
   }
   .hide-sm { display: none; }
 }
+
+
+/* Projector / TV View Mode ------------------------------------------------ */
+.projector-page {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  background: var(--bg);
+  padding: 18px 28px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-sizing: border-box;
+  width: 100vw;
+  height: 100vh;
+}
+.projector-page .page-head {
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+}
+.projector-page .page-title {
+  font-size: 32px;
+}
+.projector-page .stats.section {
+  margin-bottom: 12px;
+  gap: 12px;
+}
+.projector-page .stat {
+  padding: 8px 14px;
+}
+.projector-page .stat-value {
+  font-size: 24px;
+}
+.projector-page .leaderboard-section {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 0;
+  gap: 8px;
+}
+.projector-page .leaderboard-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr !important;
+  gap: 20px;
+  align-items: stretch;
+}
+.projector-page .leaderboard-division {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  gap: 6px;
+}
+.projector-page .leaderboard-division h3 {
+  font-size: 20px;
+}
+.projector-page .leaderboard-division .panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.projector-page .leaderboard-division .table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.projector-page .leaderboard-table th {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--surface-1);
+  font-size: 13px;
+  height: 34px;
+  padding: 0 10px;
+  letter-spacing: 0.05em;
+}
+.projector-page .leaderboard-table td {
+  font-size: 16px;
+  height: 36px;
+  padding: 0 10px;
+}
+.projector-page .leaderboard-table .col-plc {
+  width: 44px;
+}
+.projector-page .leaderboard-table .col-player {
+  max-width: 220px;
+}
+.projector-page .leaderboard-table .player-name {
+  font-size: 16px;
+}
+.projector-page .leaderboard-table .place {
+  font-size: 15px;
+}
+.projector-page .leaderboard-table .big {
+  font-size: 17px;
+  font-weight: 700;
+}
+.projector-page .leaderboard-table tr.cut-line td {
+  height: 24px;
+  font-size: 12px;
+}
+.projector-exit-btn {
+  opacity: 0.75;
+  transition: opacity 0.2s ease, background 0.2s ease;
+}
+.projector-exit-btn:hover {
+  opacity: 1;
+  background: var(--surface-2);
+}

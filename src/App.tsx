@@ -18,6 +18,7 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/tv" element={<Tonight projectorMode />} />
           <Route path="/" element={<Shell />}>
             <Route index element={<Tonight />} />
             <Route path="standings" element={<Standings />} />

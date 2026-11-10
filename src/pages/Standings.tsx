@@ -29,7 +29,7 @@ const COLUMNS: {
 ]
 
 export default function Standings() {
-  const { season, entries, events, playerById, tags, records } = useData()
+  const { season, entries, events, playerById, tags, records, recordHolders } = useData()
   const [division, setDivision] = useState<Division>('M')
   const [sortState, setSortState] = useState<StandingsSortState>({
     column: 'default',
@@ -85,7 +85,7 @@ export default function Standings() {
         <Stat
           label="High Score Record"
           value={records[division] != null ? `${records[division]} pts` : 'None yet'}
-          sub="Official score to beat"
+          sub={recordHolders?.[division]?.length ? `Held by ${recordHolders[division].join(', ')}` : "Official score to beat"}
         />
         <Stat
           label="Leader"

@@ -1,4 +1,4 @@
-import type { CountbackKey, CutTieMode, Entry, EventStatus, Settings, TieMode } from './types'
+import type { CountbackKey, CutTieMode, Division, Entry, EventStatus, PPEvent, Player, Settings, TieMode } from './types'
 
 // ---------------------------------------------------------------------------
 // Scores
@@ -60,6 +60,72 @@ export function totals(e: Entry): Totals {
   }
   const total = t18 == null ? null : t18 + (f ?? 0)
   return { r1, r2, f, t18, total }
+}
+
+/** 27-hole total score (18 holes + final 9). Returns null if the player did not make the final or has no final 9 score. */
+export function entryScore27(e: Entry): number | null {
+  const t = totals(e)
+  if (!e.made_final || t.f == null || t.t18 == null) {
+    return null
+  }
+  return t.t18 + t.f
+}
+
+export interface SeasonHighScore {
+  score: number | null
+  holderIds: string[]
+  holders: string[]
+}
+
+/**
+ * Returns the highest finalized score (total for the night / 27 holes) for the given division
+ * in the season so far, along with the player(s) who hold it.
+ */
+export function seasonHighScoreRecord(params: {
+  entries: readonly Entry[]
+  events: readonly PPEvent[]
+  division: Division
+  playerById?: Map<string, Player>
+}): SeasonHighScore {
+  const { entries, events, division, playerById } = params
+  const eventById = new Map(events.map(ev => [ev.id, ev]))
+
+  let bestScore: number | null = null
+  const bestPlayerIds = new Set<string>()
+
+  for (const e of entries) {
+    if (e.division !== division) continue
+    const ev = eventById.get(e.event_id)
+    if (!ev) continue
+
+    const isFinalized =
+      ev.status === 'complete' ||
+      (division === 'M' ? Boolean(ev.pp_closed_men) : Boolean(ev.pp_closed_women))
+    if (!isFinalized) continue
+
+    const t = totals(e)
+    const nightTotal = t.total
+    if (nightTotal == null) continue
+
+    if (bestScore == null || nightTotal > bestScore) {
+      bestScore = nightTotal
+      bestPlayerIds.clear()
+      bestPlayerIds.add(e.player_id)
+    } else if (nightTotal === bestScore) {
+      bestPlayerIds.add(e.player_id)
+    }
+  }
+
+  const holderIds = Array.from(bestPlayerIds)
+  const holders = holderIds
+    .map(id => playerById?.get(id)?.name || 'Unknown')
+    .sort((a, b) => a.localeCompare(b))
+
+  return {
+    score: bestScore,
+    holderIds,
+    holders,
+  }
 }
 
 export function displayedFront(e: Entry): number | null {
