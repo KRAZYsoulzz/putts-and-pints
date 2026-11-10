@@ -157,7 +157,7 @@ export default function SeasonPage() {
     <div className="season-page">
       <PageHead eyebrow="Season Management" title="Seasons & Events">
         {isAdmin && (
-          <div style={{ display: 'flex', gap: 10 }}>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
             <button className="btn btn-ghost" onClick={() => setCarryoverModal(true)}>
               <Sparkles size={16} /> Enter Last Year's Carryovers
             </button>
@@ -170,7 +170,7 @@ export default function SeasonPage() {
 
       {/* Active Season Banner */}
       <div className="panel panel-pad section stack">
-        <div className="row" style={{ justifyContent: 'space-between' }}>
+        <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
           <div>
             <div className="eyebrow">Active Season</div>
             <h2 className="display" style={{ fontSize: 32, marginTop: 4 }}>

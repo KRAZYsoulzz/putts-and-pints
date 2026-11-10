@@ -139,7 +139,7 @@ export default function Pots() {
   return (
     <div className="pots-page">
       <PageHead eyebrow="Ledger & Financials" title="Pot Balances & Funds">
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           <DivisionSeg value={division} onChange={setDivision} />
           {isAdmin && (
             <button className="btn btn-primary" onClick={() => setAdjustModal(true)}>

@@ -310,7 +310,7 @@ export default function Players() {
   return (
     <div className="players-page">
       <PageHead eyebrow="Roster & Profiles" title="Players Directory">
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           <DivisionSeg value={division} onChange={setDivision} />
           {isAdmin && (
             <button className="btn btn-primary" onClick={() => { setAddError(''); setAddInTags(false); setInitialTag(''); setAddModal(true) }}>
@@ -336,15 +336,15 @@ export default function Players() {
       {/* Players List Grid */}
       <div className="panel">
         <div className="table-wrap">
-          <table className="table">
+          <table className="table players-table">
             <thead>
               <tr>
                 <th style={{ width: 45 }}>#</th>
                 <th>Name</th>
-                <th className="c" style={{ width: 140 }}>Tag</th>
+                <th className="c col-tag">Tag</th>
                 <th className="c" style={{ width: 90 }}>Events</th>
                 <th className="r bl" style={{ width: 110 }}>Total Winnings</th>
-                <th className="c bl" style={{ width: 160 }}>Action</th>
+                <th className="c bl hide-sm" style={{ width: 160 }}>Action</th>
               </tr>
             </thead>
             <tbody>
@@ -371,15 +371,15 @@ export default function Players() {
                         {p.name}
                         {!p.active && <span className="chip chip-danger" style={{ marginLeft: 6 }}>Inactive</span>}
                       </td>
-                      <td className="c">
+                      <td className="c col-tag">
                         {currentTag != null && p.in_tags ? <span className="chip chip-tag">#{currentTag}</span> : <span className="faint">—</span>}
-                        {p.in_tags && <span className="chip" style={{ marginLeft: 6 }}>In tags</span>}
+                        {p.in_tags && <span className="chip hide-sm" style={{ marginLeft: 6 }}>In tags</span>}
                       </td>
                       <td className="c faint">{playerEntries.length}</td>
                       <td className="r bl num strong" style={{ color: totalWon > 0 ? 'var(--teal)' : 'var(--text-3)' }}>
                         {totalWon > 0 ? money(totalWon) : '—'}
                       </td>
-                      <td className="c bl">
+                      <td className="c bl hide-sm">
                         <div style={{ display: 'inline-flex', gap: 6 }}>
                           <button className="btn btn-ghost btn-sm" onClick={() => setSelectedPlayer(p)}>
                             Stats →
@@ -408,8 +408,8 @@ export default function Players() {
       {selectedPlayer && profileStats && (
         <Dialog title={selectedPlayer.name} onClose={() => setSelectedPlayer(null)}>
           <div className="stack">
-            <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
-              <div className="row" style={{ gap: 8 }}>
+            <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6, flexWrap: 'wrap', gap: 8 }}>
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
                 <span className="chip chip-orange">{DIVISION_LABEL[selectedPlayer.division]}</span>
                 <span className="chip">{selectedPlayer.in_tags ? 'In tags' : 'No tag'}</span>
                 {selectedPlayer.in_tags && profileStats.currentTag != null && (
