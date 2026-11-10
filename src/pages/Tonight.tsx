@@ -1,4 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useAutoScroll } from '../lib/projector'
 import {
   Check,
   ChevronRight,
@@ -11,8 +13,10 @@ import {
   Shuffle,
   Sparkles,
   Trophy,
+  Tv,
   UserPlus,
   Users,
+  X,
 } from 'lucide-react'
 import { useData, must } from '../lib/store'
 import { supabase } from '../lib/supabase'
@@ -76,12 +80,146 @@ const STEPS: { status: EventStatus; label: string }[] = [
 
 const DIVS: Division[] = ['M', 'W']
 
-export default function Tonight() {
+function LeaderboardDivisionColumn({
+  d,
+  dEntries,
+  board,
+  entryMap,
+  playerById,
+  isProjector,
+}: {
+  d: Division
+  dEntries: Entry[]
+  board: ReturnType<typeof tonightBoard>
+  entryMap: Map<string, Entry>
+  playerById: Map<string, Player>
+  isProjector: boolean
+}) {
+  const scrollRef = useAutoScroll<HTMLDivElement>(isProjector, dEntries)
+
+  const renderRow = (row: typeof board.completed[number]) => {
+    const ent = entryMap.get(row.id)
+    const p = ent ? playerById.get(ent.player_id) : null
+    const playerName = p?.name ?? 'Unknown Player'
+    return (
+      <tr key={row.id} className={row.place === 1 ? 'leader' : ''}>
+        <td className="place col-plc">{row.place != null && row.place > 0 ? ordinal(row.place) : '—'}</td>
+        <td className="strong col-player" title={playerName}>
+          <span className="player-name">{playerName}</span>
+          {ent?.awards && ent.awards.length > 0 && (
+            <span className="chips">
+              {ent.awards.map(a => <span key={a} className="chip chip-teal">{AWARD_SHORT[a]}</span>)}
+            </span>
+          )}
+        </td>
+        <td className="c col-score">{row.front != null ? row.front : '—'}</td>
+        <td className="c col-score">{row.back != null ? row.back : '—'}</td>
+        <td className="c bl strong col-score">{row.t18 != null ? row.t18 : '—'}</td>
+        <td className="c bl col-score">{row.finalNine != null ? row.finalNine : '—'}</td>
+        <td className="c bl big col-score">{row.night != null ? row.night : '—'}</td>
+      </tr>
+    )
+  }
+
+  const allEmpty = board.completed.length === 0 && board.partial.length === 0 && board.unscored.length === 0
+
+  return (
+    <div className="stack leaderboard-division">
+      <div className="row" style={{ justifyContent: 'space-between' }}>
+        <h3 className="display" style={{ fontSize: 18 }}>
+          {d === 'M' ? "Men's Division" : "Women's Division"}
+        </h3>
+        <span className="muted" style={{ fontSize: 12 }}>
+          {dEntries.length} {dEntries.length === 1 ? 'player' : 'players'}
+        </span>
+      </div>
+      <div className="panel">
+        <div className="table-wrap" ref={scrollRef}>
+          <table className="table leaderboard-table">
+            <thead>
+              <tr>
+                <th className="col-plc">Plc</th>
+                <th className="col-player">Player</th>
+                <th className="c col-score">Front 9</th>
+                <th className="c col-score">Back 9</th>
+                <th className="c bl col-score">18 Total</th>
+                <th className="c bl col-score">Final 9</th>
+                <th className="c bl col-score">Night Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {allEmpty ? (
+                <tr>
+                  <td colSpan={7} style={{ textAlign: 'center', padding: '24px 0' }} className="muted">
+                    No players checked into this division yet.
+                  </td>
+                </tr>
+              ) : (
+                <>
+                  {board.completed.map(row => (
+                    <Fragment key={row.id}>
+                      {renderRow(row)}
+                      {row.id === board.cutAfterId && (
+                        <tr className="cut-line">
+                          <td
+                            colSpan={7}
+                            style={{
+                              textAlign: 'center',
+                              background: 'var(--surface-2)',
+                              padding: '2px 8px',
+                              fontSize: 11,
+                              fontWeight: 600,
+                              color: 'var(--orange)',
+                              letterSpacing: '0.04em',
+                            }}
+                          >
+                            Cut line ({board.provisional ? 'provisional' : 'confirmed'})
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  ))}
+                  {board.partial.map(row => renderRow(row))}
+                  {board.unscored.map(row => renderRow(row))}
+                </>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+interface TonightProps {
+  projectorMode?: boolean
+}
+
+export default function Tonight({ projectorMode }: TonightProps = {}) {
   const data = useData()
   const {
     isAdmin, season, settings, liveEvent, events, viewEventId, openEvent, loading,
     entries, players, playerById, tags, ledger, records, reload, patchEntry, patchEvent,
   } = data
+
+  const nav = useNavigate()
+  const [searchParams] = useSearchParams()
+  const isProjector = Boolean(
+    projectorMode ||
+    searchParams.get('view') === 'public' ||
+    searchParams.get('projector') === 'true'
+  )
+
+  useEffect(() => {
+    if (!isProjector) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        nav('/')
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [isProjector, nav])
 
   const event = (viewEventId ? events.find(e => e.id === viewEventId) : null) ?? liveEvent
 
@@ -343,9 +481,9 @@ export default function Tonight() {
 
   if (!event) {
     return (
-      <div>
+      <div className={isProjector ? 'projector-page' : ''}>
         <PageHead title="Tonight's Tournament" eyebrow="Putts & Pints">
-          {isAdmin && (
+          {isAdmin && !isProjector && (
             <button className="btn btn-primary" disabled={loading} onClick={() => {
               if (loading) return
               if (!season) {
@@ -359,19 +497,24 @@ export default function Tonight() {
               <Plus size={16} /> {loading ? 'Loading season…' : 'Start New Event'}
             </button>
           )}
+          {isProjector && (
+            <button className="btn btn-ghost btn-sm projector-exit-btn" onClick={() => nav('/')} title="Exit projector view (Esc)">
+              <X size={14} /> Exit (Esc)
+            </button>
+          )}
         </PageHead>
         <div className="empty panel panel-pad">
           <Trophy size={48} color="var(--orange)" />
           <div className="display" style={{ fontSize: 28, marginTop: 12 }}>No Tournament In Progress</div>
           <p className="muted">
-            {isAdmin
+            {isAdmin && !isProjector
               ? 'Start a new event to check players in, set the bar match, and record scores.'
               : 'Standings and pot balances are in the sidebar. Check back once tonight starts.'}
           </p>
-          {(isAdmin || events.some(e => e.status === 'scheduled')) && (
+          {((isAdmin && !isProjector) || events.some(e => e.status === 'scheduled')) && (
             <div style={{ marginTop: 16, textAlign: 'left' }}>
               <div className="display" style={{ fontSize: 20 }}>Upcoming events</div>
-              {isAdmin && (
+              {isAdmin && !isProjector && (
                 <form style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }} onSubmit={async (e) => {
                   e.preventDefault()
                   try {
@@ -404,7 +547,7 @@ export default function Tonight() {
                   <div key={ev.id} style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 6 }}>
                     <span>{ev.event_date}</span>
                     <span style={{ flex: 1 }}>{ev.name ?? ''}</span>
-                    {isAdmin && (
+                    {isAdmin && !isProjector && (
                       <button className="btn" disabled={isW1} onClick={async () => {
                         if (isW1) return
                         try {
@@ -493,7 +636,7 @@ export default function Tonight() {
   const isWeek1Locked = isSeason9Week1(event) || isWeek1Event(event)
 
   const handleContextMenu = (e: MouseEvent, entry: Entry) => {
-    if (!isAdmin || event.status === 'complete' || isWeek1Locked) return
+    if (!isAdmin || isProjector || event.status === 'complete' || isWeek1Locked) return
     e.preventDefault()
     setContextMenu({ x: e.clientX, y: e.clientY, entry })
   }
@@ -1132,20 +1275,22 @@ export default function Tonight() {
 
   const viewingOther = viewEventId != null && liveEvent != null && viewEventId !== liveEvent.id
   const eventLabel = event.name?.trim() || 'Tonight’s Tournament'
-  const isPublicLeaderboard = !isAdmin && event.status !== 'complete'
+  const isPublicLeaderboard = (!isAdmin || isProjector) && event.status !== 'complete'
 
   return (
-    <div className={`tonight-page${isPublicLeaderboard ? ' public-view' : ''}`}>
+    <div className={`tonight-page${isPublicLeaderboard ? ' public-view' : ''}${isProjector ? ' projector-page' : ''}`}>
       <PageHead
         eyebrow={`${event.name?.trim() ? `${event.name.trim()} · ` : ''}${event.event_date} · ${event.status}`}
         title={eventLabel}
       >
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-          <DivisionSeg value={division} onChange={d => { setBarError(''); setDivision(d) }} counts={counts} />
-          {viewingOther && (
+          {!isProjector && (
+            <DivisionSeg value={division} onChange={d => { setBarError(''); setDivision(d) }} counts={counts} />
+          )}
+          {viewingOther && !isProjector && (
             <button className="btn btn-ghost btn-sm" onClick={() => openEvent(null)}>Back to tonight</button>
           )}
-          {isAdmin && isDivisionClosed && !isWeek1Locked && (
+          {isAdmin && !isProjector && isDivisionClosed && !isWeek1Locked && (
             <button
               className="btn btn-ghost btn-sm"
               disabled={!latestPostedCheck.latest}
@@ -1154,35 +1299,63 @@ export default function Tonight() {
               <RotateCcw size={14} /> Reopen {division === 'M' ? "Men's" : "Women's"} via Correction
             </button>
           )}
+          {isAdmin && !isProjector && (
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => nav('/tv')}
+              title="Open Projector View for wall display"
+            >
+              <Tv size={14} /> Projector view
+            </button>
+          )}
+          {isProjector && (
+            <button
+              className="btn btn-ghost btn-sm projector-exit-btn"
+              onClick={() => nav('/')}
+              title="Exit Projector View (Esc)"
+            >
+              <X size={14} /> Exit (Esc)
+            </button>
+          )}
         </div>
       </PageHead>
 
       <div className="stats section">
-        <Stat label={`${division === 'M' ? "Men's" : "Women's"} Field`} value={divEntries.length} sub="Players checked in" />
         <Stat
-          label="Payout Pool"
-          value={money(pool)}
-          sub={bonusCost > 0
-            ? `${money(settings.entryFee - settings.perfectRoundShare)}/player + ${money(barAmount)} bar − ${money(bonusCost)} bonuses`
-            : `${money(settings.entryFee - settings.perfectRoundShare)}/player + ${money(barAmount)} bar`}
+          label={isProjector ? 'Field' : `${division === 'M' ? "Men's" : "Women's"} Field`}
+          value={isProjector ? entries.filter(e => e.event_id === event.id).length : divEntries.length}
+          sub={isProjector ? `${counts.M} men · ${counts.W} women checked in` : 'Players checked in'}
         />
-        <Stat
-          label="Perfect Round Pot"
-          value={money(perfectRoundShown)}
-          sub={previewPot
-            ? `After tonight’s $2 per entry · Backup ${money(curBalances.backup)} · cap $${settings.perfectRoundCap}`
-            : `Backup Pot: ${money(curBalances.backup)} (Cap $${settings.perfectRoundCap})`}
-        />
-        <Stat
-          label="Score To Beat"
-          value={records[division] != null ? `${records[division]} pts` : 'No record yet'}
-          sub={openingNight
-            ? 'Tonight sets the bar. High score pays $0.'
-            : 'Beating this wins the high-score bonus'}
-        />
+        {(!isPublicLeaderboard || settings.potsVisibility?.purse !== false) && (
+          <Stat
+            label="Payout Pool"
+            value={money(pool)}
+            sub={bonusCost > 0
+              ? `${money(settings.entryFee - settings.perfectRoundShare)}/player + ${money(barAmount)} bar − ${money(bonusCost)} bonuses`
+              : `${money(settings.entryFee - settings.perfectRoundShare)}/player + ${money(barAmount)} bar`}
+          />
+        )}
+        {(!isPublicLeaderboard || settings.potsVisibility?.perfect_round !== false) && (
+          <Stat
+            label="Perfect Round Pot"
+            value={money(perfectRoundShown)}
+            sub={previewPot
+              ? `After tonight’s $2 per entry · Backup ${money(curBalances.backup)} · cap $${settings.perfectRoundCap}`
+              : `Backup Pot: ${money(curBalances.backup)} (Cap $${settings.perfectRoundCap})`}
+          />
+        )}
+        {(!isPublicLeaderboard || settings.potsVisibility?.high_score !== false) && (
+          <Stat
+            label="Score To Beat"
+            value={records[division] != null ? `${records[division]} pts` : 'No record yet'}
+            sub={openingNight
+              ? 'Tonight sets the bar. High score pays $0.'
+              : 'Beating this wins the high-score bonus'}
+          />
+        )}
       </div>
 
-      {isAdmin && event.status !== 'complete' && (
+      {isAdmin && !isProjector && event.status !== 'complete' && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <div className="steps">
             {STEPS.map(s => (
@@ -1208,7 +1381,7 @@ export default function Tonight() {
         </div>
       )}
 
-      {isAdmin && event.status === 'checkin' && (
+      {isAdmin && !isProjector && event.status === 'checkin' && (
         <div className="section">
           <div className="section-head">
             <div>
@@ -1704,7 +1877,7 @@ export default function Tonight() {
         </div>
       )}
 
-      {isAdmin && event.status === 'scoring' && (
+      {isAdmin && !isProjector && event.status === 'scoring' && (
         <div className="section">
           <div className="section-head">
             <div>
@@ -1873,7 +2046,7 @@ export default function Tonight() {
         </div>
       )}
 
-      {isAdmin && event.status === 'final9' && (
+      {isAdmin && !isProjector && event.status === 'final9' && (
         <div className="section">
           <div className="section-head">
             <div>
@@ -2056,7 +2229,7 @@ export default function Tonight() {
         </div>
       )}
 
-      {!isAdmin && event.status !== 'complete' ? (
+      {(!isAdmin || isProjector) && event.status !== 'complete' ? (
         <div className="section stack leaderboard-section">
           <div>
             <h2 className="display section-title">Tonight's Leaderboard</h2>
@@ -2070,95 +2243,16 @@ export default function Tonight() {
               const savedCut = d === 'M' ? event.final_cut_men : event.final_cut_women
               const board = tonightBoard(dEntries, settings, event.status, savedCut)
               const entryMap = new Map(dEntries.map(ent => [ent.id, ent]))
-              const renderRow = (row: typeof board.completed[number]) => {
-                const ent = entryMap.get(row.id)
-                const p = ent ? playerById.get(ent.player_id) : null
-                const playerName = p?.name ?? 'Unknown Player'
-                return (
-                  <tr key={row.id} className={row.place === 1 ? 'leader' : ''}>
-                    <td className="place col-plc">{row.place != null && row.place > 0 ? ordinal(row.place) : '—'}</td>
-                    <td className="strong col-player" title={playerName}>
-                      <span className="player-name">{playerName}</span>
-                      {ent?.awards && ent.awards.length > 0 && (
-                        <span className="chips">
-                          {ent.awards.map(a => <span key={a} className="chip chip-teal">{AWARD_SHORT[a]}</span>)}
-                        </span>
-                      )}
-                    </td>
-                    <td className="c col-score">{row.front != null ? row.front : '—'}</td>
-                    <td className="c col-score">{row.back != null ? row.back : '—'}</td>
-                    <td className="c bl strong col-score">{row.t18 != null ? row.t18 : '—'}</td>
-                    <td className="c bl col-score">{row.finalNine != null ? row.finalNine : '—'}</td>
-                    <td className="c bl big col-score">{row.night != null ? row.night : '—'}</td>
-                  </tr>
-                )
-              }
-              const allEmpty = board.completed.length === 0 && board.partial.length === 0 && board.unscored.length === 0
               return (
-                <div key={d} className="stack leaderboard-division">
-                  <div className="row" style={{ justifyContent: 'space-between' }}>
-                    <h3 className="display" style={{ fontSize: 18 }}>
-                      {d === 'M' ? "Men's Division" : "Women's Division"}
-                    </h3>
-                    <span className="muted" style={{ fontSize: 12 }}>
-                      {dEntries.length} {dEntries.length === 1 ? 'player' : 'players'}
-                    </span>
-                  </div>
-                  <div className="panel">
-                    <div className="table-wrap">
-                      <table className="table leaderboard-table">
-                        <thead>
-                          <tr>
-                            <th className="col-plc">Plc</th>
-                            <th className="col-player">Player</th>
-                            <th className="c col-score">Front 9</th>
-                            <th className="c col-score">Back 9</th>
-                            <th className="c bl col-score">18 Total</th>
-                            <th className="c bl col-score">Final 9</th>
-                            <th className="c bl col-score">Night Total</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {allEmpty ? (
-                            <tr>
-                              <td colSpan={7} style={{ textAlign: 'center', padding: '24px 0' }} className="muted">
-                                No players checked into this division yet.
-                              </td>
-                            </tr>
-                          ) : (
-                            <>
-                              {board.completed.map(row => (
-                                <Fragment key={row.id}>
-                                  {renderRow(row)}
-                                  {row.id === board.cutAfterId && (
-                                    <tr className="cut-line">
-                                      <td
-                                        colSpan={7}
-                                        style={{
-                                          textAlign: 'center',
-                                          background: 'var(--surface-2)',
-                                          padding: '2px 8px',
-                                          fontSize: 11,
-                                          fontWeight: 600,
-                                          color: 'var(--orange)',
-                                          letterSpacing: '0.04em',
-                                        }}
-                                      >
-                                        Cut line ({board.provisional ? 'provisional' : 'confirmed'})
-                                      </td>
-                                    </tr>
-                                  )}
-                                </Fragment>
-                              ))}
-                              {board.partial.map(row => renderRow(row))}
-                              {board.unscored.map(row => renderRow(row))}
-                            </>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                </div>
+                <LeaderboardDivisionColumn
+                  key={d}
+                  d={d}
+                  dEntries={dEntries}
+                  board={board}
+                  entryMap={entryMap}
+                  playerById={playerById}
+                  isProjector={isProjector}
+                />
               )
             })}
           </div>
@@ -2175,7 +2269,7 @@ export default function Tonight() {
                 {openingNight && ' High score on this first night sets the season record and pays $0.'}
               </p>
             </div>
-            {isAdmin && event.status !== 'complete' && !isWeek1Locked && (
+            {isAdmin && !isProjector && event.status !== 'complete' && !isWeek1Locked && (
               <div style={{ display: 'flex', gap: 8 }}>
                 {!isDivisionClosed && (
                   <button
@@ -2265,7 +2359,7 @@ export default function Tonight() {
                 <dd style={{ color: purseLeft < -0.001 ? 'var(--danger)' : 'var(--text)' }}>{money(purseLeft)}</dd>
               </div>
 
-              {isAdmin && canEditPayouts && (
+              {isAdmin && !isProjector && canEditPayouts && (
                 <div style={{ marginTop: 8 }}>
                   {paidPlaces > 0 && (
                     <>
@@ -2331,14 +2425,14 @@ export default function Tonight() {
                 heldReserve={closeState.heldReserve[division]}
                 releasedReserve={closeState.released[division]}
                 previewText={closePreviews[divReopenKey] ?? null}
-                canClose={isAdmin && !isWeek1Locked && !isDivisionClosed && !overPool}
+                canClose={isAdmin && !isProjector && !isWeek1Locked && !isDivisionClosed && !overPool}
                 isClosing={isFinalizing}
-                canCorrect={isAdmin && !isWeek1Locked && isDivisionClosed && latestPostedCheck.latest}
-                onCloseDivision={isAdmin ? () => void handleCloseDivision(division) : undefined}
-                onStartCorrection={isAdmin ? () => startCorrectionDraft(true) : undefined}
+                canCorrect={isAdmin && !isProjector && !isWeek1Locked && isDivisionClosed && latestPostedCheck.latest}
+                onCloseDivision={isAdmin && !isProjector ? () => void handleCloseDivision(division) : undefined}
+                onStartCorrection={isAdmin && !isProjector ? () => startCorrectionDraft(true) : undefined}
               />
 
-              {isAdmin && activeCorrectionDraft && (
+              {isAdmin && !isProjector && activeCorrectionDraft && (
                 <CorrectionDraftPanel
                   division={division}
                   bookedCash={activeCorrectionDraft.bookedCash}

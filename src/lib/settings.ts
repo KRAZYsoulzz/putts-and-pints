@@ -35,7 +35,7 @@ export function resolveSettings(stored?: Partial<Settings> | null): Settings {
     ...s,
     bonus: { ...DEFAULT_SETTINGS.bonus, ...s.bonus },
     ties: { ...DEFAULT_SETTINGS.ties, ...s.ties },
-    potsVisibility: { ...DEFAULT_SETTINGS.potsVisibility, ...s.potsVisibility },
+    potsVisibility: { ...DEFAULT_SETTINGS.potsVisibility, ...s.potsVisibility, ...((s as Record<string, unknown>).pp_pot_visibility as Record<import("./types").Fund, boolean> | undefined) },
     points: s.points?.length ? s.points : DEFAULT_SETTINGS.points,
   }
 }
