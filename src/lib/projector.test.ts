@@ -4,6 +4,8 @@ import {
   autoScrollNextStep,
   initialPageScrollState,
   autoScrollPageStep,
+  isProjectorMode,
+  effectiveIsAdmin,
 } from './projector'
 
 // 1. Lists that fit don't scroll
@@ -103,4 +105,43 @@ import {
   assert.equal(step.nextScrollTop, 0)
 }
 
-console.log('Projector auto-scroll tests passed ✔')
+// 8. Projector mode detection
+{
+  assert.equal(isProjectorMode(true), true)
+  assert.equal(isProjectorMode(false, '?view=public'), true)
+  assert.equal(isProjectorMode(false, 'view=public'), true)
+  assert.equal(isProjectorMode(false, '?projector=true'), true)
+  assert.equal(isProjectorMode(false, '?view=other'), false)
+  assert.equal(isProjectorMode(false, ''), false)
+  assert.equal(isProjectorMode(undefined, ''), false)
+}
+
+// 9. Effective admin privileges in projector mode
+{
+  assert.equal(effectiveIsAdmin(true, false), true, 'Admin in director view has admin privileges')
+  assert.equal(effectiveIsAdmin(true, true), false, 'Admin in projector mode is treated as non-admin')
+  assert.equal(effectiveIsAdmin(false, false), false, 'Signed-out viewer is non-admin')
+  assert.equal(effectiveIsAdmin(false, true), false, 'Signed-out viewer on /tv is non-admin')
+}
+
+// 10. No tournament in progress / upcoming events permissions in projector mode
+{
+  // When director is signed in (authIsAdmin: true) but in projector mode (isProjector: true)
+  const isProjector = isProjectorMode(true)
+  const isAdmin = effectiveIsAdmin(true, isProjector)
+  assert.equal(isAdmin, false, 'Projector mode must strip all admin privileges')
+
+  // Under effectiveIsAdmin in projector mode, admin actions on upcoming events must be disabled:
+  const canStartNewEvent = isAdmin
+  const canAddUpcomingEvent = isAdmin
+  const canStartScheduledEvent = isAdmin
+  const canEditScheduledEvent = isAdmin
+  const canDeleteScheduledEvent = isAdmin
+  assert.equal(canStartNewEvent, false)
+  assert.equal(canAddUpcomingEvent, false)
+  assert.equal(canStartScheduledEvent, false)
+  assert.equal(canEditScheduledEvent, false)
+  assert.equal(canDeleteScheduledEvent, false)
+}
+
+console.log('Projector auto-scroll & permissions tests passed ✔')

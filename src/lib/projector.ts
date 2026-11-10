@@ -250,3 +250,22 @@ export function useAutoScroll<T extends HTMLElement>(
 
   return ref
 }
+
+/**
+ * Resolves whether projector mode is active based on component props or query string.
+ */
+export function isProjectorMode(projectorModeProp?: boolean, search = ''): boolean {
+  if (projectorModeProp) return true
+  const query = search.startsWith('?') ? search.slice(1) : search
+  const params = new URLSearchParams(query)
+  return params.get('view') === 'public' || params.get('projector') === 'true'
+}
+
+/**
+ * Resolves effective admin status for viewing tonight.
+ * In projector mode (/tv and ?view=public), admin privileges are treated as false
+ * so the page renders identically to the public/signed-out view with zero admin controls.
+ */
+export function effectiveIsAdmin(authIsAdmin: boolean, isProjector: boolean): boolean {
+  return authIsAdmin && !isProjector
+}
