@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { useAutoScroll } from '../lib/projector'
+import { effectiveIsAdmin, isProjectorMode, useAutoScroll } from '../lib/projector'
 import {
   Check,
   ChevronRight,
@@ -198,17 +198,14 @@ interface TonightProps {
 export default function Tonight({ projectorMode }: TonightProps = {}) {
   const data = useData()
   const {
-    isAdmin, season, settings, liveEvent, events, viewEventId, openEvent, loading,
+    isAdmin: authIsAdmin, season, settings, liveEvent, events, viewEventId, openEvent, loading,
     entries, players, playerById, tags, ledger, records, reload, patchEntry, patchEvent,
   } = data
 
   const nav = useNavigate()
   const [searchParams] = useSearchParams()
-  const isProjector = Boolean(
-    projectorMode ||
-    searchParams.get('view') === 'public' ||
-    searchParams.get('projector') === 'true'
-  )
+  const isProjector = isProjectorMode(projectorMode, searchParams.toString())
+  const isAdmin = effectiveIsAdmin(authIsAdmin, isProjector)
 
   useEffect(() => {
     if (!isProjector) return
@@ -483,7 +480,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
     return (
       <div className={isProjector ? 'projector-page' : ''}>
         <PageHead title="Tonight's Tournament" eyebrow="Putts & Pints">
-          {isAdmin && !isProjector && (
+          {isAdmin && (
             <button className="btn btn-primary" disabled={loading} onClick={() => {
               if (loading) return
               if (!season) {
@@ -507,14 +504,14 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
           <Trophy size={48} color="var(--orange)" />
           <div className="display" style={{ fontSize: 28, marginTop: 12 }}>No Tournament In Progress</div>
           <p className="muted">
-            {isAdmin && !isProjector
+            {isAdmin
               ? 'Start a new event to check players in, set the bar match, and record scores.'
               : 'Standings and pot balances are in the sidebar. Check back once tonight starts.'}
           </p>
-          {((isAdmin && !isProjector) || events.some(e => e.status === 'scheduled')) && (
+          {(isAdmin || events.some(e => e.status === 'scheduled')) && (
             <div style={{ marginTop: 16, textAlign: 'left' }}>
               <div className="display" style={{ fontSize: 20 }}>Upcoming events</div>
-              {isAdmin && !isProjector && (
+              {isAdmin && (
                 <form style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }} onSubmit={async (e) => {
                   e.preventDefault()
                   try {
@@ -547,7 +544,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                   <div key={ev.id} style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 6 }}>
                     <span>{ev.event_date}</span>
                     <span style={{ flex: 1 }}>{ev.name ?? ''}</span>
-                    {isAdmin && !isProjector && (
+                    {isAdmin && (
                       <button className="btn" disabled={isW1} onClick={async () => {
                         if (isW1) return
                         try {
@@ -636,7 +633,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
   const isWeek1Locked = isSeason9Week1(event) || isWeek1Event(event)
 
   const handleContextMenu = (e: MouseEvent, entry: Entry) => {
-    if (!isAdmin || isProjector || event.status === 'complete' || isWeek1Locked) return
+    if (!isAdmin || event.status === 'complete' || isWeek1Locked) return
     e.preventDefault()
     setContextMenu({ x: e.clientX, y: e.clientY, entry })
   }
@@ -1276,7 +1273,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
 
   const viewingOther = viewEventId != null && liveEvent != null && viewEventId !== liveEvent.id
   const eventLabel = event.name?.trim() || 'Tonight’s Tournament'
-  const isPublicLeaderboard = (!isAdmin || isProjector) && event.status !== 'complete'
+  const isPublicLeaderboard = !isAdmin && event.status !== 'complete'
 
   return (
     <div className={`tonight-page${isPublicLeaderboard ? ' public-view' : ''}${isProjector ? ' projector-page' : ''}`}>
@@ -1291,7 +1288,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
           {viewingOther && !isProjector && (
             <button className="btn btn-ghost btn-sm" onClick={() => openEvent(null)}>Back to tonight</button>
           )}
-          {isAdmin && !isProjector && isDivisionClosed && !isWeek1Locked && (
+          {isAdmin && isDivisionClosed && !isWeek1Locked && (
             <button
               className="btn btn-ghost btn-sm"
               disabled={!latestPostedCheck.latest}
@@ -1300,7 +1297,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
               <RotateCcw size={14} /> Reopen {division === 'M' ? "Men's" : "Women's"} via Correction
             </button>
           )}
-          {isAdmin && !isProjector && (
+          {isAdmin && (
             <button
               className="btn btn-ghost btn-sm"
               onClick={() => nav('/tv')}
@@ -1356,7 +1353,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
         )}
       </div>
 
-      {isAdmin && !isProjector && event.status !== 'complete' && (
+      {isAdmin && event.status !== 'complete' && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <div className="steps">
             {STEPS.map(s => (
@@ -1382,7 +1379,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
         </div>
       )}
 
-      {isAdmin && !isProjector && event.status === 'checkin' && (
+      {isAdmin && event.status === 'checkin' && (
         <div className="section">
           <div className="section-head">
             <div>
@@ -1878,7 +1875,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
         </div>
       )}
 
-      {isAdmin && !isProjector && event.status === 'scoring' && (
+      {isAdmin && event.status === 'scoring' && (
         <div className="section">
           <div className="section-head">
             <div>
@@ -2047,7 +2044,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
         </div>
       )}
 
-      {isAdmin && !isProjector && event.status === 'final9' && (
+      {isAdmin && event.status === 'final9' && (
         <div className="section">
           <div className="section-head">
             <div>
@@ -2230,7 +2227,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
         </div>
       )}
 
-      {(!isAdmin || isProjector) && event.status !== 'complete' ? (
+      {!isAdmin && event.status !== 'complete' ? (
         <div className="section stack leaderboard-section">
           <div>
             <h2 className="display section-title">Tonight's Leaderboard</h2>
@@ -2270,7 +2267,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                 {openingNight && ' High score on this first night sets the season record and pays $0.'}
               </p>
             </div>
-            {isAdmin && !isProjector && event.status !== 'complete' && !isWeek1Locked && (
+            {isAdmin && event.status !== 'complete' && !isWeek1Locked && (
               <div style={{ display: 'flex', gap: 8 }}>
                 {!isDivisionClosed && (
                   <button
@@ -2360,7 +2357,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                 <dd style={{ color: purseLeft < -0.001 ? 'var(--danger)' : 'var(--text)' }}>{money(purseLeft)}</dd>
               </div>
 
-              {isAdmin && !isProjector && canEditPayouts && (
+              {isAdmin && canEditPayouts && (
                 <div style={{ marginTop: 8 }}>
                   {paidPlaces > 0 && (
                     <>
@@ -2426,14 +2423,14 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                 heldReserve={closeState.heldReserve[division]}
                 releasedReserve={closeState.released[division]}
                 previewText={closePreviews[divReopenKey] ?? null}
-                canClose={isAdmin && !isProjector && !isWeek1Locked && !isDivisionClosed && !overPool}
+                canClose={isAdmin && !isWeek1Locked && !isDivisionClosed && !overPool}
                 isClosing={isFinalizing}
-                canCorrect={isAdmin && !isProjector && !isWeek1Locked && isDivisionClosed && latestPostedCheck.latest}
-                onCloseDivision={isAdmin && !isProjector ? () => void handleCloseDivision(division) : undefined}
-                onStartCorrection={isAdmin && !isProjector ? () => startCorrectionDraft(true) : undefined}
+                canCorrect={isAdmin && !isWeek1Locked && isDivisionClosed && latestPostedCheck.latest}
+                onCloseDivision={isAdmin ? () => void handleCloseDivision(division) : undefined}
+                onStartCorrection={isAdmin ? () => startCorrectionDraft(true) : undefined}
               />
 
-              {isAdmin && !isProjector && activeCorrectionDraft && (
+              {isAdmin && activeCorrectionDraft && (
                 <CorrectionDraftPanel
                   division={division}
                   bookedCash={activeCorrectionDraft.bookedCash}
