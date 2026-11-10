@@ -44,7 +44,7 @@ export default function SettingsPage() {
     <div className="settings-page">
       <PageHead eyebrow="Tournament Rules & Configuration" title="Season Settings">
         {isAdmin && (
-          <div style={{ display: 'flex', gap: 10 }}>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
             <button className="btn btn-ghost" onClick={handleResetDefaults}>
               <RotateCcw size={14} /> Reset Defaults
             </button>
@@ -57,7 +57,7 @@ export default function SettingsPage() {
       </PageHead>
       {saveError && <small className="field-error">{saveError}</small>}
 
-      <div className="grid-cols" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 20 }}>
+      <div className="grid-cols" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 280px), 1fr))', gap: 20 }}>
         {/* Entry & Pot Finances */}
         <div className="panel panel-pad stack">
           <div className="eyebrow">Entry &amp; Finances</div>

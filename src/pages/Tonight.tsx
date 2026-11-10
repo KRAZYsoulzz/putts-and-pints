@@ -1281,7 +1281,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
         eyebrow={`${event.name?.trim() ? `${event.name.trim()} · ` : ''}${event.event_date} · ${event.status}`}
         title={eventLabel}
       >
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           {!isProjector && (
             <DivisionSeg value={division} onChange={d => { setBarError(''); setDivision(d) }} counts={counts} />
           )}

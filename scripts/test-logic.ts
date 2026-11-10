@@ -1701,6 +1701,7 @@ const changedFiles = [
   'src/pages/Standings.tsx',
   'src/lib/projector.ts',
   'src/lib/projector.test.ts',
+  'src/lib/mobile-width.test.ts',
   'src/App.tsx',
   'src/components/Shell.tsx',
   'src/styles/app.css',
@@ -1732,6 +1733,7 @@ await import('../src/lib/closeout-gaps.test')
 await import('../src/lib/standings.test')
 await import('../src/lib/cards.test')
 await import('../src/lib/projector.test')
+await import('../src/lib/mobile-width.test')
 
 console.log('All rules checks passed ✔')
 

@@ -17,11 +17,12 @@ const COLUMNS: {
   align?: 'c' | 'r'
   borderLeft?: boolean
   width?: number
+  className?: string
 }[] = [
   { key: 'default', label: 'Plc', width: 45 },
   { key: 'player', label: 'Player' },
-  { key: 'events', label: 'Events', align: 'c' },
-  { key: 'wins', label: '1st Wins', align: 'c' },
+  { key: 'events', label: 'Events', align: 'c', className: 'hide-sm' },
+  { key: 'wins', label: '1st Wins', align: 'c', className: 'hide-sm' },
   { key: 'best18', label: 'Best 18', align: 'c' },
   { key: 'best27', label: 'Best 27', align: 'c' },
   { key: 'winnings', label: 'Winnings', align: 'r', borderLeft: true },
@@ -147,6 +148,7 @@ export default function Standings() {
                       'sortable',
                       col.align ? col.align : '',
                       col.borderLeft ? 'bl' : '',
+                      col.className ? col.className : '',
                       isActive ? 'active-sort' : '',
                     ]
                       .filter(Boolean)
@@ -206,8 +208,8 @@ export default function Standings() {
                         <td className="strong player-cell" title={item.playerName}>
                           {item.playerName}
                         </td>
-                        <td className="c">{item.eventsPlayed}</td>
-                        <td className="c">{item.firstPlaces > 0 ? `${item.firstPlaces}x` : '—'}</td>
+                        <td className="c hide-sm">{item.eventsPlayed}</td>
+                        <td className="c hide-sm">{item.firstPlaces > 0 ? `${item.firstPlaces}x` : '—'}</td>
                         <td className="c">{item.best18 != null ? item.best18 : '—'}</td>
                         <td className="c">{item.best27 != null ? item.best27 : '—'}</td>
                         <td
