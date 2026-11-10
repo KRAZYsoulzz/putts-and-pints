@@ -62,6 +62,15 @@ export function totals(e: Entry): Totals {
   return { r1, r2, f, t18, total }
 }
 
+/** 27-hole total score (18 holes + final 9). Returns null if the player did not make the final or has no final 9 score. */
+export function entryScore27(e: Entry): number | null {
+  const t = totals(e)
+  if (!e.made_final || t.f == null || t.t18 == null) {
+    return null
+  }
+  return t.t18 + t.f
+}
+
 export function displayedFront(e: Entry): number | null {
   if (e.score_front != null || e.score_back != null) {
     return e.score_front

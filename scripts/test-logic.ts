@@ -2,7 +2,8 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { DEFAULT_SETTINGS as S } from '../src/lib/settings'
-import { bestTotal, byEntryOrder, cents, clampScore, effectiveCut, eighteenGridRows, final9EntryOrder, initialTagAssignment, isOpeningTagNight, qualifiers, rank18, rankFinal, redistributeTags, suggestedCut, totals, displayedFront, displayedBack, computeNineCommit, canConfirmCut, liveNightTotal, tonightBoard, isSeason9Week1, week1AllowsScorePatch, historicalEighteenWrite, week1AllowsEventPatch, week1AllowsCheckin, week1AllowsEntryDelete, week1AllowsFinalize, week1AllowsPlayerDelete, canDeletePlayer, historicalEntryUpdatePayload, canAdvanceToStatus, cutConfirmationReady, applyScoreDirty, applyNineToLatest, mergeNinePatch } from '../src/lib/scoring'
+import { bestTotal, byEntryOrder, cents, clampScore, effectiveCut, eighteenGridRows, final9EntryOrder, initialTagAssignment, isOpeningTagNight, qualifiers, rank18, rankFinal, redistributeTags, suggestedCut, totals, displayedFront, displayedBack, computeNineCommit, canConfirmCut, liveNightTotal, tonightBoard, isSeason9Week1, week1AllowsScorePatch, historicalEighteenWrite, week1AllowsEventPatch, week1AllowsCheckin, week1AllowsEntryDelete, week1AllowsFinalize, week1AllowsPlayerDelete, canDeletePlayer, historicalEntryUpdatePayload, canAdvanceToStatus, cutConfirmationReady, applyScoreDirty, applyNineToLatest, mergeNinePatch, entryScore27 } from '../src/lib/scoring'
+import { calculatePlayerBests } from '../src/lib/standings'
 import { applyScoreEdit, draftAfterScoreSave, runScoreEdit } from '../src/lib/score-edit'
 import { completeRefresh, requestRefresh } from '../src/lib/score-refresh'
 import { balances, clampPaidPlaces, displayedPerfectRound, displayedSharedPot, divisionResult, effectiveBar, eventLedgerPosted, eventMoney, nightBonusCost, otherDivisionNights, paidPlaceCount, payoutPool, payoutsForPlaceCount, placeBudget, postedBonusCost, splitEvenly, suggestedPaidPlaces, suggestedPayouts, type DivisionNight } from '../src/lib/money'
@@ -1573,6 +1574,43 @@ const step2Clear = { ...step1Clear, ...computeNineCommit(step1Clear, 'back', nul
 assert.equal(totals(step2Clear).t18, null, 'legacy summed basket values must not resurrect when both nines are cleared')
 assert.equal(displayedFront(step2Clear), null)
 assert.equal(displayedBack(step2Clear), null)
+
+// Item: Legacy Week 1 entry fallback (only score_18 and score_final, all basket columns null)
+const legacyWeek1Finalist = e({
+  score_18: 49,
+  score_final: 23,
+  made_final: true,
+  r1_b1: null,
+  r1_b2: null,
+  r2_b1: null,
+  r2_b2: null,
+  f_b1: null,
+  f_b2: null,
+  score_front: null,
+  score_back: null,
+})
+assert.equal(totals(legacyWeek1Finalist).t18, 49, 'legacy entry falls back to score_18 for t18')
+assert.equal(totals(legacyWeek1Finalist).total, 72, 'legacy finalist falls back to score_18 + score_final for 27 total')
+assert.equal(entryScore27(legacyWeek1Finalist), 72, 'entryScore27 gives 72 for legacy finalist')
+
+const legacyWeek1NonFinalist = e({
+  score_18: 52,
+  score_final: null,
+  made_final: false,
+  r1_b1: null,
+  r1_b2: null,
+  r2_b1: null,
+  r2_b2: null,
+  f_b1: null,
+  f_b2: null,
+  score_front: null,
+  score_back: null,
+})
+assert.equal(totals(legacyWeek1NonFinalist).t18, 52, 'legacy non-finalist falls back to score_18')
+assert.equal(entryScore27(legacyWeek1NonFinalist), null, 'entryScore27 is null for non-finalist')
+const legacyBests = calculatePlayerBests([legacyWeek1Finalist, legacyWeek1NonFinalist])
+assert.equal(legacyBests.best18, 52, 'best18 is max across legacy entries')
+assert.equal(legacyBests.best27, 72, 'best27 only considers made_final entry')
 
 // Item 8: Changed files must be clean UTF-8 without BOM or mojibake
 const utf8Decoder = new TextDecoder('utf-8', { fatal: true })
