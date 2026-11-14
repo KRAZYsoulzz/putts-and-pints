@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { QRCodeSVG } from 'qrcode.react'
-import { CalendarDays, Coins, Download, Flag, LogIn, LogOut, QrCode, Settings2, Trophy, Tv, Users } from 'lucide-react'
+import { CalendarDays, Coins, Download, Flag, LogIn, LogOut, QrCode, Settings2, Sparkles, Trophy, Tv, Users } from 'lucide-react'
 import { useData } from '../lib/store'
 import { Dialog } from './ui'
 
@@ -10,13 +10,21 @@ interface BeforeInstallPromptEvent extends Event {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>
 }
 
-const PUBLIC_NAV = [
+type NavItem = {
+  to: string
+  label: string
+  shortLabel?: string
+  icon: typeof Flag
+}
+
+const PUBLIC_NAV: NavItem[] = [
   { to: '/', label: 'Tonight', icon: Flag },
   { to: '/standings', label: 'Standings', icon: Trophy },
   { to: '/players', label: 'Players', icon: Users },
   { to: '/pots', label: 'Pots', icon: Coins },
+  { to: '/special-events', label: 'Special Events', shortLabel: 'Events', icon: Sparkles },
 ]
-const ADMIN_NAV = [
+const ADMIN_NAV: NavItem[] = [
   { to: '/season', label: 'Season', icon: CalendarDays },
   { to: '/settings', label: 'Settings', icon: Settings2 },
 ]
@@ -130,7 +138,7 @@ export default function Shell() {
 
       <nav className="tabbar">
         {[...PUBLIC_NAV, ...(isAdmin ? ADMIN_NAV.slice(0, 1) : [])].map(n => (
-          <NavLink key={n.to} to={n.to} end={n.to === '/'}><n.icon size={20} strokeWidth={1.75} />{n.label}</NavLink>
+          <NavLink key={n.to} to={n.to} end={n.to === '/'}><n.icon size={20} strokeWidth={1.75} />{n.shortLabel ?? n.label}</NavLink>
         ))}
       </nav>
 

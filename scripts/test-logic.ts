@@ -1705,8 +1705,14 @@ const changedFiles = [
   'src/App.tsx',
   'src/components/Shell.tsx',
   'src/styles/app.css',
+  'src/lib/special-events.ts',
+  'src/lib/special-events.test.ts',
+  'src/lib/special-events-e2e.test.ts',
+  'src/lib/special-events-store.tsx',
+  'src/pages/SpecialEvents.tsx',
   'supabase/pp_009_score_front_back.sql',
   'supabase/pp_finance_010_division_closeout.sql',
+  'supabase/pp_011_special_events.sql',
 ]
 for (const relPath of changedFiles) {
   const bytes = fs.readFileSync(new URL(`../${relPath}`, import.meta.url))
@@ -1734,6 +1740,8 @@ await import('../src/lib/standings.test')
 await import('../src/lib/cards.test')
 await import('../src/lib/projector.test')
 await import('../src/lib/mobile-width.test')
+await import('../src/lib/special-events.test')
+await import('../src/lib/special-events-e2e.test')
 
 console.log('All rules checks passed ✔')
 

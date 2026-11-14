@@ -19,6 +19,7 @@ import {
   X,
 } from 'lucide-react'
 import { useData, must } from '../lib/store'
+import { useSpecialEvents } from '../lib/special-events-store'
 import { supabase } from '../lib/supabase'
 import { askConfirm, messageOf, reportError, reportInfo } from '../lib/notify'
 import {
@@ -206,6 +207,23 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
   const [searchParams] = useSearchParams()
   const isProjector = isProjectorMode(projectorMode, searchParams.toString())
   const isAdmin = effectiveIsAdmin(authIsAdmin, isProjector)
+  const { liveSpecialEvent } = useSpecialEvents()
+
+  const specialBanner = !isProjector && liveSpecialEvent ? (
+    <div className="notice special-banner">
+      <div className="row" style={{ gap: 10 }}>
+        <Sparkles size={16} />
+        <span>
+          <strong>Live Special Event:</strong> {liveSpecialEvent.name}
+          {liveSpecialEvent.location ? ` · ${liveSpecialEvent.location}` : ''}
+          <span className="chip" style={{ marginLeft: 8 }}>{liveSpecialEvent.status}</span>
+        </span>
+      </div>
+      <button type="button" className="btn btn-primary btn-sm" onClick={() => nav('/special-events')}>
+        Open Event <ChevronRight size={14} />
+      </button>
+    </div>
+  ) : null
 
   useEffect(() => {
     if (!isProjector) return
@@ -479,6 +497,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
   if (!event) {
     return (
       <div className={isProjector ? 'projector-page' : ''}>
+        {specialBanner}
         <PageHead title="Tonight's Tournament" eyebrow="Putts & Pints">
           {isAdmin && (
             <button className="btn btn-primary" disabled={loading} onClick={() => {
@@ -1277,6 +1296,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
 
   return (
     <div className={`tonight-page${isPublicLeaderboard ? ' public-view' : ''}${isProjector ? ' projector-page' : ''}`}>
+      {specialBanner}
       <PageHead
         eyebrow={`${event.name?.trim() ? `${event.name.trim()} · ` : ''}${event.event_date} · ${event.status}`}
         title={eventLabel}

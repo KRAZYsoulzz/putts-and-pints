@@ -599,3 +599,174 @@ input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
     max-height: 60vh;
   }
 }
+
+/* ==========================================================================
+   Special Events & Card PIN Scoring
+   ========================================================================== */
+.tabbar a {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sp-under { color: var(--teal); }
+.sp-over { color: var(--orange); }
+
+.pin-box {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 5px;
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: 0.14em;
+  color: var(--orange);
+}
+
+.stroke-pad {
+  padding: 12px;
+  border-radius: var(--r);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stroke-pills {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.stroke-pill {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 4px;
+  border-radius: var(--r);
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  color: var(--text);
+  transition: background var(--t), border-color var(--t), color var(--t);
+}
+
+.stroke-pill:hover {
+  border-color: var(--orange);
+}
+
+.stroke-pill.on {
+  background: var(--orange);
+  border-color: var(--orange);
+  color: var(--orange-ink);
+}
+
+.hole-scrubber {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  max-width: 100%;
+  padding: 4px 2px;
+  scrollbar-width: thin;
+}
+
+.hole-pill {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--text-3);
+}
+
+.hole-pill.under {
+  background: var(--teal-dim);
+  border-color: rgba(31, 167, 154, 0.55);
+  color: var(--teal);
+}
+
+.hole-pill.even {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+
+.hole-pill.over {
+  border-color: rgba(232, 116, 44, 0.55);
+  color: var(--orange);
+}
+
+.hole-pill.active {
+  border: 2px solid var(--orange);
+  color: var(--text);
+  box-shadow: 0 0 0 2px rgba(232, 116, 44, 0.2);
+}
+
+.special-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.special-subnav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
+.history-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr));
+  gap: 16px;
+}
+
+.history-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.history-podium {
+  padding: 10px 12px;
+  border-radius: var(--r);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.history-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  font-size: 12px;
+}
+
+.mini-scorecard th,
+.mini-scorecard td {
+  padding: 5px 6px;
+  font-size: 12px;
+  text-align: center;
+  white-space: nowrap;
+}
+
