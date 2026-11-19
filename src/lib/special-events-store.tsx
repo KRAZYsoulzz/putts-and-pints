@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
@@ -137,6 +138,38 @@ export function SpecialEventsProvider({ children }: { children: ReactNode }) {
     readSessionUnlockedPins(),
   )
   const [localDraftCount, setLocalDraftCount] = useState<number>(() => readLocalEvents().length)
+  const adminPinsRef = useRef<Record<string, Record<string, string>>>({})
+  const cardWriteQueueRef = useRef<Map<string, Promise<unknown>>>(new Map())
+  const pendingCardWritesRef = useRef<Map<string, number>>(new Map())
+  const totalPendingScoreWritesRef = useRef(0)
+
+  const setAdminPinsSafe = useCallback(
+    (updater: (prev: Record<string, Record<string, string>>) => Record<string, Record<string, string>>) => {
+      setAdminPinsByEvent(prev => {
+        const next = updater(prev)
+        adminPinsRef.current = next
+        return next
+      })
+    },
+    [],
+  )
+
+  const fetchServerPins = useCallback(
+    async (eventId: string): Promise<Record<string, string> | null> => {
+      if (Object.prototype.hasOwnProperty.call(adminPinsRef.current, eventId)) {
+        return adminPinsRef.current[eventId]
+      }
+      const { data, error } = await supabase.rpc('pp_get_special_card_pins', { p_event_id: eventId })
+      if (error) {
+        console.error(error.message)
+        return null
+      }
+      const pins = (data && typeof data === 'object' ? data : {}) as Record<string, string>
+      setAdminPinsSafe(prev => ({ ...prev, [eventId]: pins }))
+      return pins
+    },
+    [setAdminPinsSafe],
+  )
 
   const reload = useCallback(async () => {
     const { data, error } = await supabase
@@ -182,6 +215,7 @@ export function SpecialEventsProvider({ children }: { children: ReactNode }) {
       'postgres_changes',
       { event: '*', schema: 'public', table: 'pp_special_events' },
       () => {
+        if (totalPendingScoreWritesRef.current > 0) return
         void reload()
       },
     )
@@ -200,12 +234,12 @@ export function SpecialEventsProvider({ children }: { children: ReactNode }) {
         setEvents(local)
         setLocalDraftCount(local.length)
       } else if (ev.key === LOCAL_PINS_KEY && storageMode === 'local' && isAdmin) {
-        setAdminPinsByEvent(readLocalPinsMap())
+        setAdminPinsSafe(() => readLocalPinsMap())
       }
     }
     window.addEventListener('storage', onStorage)
     return () => window.removeEventListener('storage', onStorage)
-  }, [storageMode, isAdmin])
+  }, [storageMode, isAdmin, setAdminPinsSafe])
 
   const liveSpecialEvent = useMemo(
     () => events.find(e => e.status !== 'complete') ?? null,
@@ -223,12 +257,12 @@ export function SpecialEventsProvider({ children }: { children: ReactNode }) {
   // Load admin-only card PINs for the active event. Non-admins always get {}.
   useEffect(() => {
     if (!isAdmin) {
-      setAdminPinsByEvent({})
+      setAdminPinsSafe(() => ({}))
       return
     }
     if (!activeEvent) return
     if (storageMode === 'local') {
-      setAdminPinsByEvent(readLocalPinsMap())
+      setAdminPinsSafe(() => readLocalPinsMap())
       return
     }
     let cancelled = false
@@ -241,12 +275,12 @@ export function SpecialEventsProvider({ children }: { children: ReactNode }) {
           return
         }
         const pins = (data && typeof data === 'object' ? data : {}) as Record<string, string>
-        setAdminPinsByEvent(prev => ({ ...prev, [activeEvent.id]: pins }))
+        setAdminPinsSafe(prev => ({ ...prev, [activeEvent.id]: pins }))
       })
     return () => {
       cancelled = true
     }
-  }, [isAdmin, activeEvent?.id, storageMode])
+  }, [isAdmin, activeEvent?.id, storageMode, setAdminPinsSafe])
 
   const cardPins = useMemo(() => {
     if (!isAdmin || !activeEvent) return {}
@@ -270,17 +304,12 @@ export function SpecialEventsProvider({ children }: { children: ReactNode }) {
         updatedAt: new Date().toISOString(),
       })
 
-      const existingPins =
-        storageMode === 'local'
-          ? (readLocalPinsMap()[stamped.id] ?? {})
-          : (adminPinsByEvent[stamped.id] ?? {})
-
-      const resolvedPins =
-        stamped.cards.length > 0
-          ? generateCardPins(stamped.cards, nextPins ?? existingPins)
-          : (nextPins ?? {})
-
       if (storageMode === 'local') {
+        const existingLocalPins = readLocalPinsMap()[stamped.id] ?? {}
+        const resolvedLocalPins =
+          stamped.cards.length > 0
+            ? generateCardPins(stamped.cards, nextPins ?? existingLocalPins)
+            : (nextPins ?? {})
         const current = readLocalEvents()
         const nextList = sortSpecialEvents([
           ...current.filter(e => e.id !== stamped.id),
@@ -288,10 +317,10 @@ export function SpecialEventsProvider({ children }: { children: ReactNode }) {
         ])
         writeLocalEvents(nextList)
         const pinsMap = readLocalPinsMap()
-        pinsMap[stamped.id] = resolvedPins
+        pinsMap[stamped.id] = resolvedLocalPins
         writeLocalPinsMap(pinsMap)
         setEvents(nextList)
-        setAdminPinsByEvent(pinsMap)
+        setAdminPinsSafe(() => pinsMap)
         setLocalDraftCount(nextList.length)
         return true
       }
@@ -314,20 +343,37 @@ export function SpecialEventsProvider({ children }: { children: ReactNode }) {
       }
 
       if (stamped.cards.length > 0 || nextPins) {
-        const { error: pinErr } = await supabase.rpc('pp_set_special_card_pins', {
-          p_event_id: stamped.id,
-          p_pins: resolvedPins,
-        })
-        if (pinErr) {
-          console.error(pinErr.message)
-          reportError(friendlyError(pinErr.message))
-        } else {
-          setAdminPinsByEvent(prev => ({ ...prev, [stamped.id]: resolvedPins }))
+        let basePins: Record<string, string> | null = nextPins ?? null
+        if (!basePins) {
+          basePins = await fetchServerPins(stamped.id)
+          if (basePins === null) {
+            // Never overwrite live server card PINs if existing PINs couldn't be read.
+            return true
+          }
+        }
+        const pinsAlreadyMatch =
+          !nextPins &&
+          Object.keys(basePins).length === stamped.cards.length &&
+          stamped.cards.every(c => /^\d{4}$/.test(basePins![c.id] ?? ''))
+
+        if (!pinsAlreadyMatch) {
+          const resolvedPins =
+            stamped.cards.length > 0 ? generateCardPins(stamped.cards, basePins) : {}
+          const { error: pinErr } = await supabase.rpc('pp_set_special_card_pins', {
+            p_event_id: stamped.id,
+            p_pins: resolvedPins,
+          })
+          if (pinErr) {
+            console.error(pinErr.message)
+            reportError(friendlyError(pinErr.message))
+          } else {
+            setAdminPinsSafe(prev => ({ ...prev, [stamped.id]: resolvedPins }))
+          }
         }
       }
       return true
     },
-    [isAdmin, storageMode, adminPinsByEvent, reload],
+    [isAdmin, storageMode, reload, fetchServerPins, setAdminPinsSafe],
   )
 
   const deleteEvent = useCallback(
@@ -340,7 +386,7 @@ export function SpecialEventsProvider({ children }: { children: ReactNode }) {
         delete pinsMap[id]
         writeLocalPinsMap(pinsMap)
         setEvents(nextList)
-        setAdminPinsByEvent(pinsMap)
+        setAdminPinsSafe(() => pinsMap)
         setLocalDraftCount(nextList.length)
         if (selectedEventId === id) setSelectedEventId(null)
         return true
@@ -356,7 +402,7 @@ export function SpecialEventsProvider({ children }: { children: ReactNode }) {
       await reload()
       return true
     },
-    [isAdmin, storageMode, selectedEventId, reload],
+    [isAdmin, storageMode, selectedEventId, reload, setAdminPinsSafe],
   )
 
   const regenerateCardPin = useCallback(
@@ -365,10 +411,18 @@ export function SpecialEventsProvider({ children }: { children: ReactNode }) {
       const ev = events.find(e => e.id === eventId)
       if (!ev) return null
 
-      const currentPins =
-        storageMode === 'local'
-          ? (readLocalPinsMap()[eventId] ?? {})
-          : (adminPinsByEvent[eventId] ?? {})
+      let currentPins: Record<string, string>
+      if (storageMode === 'local') {
+        currentPins = readLocalPinsMap()[eventId] ?? {}
+      } else {
+        const loaded = await fetchServerPins(eventId)
+        if (loaded === null) {
+          reportError('Could not load existing card PINs. Try again.')
+          return null
+        }
+        currentPins = loaded
+      }
+
       const withoutTarget = { ...currentPins }
       delete withoutTarget[cardId]
 
@@ -389,7 +443,7 @@ export function SpecialEventsProvider({ children }: { children: ReactNode }) {
         const pinsMap = readLocalPinsMap()
         pinsMap[eventId] = nextPins
         writeLocalPinsMap(pinsMap)
-        setAdminPinsByEvent(pinsMap)
+        setAdminPinsSafe(() => pinsMap)
         return nextPins[cardId] ?? null
       }
 
@@ -402,10 +456,10 @@ export function SpecialEventsProvider({ children }: { children: ReactNode }) {
         reportError(friendlyError(error.message))
         return null
       }
-      setAdminPinsByEvent(prev => ({ ...prev, [eventId]: nextPins }))
+      setAdminPinsSafe(prev => ({ ...prev, [eventId]: nextPins }))
       return nextPins[cardId] ?? null
     },
-    [isAdmin, events, storageMode, adminPinsByEvent],
+    [isAdmin, events, storageMode, fetchServerPins, setAdminPinsSafe],
   )
 
   const unlockCardWithPin = useCallback(
@@ -499,72 +553,100 @@ export function SpecialEventsProvider({ children }: { children: ReactNode }) {
         return true
       }
 
-      // Optimistic local state update
-      const optimistic = applyPatch(ev)
+      // Compute sanitized patch and compose optimistically onto latest state
       const sanitized: Record<string, (number | null)[]> = {}
-      for (const t of optimistic.teams) {
+      const optimisticFromEv = applyPatch(ev)
+      for (const t of optimisticFromEv.teams) {
         if (t.cardId === cardId && teamHoles[t.id]) {
           sanitized[t.id] = t.holes
         }
       }
-      setEvents(prev => sortSpecialEvents([...prev.filter(e => e.id !== eventId), optimistic]))
+      setEvents(prev =>
+        sortSpecialEvents(
+          prev.map(item => (item.id === eventId ? applyCardHoleScores(item, cardId, sanitized) : item)),
+        ),
+      )
 
-      const effectivePin =
-        cachedPin || (isAdmin ? adminPinsByEvent[eventId]?.[cardId] : undefined)
+      const queueKey = `${eventId}:${cardId}`
+      pendingCardWritesRef.current.set(queueKey, (pendingCardWritesRef.current.get(queueKey) ?? 0) + 1)
+      totalPendingScoreWritesRef.current += 1
 
-      if (isAdmin && !effectivePin) {
-        const { error } = await supabase
-          .from('pp_special_events')
-          .update({
-            state: optimistic,
-            updated_at: optimistic.updatedAt,
-          })
-          .eq('id', eventId)
-        if (error) {
-          console.error(error.message)
-          reportError(friendlyError(error.message))
-          void reload()
-          return false
-        }
-        return true
-      }
+      const prior = cardWriteQueueRef.current.get(queueKey) ?? Promise.resolve()
+      const task = prior
+        .catch(() => undefined)
+        .then(async (): Promise<boolean> => {
+          try {
+            let effectivePin =
+              cachedPin || (isAdmin ? adminPinsRef.current[eventId]?.[cardId] : undefined)
+            if (isAdmin && !effectivePin) {
+              const loaded = await fetchServerPins(eventId)
+              effectivePin = loaded?.[cardId]
+            }
 
-      if (!effectivePin) {
-        reportError('Enter the 4-digit Card PIN to submit scores.')
-        void reload()
-        return false
-      }
+            if (isAdmin && !effectivePin) {
+              const fallbackState = applyCardHoleScores(ev, cardId, sanitized)
+              const { error } = await supabase
+                .from('pp_special_events')
+                .update({
+                  state: fallbackState,
+                  updated_at: fallbackState.updatedAt,
+                })
+                .eq('id', eventId)
+              if (error) {
+                console.error(error.message)
+                reportError(friendlyError(error.message))
+                void reload()
+                return false
+              }
+              return true
+            }
 
-      const { data, error } = await supabase.rpc('pp_submit_special_card_scores', {
-        p_event_id: eventId,
-        p_card_id: cardId,
-        p_pin: effectivePin,
-        p_team_holes: sanitized,
-      })
+            if (!effectivePin) {
+              reportError('Enter the 4-digit Card PIN to submit scores.')
+              void reload()
+              return false
+            }
 
-      if (error) {
-        console.error(error.message)
-        if (/invalid.*pin|pin/i.test(error.message)) {
-          const key = `${eventId}:${cardId}`
-          const nextMap = { ...readSessionUnlockedPins() }
-          delete nextMap[key]
-          writeSessionUnlockedPins(nextMap)
-          setUnlockedSessionPins(nextMap)
-          reportError('That Card PIN is no longer valid. Re-enter the PIN from the director.')
-        } else {
-          reportError(friendlyError(error.message))
-        }
-        void reload()
-        return false
-      }
+            const { data, error } = await supabase.rpc('pp_submit_special_card_scores', {
+              p_event_id: eventId,
+              p_card_id: cardId,
+              p_pin: effectivePin,
+              p_team_holes: sanitized,
+            })
 
-      if (data && typeof data === 'object') {
-        const updated = normalizeSpecialEvent(data as SpecialEvent)
-        setEvents(prev => sortSpecialEvents([...prev.filter(e => e.id !== eventId), updated]))
-      }
-      return true
+            if (error) {
+              console.error(error.message)
+              if (/invalid.*pin|pin/i.test(error.message)) {
+                const nextMap = { ...readSessionUnlockedPins() }
+                delete nextMap[queueKey]
+                writeSessionUnlockedPins(nextMap)
+                setUnlockedSessionPins(nextMap)
+                reportError('That Card PIN is no longer valid. Re-enter the PIN from the director.')
+              } else {
+                reportError(friendlyError(error.message))
+              }
+              void reload()
+              return false
+            }
+
+            const remaining = (pendingCardWritesRef.current.get(queueKey) ?? 1) - 1
+            if (remaining <= 0 && data && typeof data === 'object') {
+              const updated = normalizeSpecialEvent(data as SpecialEvent)
+              setEvents(prev => sortSpecialEvents([...prev.filter(e => e.id !== eventId), updated]))
+            }
+            return true
+          } finally {
+            const left = Math.max(0, (pendingCardWritesRef.current.get(queueKey) ?? 1) - 1)
+            if (left === 0) pendingCardWritesRef.current.delete(queueKey)
+            else pendingCardWritesRef.current.set(queueKey, left)
+            totalPendingScoreWritesRef.current = Math.max(0, totalPendingScoreWritesRef.current - 1)
+          }
+        })
+
+      cardWriteQueueRef.current.set(queueKey, task)
+      return task
     },
-    [events, storageMode, isAdmin, unlockedSessionPins, adminPinsByEvent, reload],
+    [events, storageMode, isAdmin, unlockedSessionPins, fetchServerPins, reload],
   )
 
   const syncLocalToSupabase = useCallback(async () => {

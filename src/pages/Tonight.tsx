@@ -54,7 +54,7 @@ import {
 } from '../lib/closeout'
 import DivisionCloseoutPanel from '../components/DivisionCloseoutPanel'
 import CorrectionDraftPanel from '../components/CorrectionDraftPanel'
-import { Dialog, DivisionSeg, Menu, MoneyInput, PageHead, ScoreInput, Stat, Toggle, money, ordinal } from '../components/ui'
+import { Dialog, DivisionSeg, Menu, MoneyInput, PageHead, ScoreInput, Seg, Stat, Toggle, money, ordinal } from '../components/ui'
 import {
   assignPlayerToSmallestCard,
   clearEventCards,
@@ -245,6 +245,10 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
   const [upEditId, setUpEditId] = useState<string | null>(null)
   const [addPlayerOpen, setAddPlayerOpen] = useState(false)
   const [searchName, setSearchName] = useState('')
+  const [newPlayerDiv, setNewPlayerDiv] = useState<Division>('M')
+  const [lastCheckedIn, setLastCheckedIn] = useState('')
+  const [checkinDivFilter, setCheckinDivFilter] = useState<'ALL' | Division>('ALL')
+  const searchInputRef = useRef<HTMLInputElement>(null)
   const [buyingTag, setBuyingTag] = useState(freshBuyingTag)
   const [createError, setCreateError] = useState('')
   const [isFinalizing, setIsFinalizing] = useState(false)
@@ -665,13 +669,14 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
     setContextMenu(null)
   }
 
-  const handleCheckinPlayer = async (pId: string, pDiv: Division, known?: { in_tags?: boolean }) => {
+  const handleCheckinPlayer = async (pId: string, pDiv: Division, known?: { name?: string; in_tags?: boolean }) => {
     if (isWeek1Locked) return false
     if (checkingIn.current.has(pId)) return false
     if (entries.some(e => e.event_id === event.id && e.player_id === pId)) return false
     checkingIn.current.add(pId)
     try {
       const player = players.find(p => p.id === pId)
+      const playerName = known?.name ?? player?.name ?? 'Player'
       const held = tags.find(t => t.player_id === pId)?.tag_number ?? null
       const inTags = (known?.in_tags ?? player?.in_tags) === true
       const { error } = await supabase.from('pp_entries').upsert({
@@ -689,9 +694,9 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
         setCreateError(message)
         return false
       }
-      setAddPlayerOpen(false)
       setSearchName('')
       setCreateError('')
+      setLastCheckedIn(`${playerName} checked into ${pDiv === 'M' ? "Men's" : "Women's"}.`)
       setBuyingTag(current => buyingTagAfter(current, 'success'))
       if (eventCards) {
         const curCards = eventCards.cards[pDiv] ?? []
@@ -710,6 +715,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
         }
       }
       await reload()
+      searchInputRef.current?.focus()
       return true
     } finally {
       checkingIn.current.delete(pId)
@@ -787,12 +793,12 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
     reportInfo(`${division === 'M' ? "Men's" : "Women's"} cards reshuffled.`)
   }
 
-  const handleMovePlayer = (playerId: string, targetCardId: string) => {
+  const handleMovePlayer = (playerId: string, targetCardId: string, targetDiv: Division = division) => {
     if (!event || !eventCards || isWeek1Locked) return
-    const curCards = eventCards.cards[division] ?? []
+    const curCards = eventCards.cards[targetDiv] ?? []
     const updatedDivCards = movePlayerBetweenCards({
       cards: curCards,
-      division,
+      division: targetDiv,
       playerId,
       targetCardId,
     })
@@ -800,7 +806,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
       ...eventCards,
       cards: {
         ...eventCards.cards,
-        [division]: updatedDivCards,
+        [targetDiv]: updatedDivCards,
       },
       updatedAt: new Date().toISOString(),
     }
@@ -1405,7 +1411,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
             <div>
               <h2 className="display section-title">Check-in & Registration</h2>
               <p className="muted" style={{ fontSize: 13, marginTop: 4 }}>
-                Check players into the {division === 'M' ? "Men's" : "Women's"} division, record tag numbers, and set the bar match.
+                Check players into Men&apos;s or Women&apos;s from one screen, record tag numbers, and set the bar match.
               </p>
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1434,7 +1440,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
               >
                 <Users size={16} /> {divCards.length > 0 ? `Cards (${divCards.length})` : 'Make Cards'}
               </button>
-              <button className="btn btn-primary" disabled={isSeason9Week1(event)} onClick={() => { if (isSeason9Week1(event)) return; setCreateError(''); setBuyingTag(current => buyingTagAfter(current, 'open')); setAddPlayerOpen(true) }}>
+              <button className="btn btn-primary" disabled={isSeason9Week1(event)} onClick={() => { if (isSeason9Week1(event)) return; setCreateError(''); setLastCheckedIn(''); setSearchName(''); setNewPlayerDiv(division); setBuyingTag(current => buyingTagAfter(current, 'open')); setAddPlayerOpen(true) }}>
                 <UserPlus size={16} /> Check In Player
               </button>
             </div>
@@ -1739,122 +1745,163 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                   </div>
                 )}
               </div>
-            ) : (
-              <div className="panel">
-                <div className="table-wrap">
-                  <table className="table">
-                    <thead>
-                      <tr>
-                        <th style={{ width: 40 }}>#</th>
-                        <th>Player Name</th>
-                        <th className="c" style={{ width: 110 }}>Tag In</th>
-                        <th className="c" style={{ width: 80 }}>Paid ($10)</th>
-                        {divCards.length > 0 && <th className="c" style={{ width: 130 }}>Card</th>}
-                        <th className="r" style={{ width: 80 }}>Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {orderedEntries.length === 0 ? (
+            ) : (() => {
+              const allCheckinOrdered = [...nightEntries].sort(byEntryOrder)
+              const shownCheckinEntries =
+                checkinDivFilter === 'ALL'
+                  ? allCheckinOrdered
+                  : allCheckinOrdered.filter(e => e.division === checkinDivFilter)
+              const anyCardsMade = Boolean(
+                eventCards &&
+                ((eventCards.cards.M?.length ?? 0) > 0 || (eventCards.cards.W?.length ?? 0) > 0),
+              )
+              return (
+              <div className="stack" style={{ gap: 10 }}>
+                <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+                  <Seg
+                    value={checkinDivFilter}
+                    onChange={setCheckinDivFilter}
+                    options={[
+                      { value: 'ALL', label: 'All', count: counts.M + counts.W },
+                      { value: 'M', label: "Men's", count: counts.M },
+                      { value: 'W', label: "Women's", count: counts.W },
+                    ]}
+                  />
+                </div>
+                <div className="panel">
+                  <div className="table-wrap">
+                    <table className="table">
+                      <thead>
                         <tr>
-                          <td colSpan={divCards.length > 0 ? 6 : 5} style={{ textAlign: 'center', padding: '36px 0' }} className="muted">
-                            No players checked into this division yet.
-                          </td>
+                          <th style={{ width: 40 }}>#</th>
+                          <th>Player Name</th>
+                          <th className="c" style={{ width: 110 }}>Tag In</th>
+                          <th className="c" style={{ width: 80 }}>Paid ($10)</th>
+                          {anyCardsMade && <th className="c" style={{ width: 130 }}>Card</th>}
+                          <th className="r" style={{ width: 80 }}>Action</th>
                         </tr>
-                      ) : orderedEntries.map((ent, i) => {
-                        const p = playerById.get(ent.player_id)
-                        const playerCard = divCards.find(c => c.playerIds.includes(ent.player_id))
-                        return (
-                          <tr key={ent.id}>
-                            <td className="faint">{i + 1}</td>
-                            <td className="strong">{p?.name ?? 'Unknown Player'}</td>
-                            <td className="c">
-                              <TagInCell
-                                entry={ent}
-                                name={p?.name ?? 'player'}
-                                siblings={nightEntries}
-                                inTags={p?.in_tags === true}
-                                disabled={isSeason9Week1(event)}
-                                onCommit={tag => {
-                                  if (isSeason9Week1(event)) return
-                                  patchEntry(ent.id, { tag_in: tag })
-                                }}
-                              />
-                            </td>
-                            <td className="c">
-                              <button
-                                className={`btn btn-sm ${ent.paid ? 'btn-ghost' : 'btn-danger'}`}
-                                disabled={isSeason9Week1(event)}
-                                onClick={() => {
-                                  if (isSeason9Week1(event)) return
-                                  patchEntry(ent.id, { paid: !ent.paid })
-                                }}
-                              >
-                                {ent.paid ? <Check size={14} color="var(--teal)" /> : 'Unpaid'}
-                              </button>
-                            </td>
-                            {divCards.length > 0 && (
-                              <td className="c">
-                                <select
-                                  className="select select-sm"
-                                  style={{
-                                    fontSize: 12,
-                                    padding: '2px 6px',
-                                    borderRadius: 4,
-                                    background: 'var(--surface-2)',
-                                    border: '1px solid var(--line)',
-                                    color: 'var(--text)',
-                                    maxWidth: 125,
-                                  }}
-                                  value={playerCard?.id ?? ''}
-                                  disabled={isSeason9Week1(event)}
-                                  onChange={e => handleMovePlayer(ent.player_id, e.target.value)}
-                                  aria-label={`Card for ${p?.name ?? 'player'}`}
-                                >
-                                  {!playerCard && <option value="">Unassigned</option>}
-                                  {divCards.map(targetC => (
-                                    <option key={targetC.id} value={targetC.id}>
-                                      {targetC.name}
-                                    </option>
-                                  ))}
-                                  <option value="new">+ New Card</option>
-                                </select>
-                              </td>
-                            )}
-                            <td className="r">
-                              <button
-                                className="btn btn-ghost btn-sm btn-danger"
-                                disabled={isSeason9Week1(event)}
-                                onClick={async () => {
-                                  if (isSeason9Week1(event)) return
-                                  const ok = await askConfirm(`Remove ${p?.name ?? 'this player'} from tonight?`, { title: 'Remove player', confirmLabel: 'Remove', danger: true })
-                                  if (!ok) return
-                                  if (isSeason9Week1(event)) return
-                                  await must(supabase.from('pp_entries').delete().eq('id', ent.id))
-                                  if (eventCards) {
-                                    const curCards = eventCards.cards[ent.division] ?? []
-                                    const nextCards = removePlayerFromCards(curCards, ent.player_id)
-                                    const updated: PPEvtCards = {
-                                      ...eventCards,
-                                      cards: { ...eventCards.cards, [ent.division]: nextCards },
-                                      updatedAt: new Date().toISOString(),
-                                    }
-                                    setEventCards(updated)
-                                    saveEventCards(event.id, updated, event)
-                                  }
-                                  reload()
-                                }}
-                              >
-                                Remove
-                              </button>
+                      </thead>
+                      <tbody>
+                        {shownCheckinEntries.length === 0 ? (
+                          <tr>
+                            <td colSpan={anyCardsMade ? 6 : 5} style={{ textAlign: 'center', padding: '36px 0' }} className="muted">
+                              {checkinDivFilter === 'ALL'
+                                ? 'No players checked in yet. Tap Check In Player to get started.'
+                                : `No players checked into ${checkinDivFilter === 'M' ? "Men's" : "Women's"} yet.`}
                             </td>
                           </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
+                        ) : shownCheckinEntries.map((ent, i) => {
+                          const p = playerById.get(ent.player_id)
+                          const rowDivCards = eventCards?.cards[ent.division] ?? []
+                          const playerCard = rowDivCards.find(c => c.playerIds.includes(ent.player_id))
+                          return (
+                            <tr key={ent.id}>
+                              <td className="faint">{i + 1}</td>
+                              <td>
+                                <span className="strong">{p?.name ?? 'Unknown Player'}</span>
+                                {checkinDivFilter === 'ALL' && (
+                                  <span
+                                    className={`chip ${ent.division === 'M' ? 'chip-orange' : 'chip-teal'}`}
+                                    style={{ marginLeft: 8 }}
+                                  >
+                                    {ent.division === 'M' ? 'M' : 'W'}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="c">
+                                <TagInCell
+                                  entry={ent}
+                                  name={p?.name ?? 'player'}
+                                  siblings={nightEntries}
+                                  inTags={p?.in_tags === true}
+                                  disabled={isSeason9Week1(event)}
+                                  onCommit={tag => {
+                                    if (isSeason9Week1(event)) return
+                                    patchEntry(ent.id, { tag_in: tag })
+                                  }}
+                                />
+                              </td>
+                              <td className="c">
+                                <button
+                                  className={`btn btn-sm ${ent.paid ? 'btn-ghost' : 'btn-danger'}`}
+                                  disabled={isSeason9Week1(event)}
+                                  onClick={() => {
+                                    if (isSeason9Week1(event)) return
+                                    patchEntry(ent.id, { paid: !ent.paid })
+                                  }}
+                                >
+                                  {ent.paid ? <Check size={14} color="var(--teal)" /> : 'Unpaid'}
+                                </button>
+                              </td>
+                              {anyCardsMade && (
+                                <td className="c">
+                                  {rowDivCards.length > 0 ? (
+                                    <select
+                                      className="select select-sm"
+                                      style={{
+                                        fontSize: 12,
+                                        padding: '2px 6px',
+                                        borderRadius: 4,
+                                        background: 'var(--surface-2)',
+                                        border: '1px solid var(--line)',
+                                        color: 'var(--text)',
+                                        maxWidth: 125,
+                                      }}
+                                      value={playerCard?.id ?? ''}
+                                      disabled={isSeason9Week1(event)}
+                                      onChange={e => handleMovePlayer(ent.player_id, e.target.value, ent.division)}
+                                      aria-label={`Card for ${p?.name ?? 'player'}`}
+                                    >
+                                      {!playerCard && <option value="">Unassigned</option>}
+                                      {rowDivCards.map(targetC => (
+                                        <option key={targetC.id} value={targetC.id}>
+                                          {targetC.name}
+                                        </option>
+                                      ))}
+                                      <option value="new">+ New Card</option>
+                                    </select>
+                                  ) : (
+                                    <span className="faint" style={{ fontSize: 12 }}>--</span>
+                                  )}
+                                </td>
+                              )}
+                              <td className="r">
+                                <button
+                                  className="btn btn-ghost btn-sm btn-danger"
+                                  disabled={isSeason9Week1(event)}
+                                  onClick={async () => {
+                                    if (isSeason9Week1(event)) return
+                                    const ok = await askConfirm(`Remove ${p?.name ?? 'this player'} from tonight?`, { title: 'Remove player', confirmLabel: 'Remove', danger: true })
+                                    if (!ok) return
+                                    if (isSeason9Week1(event)) return
+                                    await must(supabase.from('pp_entries').delete().eq('id', ent.id))
+                                    if (eventCards) {
+                                      const curCards = eventCards.cards[ent.division] ?? []
+                                      const nextCards = removePlayerFromCards(curCards, ent.player_id)
+                                      const updated: PPEvtCards = {
+                                        ...eventCards,
+                                        cards: { ...eventCards.cards, [ent.division]: nextCards },
+                                        updatedAt: new Date().toISOString(),
+                                      }
+                                      setEventCards(updated)
+                                      saveEventCards(event.id, updated, event)
+                                    }
+                                    reload()
+                                  }}
+                                >
+                                  Remove
+                                </button>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </div>
-            )}
+              )
+            })()}
 
             <div className="panel panel-pad stack">
               <div className="eyebrow">Night Finances & Match</div>
@@ -2547,52 +2594,147 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
         </Menu>
       )}
 
-      {addPlayerOpen && (
-        <Dialog title="Check In Player" onClose={() => { setAddPlayerOpen(false); setCreateError(''); setBuyingTag(current => buyingTagAfter(current, 'cancel')) }}>
-          <div className="stack">
-            <div className="field">
-              <span>Search Roster</span>
-              <input className="input" type="text" placeholder="Type player name..." autoFocus value={searchName} onChange={e => {
-                const next = e.target.value
-                setSearchName(next)
-                setCreateError('')
-                if (!normalizeName(next)) setBuyingTag(current => buyingTagAfter(current, 'next-player'))
-              }} />
-            </div>
-            <div style={{ maxHeight: 200, overflowY: 'auto' }} className="stack">
-              {players
-                .filter(p => p.division === division && p.active && p.name.toLowerCase().includes(searchName.toLowerCase().trim()))
-                .map(p => {
+      {addPlayerOpen && (() => {
+        const cleanQuery = normalizeName(searchName).toLowerCase()
+        const matchingActive = players
+          .filter(p => p.active && p.name.toLowerCase().includes(cleanQuery))
+          .sort((a, b) => {
+            const aIn = nightEntries.some(e => e.player_id === a.id) ? 1 : 0
+            const bIn = nightEntries.some(e => e.player_id === b.id) ? 1 : 0
+            if (aIn !== bIn) return aIn - bIn
+            return a.name.localeCompare(b.name)
+          })
+        const exactMatch = cleanQuery
+          ? matchingActive.find(p => normalizeName(p.name).toLowerCase() === cleanQuery)
+          : undefined
+        const uncheckedMatches = matchingActive.filter(p => !nightEntries.some(e => e.player_id === p.id))
+        const isDuplicateRoster = Boolean(cleanQuery) && duplicateName(searchName, players)
+        const closeCheckinModal = () => {
+          setAddPlayerOpen(false)
+          setCreateError('')
+          setLastCheckedIn('')
+          setBuyingTag(current => buyingTagAfter(current, 'cancel'))
+        }
+        return (
+          <Dialog
+            title="Check In Player"
+            onClose={closeCheckinModal}
+            footer={
+              <button type="button" className="btn" onClick={closeCheckinModal}>
+                Done ({counts.M + counts.W} checked in)
+              </button>
+            }
+          >
+            <div className="stack">
+              {lastCheckedIn && (
+                <div className="notice" style={{ padding: '8px 12px', borderColor: 'var(--teal)' }}>
+                  <Check size={15} color="var(--teal)" />
+                  <span>{lastCheckedIn}</span>
+                </div>
+              )}
+
+              <div className="field">
+                <span>Search Roster (Men&apos;s &amp; Women&apos;s)</span>
+                <input
+                  ref={searchInputRef}
+                  className="input"
+                  type="text"
+                  placeholder="Type player name..."
+                  autoFocus
+                  value={searchName}
+                  onChange={e => {
+                    const next = e.target.value
+                    setSearchName(next)
+                    setCreateError('')
+                    if (!normalizeName(next)) setBuyingTag(current => buyingTagAfter(current, 'next-player'))
+                  }}
+                  onKeyDown={e => {
+                    if (e.key !== 'Enter') return
+                    e.preventDefault()
+                    if (exactMatch && !nightEntries.some(ent => ent.player_id === exactMatch.id)) {
+                      void handleCheckinPlayer(exactMatch.id, exactMatch.division)
+                    } else if (cleanQuery && uncheckedMatches.length === 1) {
+                      void handleCheckinPlayer(uncheckedMatches[0].id, uncheckedMatches[0].division)
+                    } else if (cleanQuery && !isDuplicateRoster) {
+                      void handleCreateAndCheckin(searchName, newPlayerDiv)
+                    }
+                  }}
+                />
+              </div>
+
+              <div style={{ maxHeight: 240, overflowY: 'auto' }} className="stack">
+                {matchingActive.map(p => {
                   const already = nightEntries.some(e => e.player_id === p.id)
+                  const heldTag = tags.find(t => t.player_id === p.id)?.tag_number
                   return (
-                    <button key={p.id} disabled={already} className="btn btn-ghost" style={{ justifyContent: 'space-between' }} onClick={() => handleCheckinPlayer(p.id, division)}>
-                      <span>{p.name}</span>
+                    <button
+                      key={p.id}
+                      type="button"
+                      disabled={already}
+                      className="btn btn-ghost"
+                      style={{ justifyContent: 'space-between', flexShrink: 0 }}
+                      onClick={() => void handleCheckinPlayer(p.id, p.division)}
+                    >
+                      <span className="row" style={{ gap: 8, minWidth: 0 }}>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}</span>
+                        <span className={`chip ${p.division === 'M' ? 'chip-orange' : 'chip-teal'}`}>
+                          {p.division === 'M' ? "Men's" : "Women's"}
+                        </span>
+                        {heldTag != null && (
+                          <span className="faint num" style={{ fontSize: 11 }}>#{heldTag}</span>
+                        )}
+                      </span>
                       <span className="faint">{already ? 'Already in' : 'Add →'}</span>
                     </button>
                   )
                 })}
-            </div>
-            {createError && <small className="field-error">{createError}</small>}
-            {searchName.trim() && !duplicateName(searchName, players) && (
-              <>
-                <div className="row" style={{ justifyContent: 'space-between', padding: '6px 0' }}>
-                  <div>
-                    <span style={{ fontSize: 13, fontWeight: 500 }}>Buying a tag</span>
-                    <div className="muted" style={{ fontSize: 11 }}>Bought a tag this season</div>
+                {matchingActive.length === 0 && !cleanQuery && (
+                  <div className="muted" style={{ fontSize: 12, textAlign: 'center', padding: '12px 0' }}>
+                    No active players on roster yet. Type a name to add a new player.
                   </div>
-                  <Toggle on={buyingTag} onChange={setBuyingTag} label="Buying a tag" />
+                )}
+              </div>
+
+              {createError && <small className="field-error">{createError}</small>}
+
+              {cleanQuery && !isDuplicateRoster && (
+                <div
+                  className="stack"
+                  style={{
+                    padding: '10px 12px',
+                    borderRadius: 'var(--r)',
+                    background: 'var(--surface-2)',
+                    border: '1px solid var(--line)',
+                  }}
+                >
+                  <div className="field">
+                    <span>New Player Division</span>
+                    <DivisionSeg value={newPlayerDiv} onChange={setNewPlayerDiv} />
+                  </div>
+                  <div className="row" style={{ justifyContent: 'space-between', padding: '4px 0' }}>
+                    <div>
+                      <span style={{ fontSize: 13, fontWeight: 500 }}>Buying a tag</span>
+                      <div className="muted" style={{ fontSize: 11 }}>Bought a tag this season</div>
+                    </div>
+                    <Toggle on={buyingTag} onChange={setBuyingTag} label="Buying a tag" />
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-block"
+                    onClick={() => void handleCreateAndCheckin(searchName, newPlayerDiv)}
+                  >
+                    <Plus size={14} /> Create &amp; Check In &ldquo;{normalizeName(searchName)}&rdquo; ({newPlayerDiv === 'M' ? "Men's" : "Women's"})
+                  </button>
                 </div>
-                <button className="btn btn-primary btn-block" onClick={() => handleCreateAndCheckin(searchName, division)}>
-                  <Plus size={14} /> Create &amp; Check In "{normalizeName(searchName)}"
-                </button>
-              </>
-            )}
-            {searchName.trim() && duplicateName(searchName, players) && !players.some(p => p.division === division && normalizeName(p.name).toLowerCase() === normalizeName(searchName).toLowerCase()) && (
-              <small className="field-error">That name is already on the roster.</small>
-            )}
-          </div>
-        </Dialog>
-      )}
+              )}
+
+              {cleanQuery && isDuplicateRoster && !exactMatch && (
+                <small className="field-error">That name is already on the roster (inactive).</small>
+              )}
+            </div>
+          </Dialog>
+        )
+      })()}
 
       {makeCardsOpen && (
         <Dialog title="Make Playing Cards" onClose={() => setMakeCardsOpen(false)}>

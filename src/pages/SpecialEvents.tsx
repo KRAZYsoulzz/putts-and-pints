@@ -44,10 +44,10 @@ import {
   filterHistorySpecialEvents,
   formatSpecialTeamName,
   formatToPar,
-  generateCardPins,
+  localTodayIso,
   makeSpecialId,
   moveParticipantBetweenTeams,
-  nextHoleOrderForCard,
+  nextHoleOrderForCardTeams,
   rankSpecialTeams,
   removeEmptyCardFromEvent,
   removeParticipantFromEvent,
@@ -110,10 +110,11 @@ export default function SpecialEvents() {
     submitCardHoleScores,
   } = useSpecialEvents()
 
-  // New Event Modal
+  // New / Edit Event Modal
   const [newOpen, setNewOpen] = useState(false)
+  const [editingEventDetails, setEditingEventDetails] = useState(false)
   const [newName, setNewName] = useState('Black Friday Draw Dubs')
-  const [newDate, setNewDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [newDate, setNewDate] = useState(() => localTodayIso())
   const [newLocation, setNewLocation] = useState('Gateway Park - Trinity Side')
   const [newEntryFee, setNewEntryFee] = useState(20)
   const [newAceShare, setNewAceShare] = useState(5)
@@ -133,6 +134,7 @@ export default function SpecialEvents() {
   const [alsoAddRoster, setAlsoAddRoster] = useState(false)
   const [rosterDiv, setRosterDiv] = useState<Division>('M')
   const [checkinError, setCheckinError] = useState('')
+  const [lastCheckedIn, setLastCheckedIn] = useState('')
   const [poolFilter, setPoolFilter] = useState<'ALL' | SpecialPool>('ALL')
 
   // Course & Hole Notes Dialog
@@ -219,8 +221,10 @@ export default function SpecialEvents() {
   }, [event, isAdmin, finances, saveEvent])
 
   const loadBlackFridayFields = () => {
-    const preset = createBlackFridayDubsPreset(newDate)
+    const preset = createBlackFridayDubsPreset(localTodayIso())
+    setEditingEventDetails(false)
     setNewName(preset.name)
+    setNewDate(preset.eventDate)
     setNewLocation(preset.location)
     setNewEntryFee(preset.config.entryFee)
     setNewAceShare(preset.config.aceShare)
@@ -231,6 +235,23 @@ export default function SpecialEvents() {
     setNewUseTrinity(true)
     setNewNotes(preset.notes ?? '')
     setNewError('')
+  }
+
+  const openEditEventForm = () => {
+    if (!event) return
+    setEditingEventDetails(true)
+    setNewName(event.name)
+    setNewDate(event.eventDate)
+    setNewLocation(event.location)
+    setNewEntryFee(event.config.entryFee)
+    setNewAceShare(event.config.aceShare)
+    setNewCourseShare(event.config.courseFundShare)
+    setNewCourseLabel(event.config.courseFundLabel)
+    setNewFrontLabel(event.config.front9Label)
+    setNewBackLabel(event.config.back9Label)
+    setNewNotes(event.notes ?? '')
+    setNewError('')
+    setNewOpen(true)
   }
 
   const handleCreateQuickBlackFriday = async () => {
@@ -244,7 +265,7 @@ export default function SpecialEvents() {
     }
   }
 
-  const handleCreateCustomEvent = async () => {
+  const handleSubmitEventForm = async () => {
     const cleanName = normalizeName(newName)
     if (!cleanName) {
       setNewError('Enter an event name.')
@@ -259,6 +280,43 @@ export default function SpecialEvents() {
       return
     }
     setNewError('')
+
+    if (editingEventDetails && event) {
+      const nextConfig = {
+        ...event.config,
+        entryFee: newEntryFee,
+        aceShare: newAceShare,
+        courseFundShare: newCourseShare,
+        courseFundLabel: newCourseLabel.trim() || 'Course Fund',
+        front9Label: newFrontLabel.trim() || 'Front 9',
+        back9Label: newBackLabel.trim() || 'Back 9',
+      }
+      const nextMoney = specialEventMoney(event.participants, nextConfig)
+      const curAllocated = cents(event.payoutPlaces.reduce((s, v) => s + (Number(v) || 0), 0))
+      const nextPayouts =
+        event.payoutPlaces.length > 0 && curAllocated > nextMoney.payoutPurse + 0.001
+          ? suggestedTeamPayouts(
+              nextMoney.payoutPurse,
+              clampPaidPlaces(Math.max(1, event.teams.length), event.payoutPlaces.length),
+            )
+          : event.payoutPlaces
+      const ok = await saveEvent({
+        ...event,
+        name: cleanName,
+        eventDate: newDate,
+        location: newLocation.trim(),
+        config: nextConfig,
+        payoutPlaces: nextPayouts,
+        notes: newNotes.trim() || null,
+      })
+      if (ok) {
+        setNewOpen(false)
+        setEditingEventDetails(false)
+        reportInfo('Event details updated.')
+      }
+      return
+    }
+
     const created = createBlankSpecialEvent({
       name: cleanName,
       eventDate: newDate,
@@ -296,10 +354,7 @@ export default function SpecialEvents() {
     setShowFullCardTable(false)
     setEditingHoleNote(false)
     const cardTeams = event.teams.filter(t => t.cardId === card.id)
-    const leadTeam = cardTeams[0]
-    const nextHole = leadTeam
-      ? nextHoleOrderForCard(card.startingHole, leadTeam.holes)
-      : card.startingHole
+    const nextHole = nextHoleOrderForCardTeams(card.startingHole, cardTeams)
     setActiveHole(nextHole)
   }
 
@@ -319,6 +374,7 @@ export default function SpecialEvents() {
 
   const newEventModal = newOpen ? (
     <NewSpecialEventDialog
+      mode={editingEventDetails ? 'edit' : 'create'}
       newName={newName}
       newDate={newDate}
       newLocation={newLocation}
@@ -343,8 +399,11 @@ export default function SpecialEvents() {
       onUseTrinity={setNewUseTrinity}
       onNotes={setNewNotes}
       onLoadPreset={loadBlackFridayFields}
-      onCreate={() => void handleCreateCustomEvent()}
-      onClose={() => setNewOpen(false)}
+      onCreate={() => void handleSubmitEventForm()}
+      onClose={() => {
+        setNewOpen(false)
+        setEditingEventDetails(false)
+      }}
     />
   ) : null
 
@@ -605,7 +664,7 @@ export default function SpecialEvents() {
     if (ok) {
       setSearchName('')
       setAlsoAddRoster(false)
-      setCheckinOpen(false)
+      setLastCheckedIn(`${player.name} checked into Pool ${checkinPool}.`)
     }
   }
 
@@ -662,7 +721,7 @@ export default function SpecialEvents() {
     if (ok) {
       setSearchName('')
       setAlsoAddRoster(false)
-      setCheckinOpen(false)
+      setLastCheckedIn(`${finalName} checked into Pool ${checkinPool}.`)
     }
   }
 
@@ -682,48 +741,38 @@ export default function SpecialEvents() {
       if (!ok) return
     }
     const drawn = drawDoublesTeams(event.participants, event.config.teamsPerCard)
-    const nextPins = generateCardPins(drawn.cards, cardPins)
     const paidCount = suggestedTeamPaidPlaces(drawn.teams.length)
     const nextPayouts = finances ? suggestedTeamPayouts(finances.payoutPurse, paidCount) : []
-    await saveEvent(
-      {
-        ...event,
-        teams: drawn.teams,
-        cards: drawn.cards,
-        payoutPlaces: nextPayouts,
-      },
-      nextPins,
-    )
+    await saveEvent({
+      ...event,
+      teams: drawn.teams,
+      cards: drawn.cards,
+      payoutPlaces: nextPayouts,
+    })
     reportInfo(`Drew ${drawn.teams.length} team${drawn.teams.length === 1 ? '' : 's'} across ${drawn.cards.length} card${drawn.cards.length === 1 ? '' : 's'}.`)
   }
 
   const handleRegroupCards = async (nextPerCard: number) => {
     const cleanSize = Math.min(6, Math.max(1, Math.trunc(nextPerCard)))
     const grouped = assignTeamsToCards(event.teams, cleanSize)
-    const nextPins = generateCardPins(grouped.cards, cardPins)
-    await saveEvent(
-      {
-        ...event,
-        config: { ...event.config, teamsPerCard: cleanSize },
-        teams: grouped.teams,
-        cards: grouped.cards,
-      },
-      nextPins,
-    )
+    await saveEvent({
+      ...event,
+      config: { ...event.config, teamsPerCard: cleanSize },
+      teams: grouped.teams,
+      cards: grouped.cards,
+    })
   }
 
   const handleAddCard = async () => {
     const nextCards = addCardToEvent(event.cards)
-    const nextPins = generateCardPins(nextCards, cardPins)
-    const ok = await saveEvent({ ...event, cards: nextCards }, nextPins)
+    const ok = await saveEvent({ ...event, cards: nextCards })
     if (ok) reportInfo(`Added Card ${nextCards[nextCards.length - 1].cardNumber}.`)
   }
 
   const handleRemoveEmptyCard = async (cardId: string) => {
     const nextCards = removeEmptyCardFromEvent(event.cards, event.teams, cardId)
     if (nextCards.length === event.cards.length) return
-    const nextPins = generateCardPins(nextCards, cardPins)
-    await saveEvent({ ...event, cards: nextCards }, nextPins)
+    await saveEvent({ ...event, cards: nextCards })
   }
 
   const filteredParticipants =
@@ -800,15 +849,14 @@ export default function SpecialEvents() {
     const updatedHoles = Array.from({ length: 18 }, (_, idx) =>
       idx === holeNumber - 1 ? clampHoleStroke(nextStroke) : clampHoleStroke(team.holes?.[idx]),
     )
-    const payload: Record<string, (number | null)[]> = {}
-    for (const ct of scorerCardTeams) {
-      payload[ct.id] = ct.id === team.id ? updatedHoles : ct.holes
-    }
-    await submitCardHoleScores(event.id, scorerCard.id, payload)
+    await submitCardHoleScores(event.id, scorerCard.id, { [team.id]: updatedHoles })
   }
 
   const nextShotgunHole = ((activeHole % 18) + 1)
   const prevShotgunHole = ((activeHole - 2 + 18) % 18) + 1
+  const firstMissingCardHole = scorerCard
+    ? nextHoleOrderForCardTeams(scorerCard.startingHole, scorerCardTeams)
+    : 1
   const allCardHolesComplete =
     scorerCardTeams.length > 0 &&
     scorerCardTeams.every(t => t.holes.filter(h => h != null).length === 18)
@@ -871,6 +919,14 @@ export default function SpecialEvents() {
           >
             <NotebookPen size={15} /> {isAdmin ? 'Course & Hole Notes' : `Course (${parTotals.totalPar} Par)`}
           </button>
+          {isAdmin && event.status !== 'complete' && (
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={openEditEventForm}
+            >
+              <Pencil size={14} /> Edit Details
+            </button>
+          )}
           {activeScorerCards.length > 0 && event.status !== 'complete' && (
             <button
               className="btn btn-primary btn-sm"
@@ -940,6 +996,13 @@ export default function SpecialEvents() {
 
       {subNav}
 
+      {event.notes && (
+        <div className="notice section" style={{ marginBottom: 16 }}>
+          <Sparkles size={15} />
+          <span>{event.notes}</span>
+        </div>
+      )}
+
       {finances && (
         <div className="stats section">
           <Stat
@@ -996,6 +1059,7 @@ export default function SpecialEvents() {
               className="btn btn-primary"
               onClick={() => {
                 setCheckinError('')
+                setLastCheckedIn('')
                 setSearchName('')
                 setAlsoAddRoster(false)
                 setCheckinOpen(true)
@@ -1203,11 +1267,11 @@ export default function SpecialEvents() {
                     event.cards,
                     event.config.teamsPerCard,
                   )
-                  const nextPins = generateCardPins(assigned.cards, cardPins)
-                  const ok = await saveEvent(
-                    { ...event, teams: assigned.teams, cards: assigned.cards },
-                    nextPins,
-                  )
+                  const ok = await saveEvent({
+                    ...event,
+                    teams: assigned.teams,
+                    cards: assigned.cards,
+                  })
                   if (ok) {
                     reportInfo(
                       `Assigned ${unassignedParticipants.length} late player${unassignedParticipants.length === 1 ? '' : 's'} without changing existing pairs.`,
@@ -1435,6 +1499,25 @@ export default function SpecialEvents() {
          ==================================================================== */}
       {(event.status === 'scoring' || (!isAdmin && event.status !== 'results' && event.status !== 'complete')) && rankings && (
         <div className="section">
+          {isAdmin && event.status === 'scoring' && unassignedParticipants.length > 0 && (
+            <div
+              className="notice section"
+              style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', marginBottom: 16 }}
+            >
+              <span>
+                <strong>{unassignedParticipants.length} checked-in player{unassignedParticipants.length === 1 ? '' : 's'} not yet on a team:</strong>{' '}
+                {unassignedParticipants.map(p => p.name).join(', ')}
+              </span>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={() => void saveEvent({ ...event, status: 'draw' })}
+              >
+                Assign in Draw &amp; Cards
+              </button>
+            </div>
+          )}
+
           {activeScorerCards.length > 0 && (
             <div className="panel panel-pad stack section" style={{ marginBottom: 20 }}>
               <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
@@ -1519,67 +1602,94 @@ export default function SpecialEvents() {
                       const card = row.team.cardId
                         ? event.cards.find(c => c.id === row.team.cardId)
                         : null
+                      const hasHoleScores = row.team.holes.some(h => h != null)
+                      const isExpanded = expandedTeamId === row.team.id
                       return (
-                        <tr key={row.team.id} className={row.place === 1 ? 'leader' : ''}>
-                          <td className="place">
-                            {row.place > 0 ? (row.tied ? `T${row.place}` : ordinal(row.place)) : '--'}
-                          </td>
-                          <td>
-                            <div className="strong">{teamDisplayName(row.team)}</div>
-                            <div className="row" style={{ gap: 4, marginTop: 2 }}>
-                              {row.team.participantIds.map(pid => {
-                                const p = participantById.get(pid)
-                                return (
-                                  <span key={pid} className="faint" style={{ fontSize: 11 }}>
-                                    [{p?.pool ?? '?'}]
-                                  </span>
-                                )
-                              })}
-                              {row.team.isCali && <span className="chip chip-lime">Cali</span>}
-                            </div>
-                          </td>
-                          <td className={`c big num ${toParClass(row.summary.toPar)}`}>
-                            {formatToPar(row.summary.toPar)}
-                          </td>
-                          <td className="c num">
-                            {row.summary.thru === 0
-                              ? '--'
-                              : row.summary.isFinished
-                                ? 'F'
-                                : `${row.summary.thru}`}
-                          </td>
-                          <td className="c num hide-sm muted">
-                            {row.summary.frontStrokes ?? '--'}
-                          </td>
-                          <td className="c num hide-sm muted">
-                            {row.summary.backStrokes ?? '--'}
-                          </td>
-                          <td className="c num strong">
-                            {row.summary.strokes ?? '--'}
-                          </td>
-                          {isAdmin && (
-                            <td className="c bl">
-                              <Manual18Input
-                                value={row.team.manualTotal18}
-                                placeholder={row.summary.officialTotal18 != null ? String(row.summary.officialTotal18) : '18h'}
-                                onCommit={val => setTeamManual18(row.team.id, val)}
-                              />
+                        <Fragment key={row.team.id}>
+                          <tr className={row.place === 1 ? 'leader' : ''}>
+                            <td className="place">
+                              {row.place > 0 ? (row.tied ? `T${row.place}` : ordinal(row.place)) : '--'}
                             </td>
-                          )}
-                          {isAdmin && (
-                            <td className="r">
-                              {card && (
-                                <button
-                                  type="button"
-                                  className="btn btn-ghost btn-sm"
-                                  onClick={() => openCardScorer(card)}
-                                >
-                                  Card {card.cardNumber}
-                                </button>
-                              )}
+                            <td>
+                              <div className="strong">{teamDisplayName(row.team)}</div>
+                              <div className="row" style={{ gap: 4, marginTop: 2, flexWrap: 'wrap' }}>
+                                {row.team.participantIds.map(pid => {
+                                  const p = participantById.get(pid)
+                                  return (
+                                    <span key={pid} className="faint" style={{ fontSize: 11 }}>
+                                      [{p?.pool ?? '?'}]
+                                    </span>
+                                  )
+                                })}
+                                {row.team.isCali && <span className="chip chip-lime">Cali</span>}
+                                {hasHoleScores && (
+                                  <button
+                                    type="button"
+                                    className="btn btn-ghost btn-sm"
+                                    style={{ height: 20, padding: '0 6px', fontSize: 11 }}
+                                    onClick={() =>
+                                      setExpandedTeamId(prev => (prev === row.team.id ? null : row.team.id))
+                                    }
+                                  >
+                                    {isExpanded ? 'Hide 18h' : '18h Card'}
+                                  </button>
+                                )}
+                              </div>
                             </td>
+                            <td className={`c big num ${toParClass(row.summary.toPar)}`}>
+                              {formatToPar(row.summary.toPar)}
+                            </td>
+                            <td className="c num">
+                              {row.summary.thru === 0
+                                ? '--'
+                                : row.summary.isFinished
+                                  ? 'F'
+                                  : `${row.summary.thru}`}
+                            </td>
+                            <td className="c num hide-sm muted">
+                              {row.summary.frontStrokes ?? '--'}
+                            </td>
+                            <td className="c num hide-sm muted">
+                              {row.summary.backStrokes ?? '--'}
+                            </td>
+                            <td className="c num strong">
+                              {row.summary.strokes ?? '--'}
+                            </td>
+                            {isAdmin && (
+                              <td className="c bl">
+                                <Manual18Input
+                                  value={row.team.manualTotal18}
+                                  placeholder={row.summary.officialTotal18 != null ? String(row.summary.officialTotal18) : '18h'}
+                                  onCommit={val => setTeamManual18(row.team.id, val)}
+                                />
+                              </td>
+                            )}
+                            {isAdmin && (
+                              <td className="r">
+                                {card && (
+                                  <button
+                                    type="button"
+                                    className="btn btn-ghost btn-sm"
+                                    onClick={() => openCardScorer(card)}
+                                  >
+                                    Card {card.cardNumber}
+                                  </button>
+                                )}
+                              </td>
+                            )}
+                          </tr>
+                          {isExpanded && hasHoleScores && (
+                            <tr className="sp-scorecard-detail">
+                              <td colSpan={isAdmin ? 9 : 7} style={{ padding: 8, background: 'var(--bg)' }}>
+                                <TeamHoleScorecard
+                                  holes={row.team.holes}
+                                  courseHoles={event.courseHoles}
+                                  summary={row.summary}
+                                />
+                              </td>
+                            </tr>
                           )}
-                        </tr>
+                        </Fragment>
                       )
                     })}
                   </tbody>
@@ -1611,8 +1721,22 @@ export default function SpecialEvents() {
                 className="btn btn-primary"
                 disabled={overPurse}
                 onClick={async () => {
+                  const warnings: string[] = []
+                  if (rankings.unfinishedCount > 0) {
+                    warnings.push(`${rankings.unfinishedCount} team${rankings.unfinishedCount === 1 ? ' still has' : 's still have'} incomplete holes`)
+                  }
+                  if (finances.unpaidCount > 0) {
+                    warnings.push(`${finances.unpaidCount} player${finances.unpaidCount === 1 ? ' is' : 's are'} still marked unpaid`)
+                  }
+                  if (finances.acePot > 0 && event.aceResolution.mode === 'pending') {
+                    warnings.push(`Ace / CTP pot (${money(finances.acePot)}) is still Pending`)
+                  }
+                  const note =
+                    warnings.length > 0
+                      ? ` Heads up: ${warnings.join('; ')}.`
+                      : ''
                   const ok = await askConfirm(
-                    'Finalize this special event? Card PIN scoring will lock and official results will be posted.',
+                    `Finalize this special event? Card PIN scoring will lock and official results will be posted to History.${note}`,
                     { title: 'Finalize Special Event?', confirmLabel: 'Finalize Event' },
                   )
                   if (ok) {
@@ -2028,8 +2152,23 @@ export default function SpecialEvents() {
 
       {/* Check-in Player Dialog */}
       {checkinOpen && (
-        <Dialog title="Check In Player" onClose={() => setCheckinOpen(false)}>
+        <Dialog
+          title="Check In Player"
+          onClose={() => setCheckinOpen(false)}
+          footer={
+            <button type="button" className="btn" onClick={() => setCheckinOpen(false)}>
+              Done ({event.participants.length} checked in)
+            </button>
+          }
+        >
           <div className="stack">
+            {lastCheckedIn && (
+              <div className="notice" style={{ padding: '8px 12px', borderColor: 'var(--teal)' }}>
+                <Check size={15} color="var(--teal)" />
+                <span>{lastCheckedIn}</span>
+              </div>
+            )}
+
             <div className="field">
               <span>Pool Assignment</span>
               <Seg
@@ -2049,44 +2188,42 @@ export default function SpecialEvents() {
 
             <div className="field">
               <span>Search Putts &amp; Pints Roster or Type Walk-Up Name</span>
-              <div className="combo">
-                <input
-                  className="input"
-                  autoFocus
-                  placeholder="Type player name..."
-                  value={searchName}
-                  onChange={e => {
-                    setSearchName(e.target.value)
-                    setCheckinError('')
-                  }}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault()
-                      if (exactRosterMatch && !checkedInLowerNames.has(normalizeName(exactRosterMatch.name).toLowerCase())) {
-                        void handleAddParticipantFromRoster(exactRosterMatch)
-                      } else {
-                        void handleAddWalkupParticipant()
-                      }
+              <input
+                className="input"
+                autoFocus
+                placeholder="Type player name..."
+                value={searchName}
+                onChange={e => {
+                  setSearchName(e.target.value)
+                  setCheckinError('')
+                }}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    if (exactRosterMatch && !checkedInLowerNames.has(normalizeName(exactRosterMatch.name).toLowerCase())) {
+                      void handleAddParticipantFromRoster(exactRosterMatch)
+                    } else {
+                      void handleAddWalkupParticipant()
                     }
-                  }}
-                />
-                {matchingRosterPlayers.length > 0 && searchName.trim().length > 0 && (
-                  <div className="combo-list" style={{ maxHeight: 190 }}>
-                    {matchingRosterPlayers.slice(0, 8).map(p => (
-                      <button
-                        key={p.id}
-                        type="button"
-                        onClick={() => void handleAddParticipantFromRoster(p)}
-                      >
-                        <span className="strong">{p.name}</span>
-                        <span className="faint" style={{ fontSize: 11 }}>
-                          {p.division === 'M' ? "Men's" : "Women's"} P&amp;P
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
+                  }
+                }}
+              />
+              {matchingRosterPlayers.length > 0 && searchName.trim().length > 0 && (
+                <div className="combo-inline-list">
+                  {matchingRosterPlayers.slice(0, 8).map(p => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => void handleAddParticipantFromRoster(p)}
+                    >
+                      <span className="strong">{p.name}</span>
+                      <span className="faint" style={{ fontSize: 11 }}>
+                        {p.division === 'M' ? "Men's" : "Women's"} P&amp;P
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
             {!exactRosterMatch && normalizeName(searchName).length > 0 && isAdmin && (
@@ -2144,6 +2281,7 @@ export default function SpecialEvents() {
       {/* Course & Hole Notes Dialog */}
       {courseOpen && (
         <Dialog
+          wide
           title={`Course & Hole Notes (${event.location || event.name})`}
           onClose={() => setCourseOpen(false)}
           footer={
@@ -2378,6 +2516,7 @@ export default function SpecialEvents() {
       {/* Card Scorecard (PIN Gate + Intuitive Hole-by-Hole Scorer) */}
       {scorerCard && (
         <Dialog
+          wide
           title={`Card ${scorerCard.cardNumber} Scorecard`}
           onClose={() => setScorerCardId(null)}
         >
@@ -2639,37 +2778,57 @@ export default function SpecialEvents() {
               </div>
 
               {/* Primary Next Hole CTA */}
-              <button
-                type="button"
-                className="btn btn-primary btn-block"
-                onClick={() => {
-                  if (allCardHolesComplete) {
-                    setScorerCardId(null)
-                  } else {
-                    setActiveHole(nextShotgunHole)
-                    setEditingHoleNote(false)
-                  }
-                }}
-              >
-                {allCardHolesComplete ? (
-                  <>
-                    <Check size={16} /> All 18 Holes Complete — View Leaderboard
-                  </>
-                ) : (
-                  <>
-                    Next Hole (Hole {nextShotgunHole}) <ChevronRight size={16} />
-                  </>
-                )}
-              </button>
+              {(() => {
+                const finishingLoopWithGap =
+                  !allCardHolesComplete &&
+                  nextShotgunHole === scorerCard.startingHole &&
+                  firstMissingCardHole !== activeHole
+                const targetHole = finishingLoopWithGap ? firstMissingCardHole : nextShotgunHole
+                return (
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-block"
+                    onClick={() => {
+                      if (allCardHolesComplete) {
+                        setScorerCardId(null)
+                      } else {
+                        setActiveHole(targetHole)
+                        setEditingHoleNote(false)
+                      }
+                    }}
+                  >
+                    {allCardHolesComplete ? (
+                      <>
+                        <Check size={16} /> All 18 Holes Complete — View Leaderboard
+                      </>
+                    ) : finishingLoopWithGap ? (
+                      <>
+                        Finish Missing Hole (Hole {firstMissingCardHole}) <ChevronRight size={16} />
+                      </>
+                    ) : (
+                      <>
+                        Next Hole (Hole {nextShotgunHole}) <ChevronRight size={16} />
+                      </>
+                    )}
+                  </button>
+                )
+              })()}
 
               {/* 18-Hole Scrubber Strip */}
               <div className="hole-scrubber" aria-label="Hole selector">
                 {Array.from({ length: 18 }, (_, i) => i + 1).map(holeNum => {
                   const holePar = event.courseHoles[holeNum - 1]?.par ?? 3
+                  const enteredScores = scorerCardTeams
+                    .map(t => clampHoleStroke(t.holes?.[holeNum - 1]))
+                    .filter((s): s is number => s != null)
+                  const allEntered = scorerCardTeams.length > 0 && enteredScores.length === scorerCardTeams.length
+                  const someEntered = enteredScores.length > 0 && !allEntered
                   const leadScore = clampHoleStroke(scorerCardTeams[0]?.holes?.[holeNum - 1])
                   let cls = 'hole-pill'
                   if (holeNum === activeHole) cls += ' active'
-                  if (leadScore != null) {
+                  if (someEntered) {
+                    cls += ' partial'
+                  } else if (allEntered && leadScore != null) {
                     if (leadScore < holePar) cls += ' under'
                     else if (leadScore > holePar) cls += ' over'
                     else cls += ' even'
@@ -2679,6 +2838,11 @@ export default function SpecialEvents() {
                       key={holeNum}
                       type="button"
                       className={cls}
+                      title={
+                        someEntered
+                          ? `Hole ${holeNum}: ${enteredScores.length}/${scorerCardTeams.length} teams scored`
+                          : `Hole ${holeNum}`
+                      }
                       onClick={() => {
                         setActiveHole(holeNum)
                         setEditingHoleNote(false)
@@ -2810,6 +2974,7 @@ function Manual18Input({
 }
 
 function NewSpecialEventDialog({
+  mode = 'create',
   newName,
   newDate,
   newLocation,
@@ -2837,6 +3002,7 @@ function NewSpecialEventDialog({
   onCreate,
   onClose,
 }: {
+  mode?: 'create' | 'edit'
   newName: string
   newDate: string
   newLocation: string
@@ -2865,18 +3031,21 @@ function NewSpecialEventDialog({
   onClose: () => void
 }) {
   const purseShare = Math.max(0, cents(newEntryFee - newAceShare - newCourseShare))
+  const isEdit = mode === 'edit'
 
   return (
-    <Dialog title="New Special Event" onClose={onClose}>
+    <Dialog title={isEdit ? 'Edit Event Details' : 'New Special Event'} onClose={onClose}>
       <div className="stack">
-        <button
-          type="button"
-          className="btn btn-block"
-          style={{ borderColor: 'var(--orange)', justifyContent: 'center' }}
-          onClick={onLoadPreset}
-        >
-          <Sparkles size={15} color="var(--orange)" /> Load Black Friday Draw Dubs Preset
-        </button>
+        {!isEdit && (
+          <button
+            type="button"
+            className="btn btn-block"
+            style={{ borderColor: 'var(--orange)', justifyContent: 'center' }}
+            onClick={onLoadPreset}
+          >
+            <Sparkles size={15} color="var(--orange)" /> Load Black Friday Draw Dubs Preset
+          </button>
+        )}
 
         <div className="field">
           <span>Event Name</span>
@@ -2956,10 +3125,12 @@ function NewSpecialEventDialog({
           </div>
         </div>
 
-        <div className="row" style={{ justifyContent: 'space-between' }}>
-          <span style={{ fontSize: 13 }}>Use Gateway Park - Trinity pars &amp; distances (Par 56)</span>
-          <Toggle on={newUseTrinity} onChange={onUseTrinity} label="Use Gateway Park Trinity layout" />
-        </div>
+        {!isEdit && (
+          <div className="row" style={{ justifyContent: 'space-between' }}>
+            <span style={{ fontSize: 13 }}>Use Gateway Park - Trinity pars &amp; distances (Par 56)</span>
+            <Toggle on={newUseTrinity} onChange={onUseTrinity} label="Use Gateway Park Trinity layout" />
+          </div>
+        )}
 
         <div className="field">
           <span>Schedule / Notes (optional)</span>
@@ -2974,7 +3145,7 @@ function NewSpecialEventDialog({
         {newError && <small className="field-error">{newError}</small>}
 
         <button type="button" className="btn btn-primary btn-block" onClick={onCreate}>
-          Create Special Event
+          {isEdit ? 'Save Event Details' : 'Create Special Event'}
         </button>
       </div>
     </Dialog>

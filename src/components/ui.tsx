@@ -56,10 +56,11 @@ export function Toggle({ on, onChange, label, disabled }: { on: boolean; onChang
     className={`toggle ${on ? 'on' : ''}`} onClick={() => { if (!disabled) onChange(!on) }} />
 }
 
-export function Dialog({ title, onClose, children, footer, layer = 'base' }: {
+export function Dialog({ title, onClose, children, footer, layer = 'base', wide = false }: {
   title: string; onClose: () => void; children: ReactNode; footer?: ReactNode
   /** Confirmations stack above the dialog that opened them. */
   layer?: 'base' | 'top'
+  wide?: boolean
 }) {
   useEffect(() => {
     const k = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
@@ -68,7 +69,7 @@ export function Dialog({ title, onClose, children, footer, layer = 'base' }: {
   }, [onClose])
   return (
     <div className={`scrim${layer === 'top' ? ' scrim-top' : ''}`} onMouseDown={e => e.target === e.currentTarget && onClose()}>
-      <div className="dialog" role="dialog" aria-modal="true">
+      <div className={`dialog${wide ? ' dialog-wide' : ''}`} role="dialog" aria-modal="true">
         <div className="dialog-head">
           <h2 className="display dialog-title">{title}</h2>
           <button className="btn btn-ghost btn-sm btn-icon" onClick={onClose} aria-label="Close"><X size={16} /></button>

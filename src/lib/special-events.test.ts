@@ -12,8 +12,10 @@ import {
   formatSpecialTeamName,
   formatToPar,
   generateCardPins,
+  localTodayIso,
   moveParticipantBetweenTeams,
   nextHoleOrderForCard,
+  nextHoleOrderForCardTeams,
   rankSpecialTeams,
   removeEmptyCardFromEvent,
   resolveAcePayouts,
@@ -351,6 +353,33 @@ const p = (id: string, name: string, pool: SpecialPool, paid = true): SpecialPar
     mode: 'ctp',
     winners: [{ participantId: 'b1', name: 'Casey', amount: 20 }],
   })
+}
+
+// 8. Multi-team shotgun hole progression & local date formatting
+{
+  const full18 = Array.from({ length: 18 }, () => 3)
+  const missingHole5 = [...full18]
+  missingHole5[4] = null // Hole 5 missed for Team 2
+  assert.equal(
+    nextHoleOrderForCardTeams(3, [{ holes: full18 }, { holes: missingHole5 }]),
+    5,
+    'catches missing hole on second team even when first team finished all 18',
+  )
+  const missingHole1 = [...full18]
+  missingHole1[0] = null
+  assert.equal(
+    nextHoleOrderForCardTeams(17, [{ holes: full18 }, { holes: missingHole1 }]),
+    1,
+    'wraps shotgun order past Hole 18 to Hole 1',
+  )
+  assert.equal(
+    nextHoleOrderForCardTeams(7, [{ holes: full18 }, { holes: full18 }]),
+    7,
+    'returns startingHole when all teams completed all 18 holes',
+  )
+
+  const sampleDate = new Date(2026, 10, 27, 23, 30, 0) // Nov 27 2026, 11:30 PM local
+  assert.equal(localTodayIso(sampleDate), '2026-11-27', 'uses local calendar date rather than UTC')
 }
 
 console.log('Special events tests passed ✔')

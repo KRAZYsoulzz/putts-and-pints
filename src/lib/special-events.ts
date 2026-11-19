@@ -208,12 +208,19 @@ export function normalizeCourseHoles(holes?: readonly Partial<CourseHole>[] | nu
   })
 }
 
+export function localTodayIso(now: Date = new Date()): string {
+  const y = now.getFullYear()
+  const m = String(now.getMonth() + 1).padStart(2, '0')
+  const d = String(now.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
+
 export function createBlackFridayDubsPreset(eventDate?: string): SpecialEvent {
   const now = new Date().toISOString()
   return {
     id: makeSpecialId(),
     name: 'Black Friday Draw Dubs',
-    eventDate: eventDate || now.slice(0, 10),
+    eventDate: eventDate || localTodayIso(),
     location: 'Gateway Park - Trinity Side',
     status: 'checkin',
     config: {
@@ -249,7 +256,7 @@ export function createBlankSpecialEvent(params: {
   return {
     id: makeSpecialId(),
     name: params.name.trim() || 'Special Event',
-    eventDate: params.eventDate || now.slice(0, 10),
+    eventDate: params.eventDate || localTodayIso(),
     location: (params.location ?? '').trim(),
     status: 'checkin',
     config: {
@@ -713,6 +720,26 @@ export function nextHoleOrderForCard(
   for (let offset = 0; offset < 18; offset++) {
     const hole = ((start - 1 + offset) % 18) + 1
     if (holes[hole - 1] == null) return hole
+  }
+  return start
+}
+
+/**
+ * Finds the first hole (in shotgun order from `startingHole`) where at least
+ * one team on the card is still missing a score. Falls back to `startingHole`
+ * when every team on the card has completed all 18 holes.
+ */
+export function nextHoleOrderForCardTeams(
+  startingHole: number,
+  teams: readonly Pick<SpecialTeam, 'holes'>[],
+): number {
+  const start = Math.min(18, Math.max(1, Math.trunc(startingHole || 1)))
+  if (teams.length === 0) return start
+  for (let offset = 0; offset < 18; offset++) {
+    const hole = ((start - 1 + offset) % 18) + 1
+    if (teams.some(t => clampHoleStroke(t.holes?.[hole - 1]) == null)) {
+      return hole
+    }
   }
   return start
 }
