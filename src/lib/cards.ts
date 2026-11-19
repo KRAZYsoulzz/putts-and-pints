@@ -381,6 +381,84 @@ export function getCardStorageKey(eventId: string): string {
 }
 
 /**
+ * Validates and normalizes an unknown card payload into a well-formed PPEvtCards object.
+ */
+export function normalizeEventCards(raw: unknown): PPEvtCards | null {
+  if (!raw || typeof raw !== 'object') return null
+  const r = raw as Record<string, unknown>
+  if (typeof r.eventId !== 'string' || !r.eventId) return null
+  if (!r.cards || typeof r.cards !== 'object') return null
+  const cardMap = r.cards as Record<string, unknown>
+  const normalizeList = (list: unknown, division: Division): PPCard[] =>
+    Array.isArray(list)
+      ? list
+          .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+          .map((item, idx) => ({
+            id: typeof item.id === 'string' && item.id ? item.id : `${division}-${idx + 1}`,
+            division,
+            cardNumber:
+              typeof item.cardNumber === 'number' && Number.isFinite(item.cardNumber)
+                ? item.cardNumber
+                : idx + 1,
+            name:
+              typeof item.name === 'string' && item.name
+                ? item.name
+                : cardLabel(division, idx + 1),
+            playerIds: Array.isArray(item.playerIds)
+              ? item.playerIds.filter((pid): pid is string => typeof pid === 'string')
+              : [],
+          }))
+      : []
+
+  const sizeNum = Number(r.targetCardSize)
+  const sortMode: CardSortMode =
+    r.sortMode === 'standings' || r.sortMode === 'random' || r.sortMode === 'checkin'
+      ? r.sortMode
+      : 'checkin'
+
+  return {
+    eventId: r.eventId,
+    targetCardSize: Number.isFinite(sizeNum) && sizeNum >= 1 ? Math.trunc(sizeNum) : DEFAULT_CARD_SIZE,
+    sortMode,
+    cards: {
+      M: normalizeList(cardMap.M, 'M'),
+      W: normalizeList(cardMap.W, 'W'),
+    },
+    updatedAt: typeof r.updatedAt === 'string' ? r.updatedAt : '',
+  }
+}
+
+/**
+ * Resolves the authoritative card set for an event, preferring non-null remote cards.
+ */
+export function resolveEventCards(
+  eventId: string,
+  remoteCards: unknown,
+  fallbackLocal: PPEvtCards | null = loadEventCards(eventId),
+): PPEvtCards | null {
+  if (remoteCards !== undefined && remoteCards !== null) {
+    return normalizeEventCards(remoteCards)
+  }
+  return fallbackLocal
+}
+
+/**
+ * Maps each playerId in a division's cards to its assigned cardNumber.
+ */
+export function playerCardLabelMap(
+  cards: PPEvtCards | null | undefined,
+  division: Division,
+): Map<string, number> {
+  const map = new Map<string, number>()
+  for (const card of cards?.cards?.[division] ?? []) {
+    for (const pid of card.playerIds) {
+      map.set(pid, card.cardNumber)
+    }
+  }
+  return map
+}
+
+/**
  * Loads card assignments from local storage for an event.
  */
 export function loadEventCards(eventId: string): PPEvtCards | null {

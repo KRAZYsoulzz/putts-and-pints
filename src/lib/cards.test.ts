@@ -12,6 +12,9 @@ import {
   calculateSeasonStandingsPoints,
   sortEntriesForCards,
   loadEventCards,
+  normalizeEventCards,
+  playerCardLabelMap,
+  resolveEventCards,
   saveEventCards,
   clearEventCards,
   loadScoreViewMode,
@@ -354,5 +357,52 @@ assert.equal(storage.has('pp_cards_ev-1'), false)
 
 // Clearing Week 1 is strictly refused
 assert.equal(clearEventCards(WEEK1_EVENT_ID), false)
+
+// normalizeEventCards / resolveEventCards / playerCardLabelMap
+assert.equal(normalizeEventCards(null), null)
+assert.equal(normalizeEventCards({ foo: 'bar' }), null)
+
+const normalized = normalizeEventCards({
+  eventId: 'ev-cloud',
+  targetCardSize: 5,
+  sortMode: 'invalid-mode',
+  cards: {
+    M: [{ cardNumber: 2, playerIds: ['pA', 'pB', 123] }],
+    W: 'not-an-array',
+  },
+})
+assert.ok(normalized)
+assert.equal(normalized.eventId, 'ev-cloud')
+assert.equal(normalized.targetCardSize, 5)
+assert.equal(normalized.sortMode, 'checkin')
+assert.equal(normalized.cards.M.length, 1)
+assert.deepEqual(normalized.cards.M[0].playerIds, ['pA', 'pB'])
+assert.deepEqual(normalized.cards.W, [])
+
+const fallbackLocal = {
+  ...dummyCards,
+  eventId: 'ev-cloud',
+  targetCardSize: 4,
+}
+assert.equal(
+  resolveEventCards('ev-cloud', undefined, fallbackLocal)?.targetCardSize,
+  4,
+  'falls back to local cards when remote field is undefined',
+)
+assert.equal(
+  resolveEventCards('ev-cloud', null, fallbackLocal)?.targetCardSize,
+  4,
+  'falls back to local cards when remote field is null',
+)
+assert.equal(
+  resolveEventCards('ev-cloud', normalized, fallbackLocal)?.targetCardSize,
+  5,
+  'prefers remote cards when non-null remote cards are present',
+)
+
+const labelMap = playerCardLabelMap(normalized, 'M')
+assert.equal(labelMap.get('pA'), 2)
+assert.equal(labelMap.get('pB'), 2)
+assert.equal(playerCardLabelMap(normalized, 'W').size, 0)
 
 console.log('cards tests defined ✔')

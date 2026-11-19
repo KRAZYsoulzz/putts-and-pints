@@ -1,8 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js'
 import { supabase } from './supabase'
+import { normalizeEventCards, type PPEvtCards } from './cards'
 import { resolveSettings } from './settings'
-import { mergeNinePatch, seasonHighScoreRecord, week1AllowsEventPatch, week1AllowsScorePatch } from './scoring'
+import { isSeason9Week1, mergeNinePatch, seasonHighScoreRecord, week1AllowsEventPatch, week1AllowsScorePatch } from './scoring'
 import { reportError } from './notify'
 import { friendlyError } from './validation'
 import type { Division, Entry, LedgerRow, PPEvent, Player, Season, Settings, Tag } from './types'
@@ -31,6 +32,7 @@ interface Data {
   reload: () => Promise<'applied' | 'busy' | 'error'>
   patchEntry: (id: string, patch: Partial<Entry>) => Promise<boolean>
   patchEvent: (id: string, patch: Partial<PPEvent>) => Promise<void>
+  saveCardsToEvent: (id: string, cards: PPEvtCards | null) => Promise<void>
   /** Write the season tag immediately and show it on the roster without waiting for an event. */
   saveTag: (playerId: string, tagNumber: number | null) => Promise<void>
   /** True once the first session and director check have finished. */
@@ -60,6 +62,9 @@ function normalizeEvent(row: PPEvent): PPEvent {
     pp_reserve_p5_men: money(row.pp_reserve_p5_men),
     pp_reserve_p4_women: money(row.pp_reserve_p4_women),
     pp_reserve_p5_women: money(row.pp_reserve_p5_women),
+    ...(Object.prototype.hasOwnProperty.call(row, 'cards')
+      ? { cards: normalizeEventCards(row.cards) }
+      : {}),
   }
 }
 
@@ -185,6 +190,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const writes = useRef(0)
   const reloadQueued = useRef(false)
   const reloadGen = useRef(0)
+  const cardsColumnMissing = useRef(false)
   const seasonsRef = useRef(seasons)
   const entriesRef = useRef(entries)
   useEffect(() => { seasonsRef.current = seasons }, [seasons])
@@ -314,6 +320,33 @@ export function DataProvider({ children }: { children: ReactNode }) {
     finishWrite(!!error)
   }, [isAdmin, events, finishWrite])
 
+  const saveCardsToEvent = useCallback(async (id: string, cards: PPEvtCards | null) => {
+    if (!isAdmin) return
+    const targetEvent = events.find(ev => ev.id === id)
+    if (isSeason9Week1(targetEvent)) return
+    if (cardsColumnMissing.current) return
+    writes.current += 1
+    setEvents(prev => prev.map(e => (e.id === id ? { ...e, cards } : e)))
+    const { error } = await supabase.from('pp_events').update({ cards }).eq('id', id)
+    if (error) {
+      const code = (error.code ?? '').toUpperCase()
+      const missing =
+        code === 'PGRST204' ||
+        code === '42703' ||
+        /column.*cards|schema cache|does not exist/i.test(error.message)
+      if (missing) {
+        cardsColumnMissing.current = true
+        finishWrite(false)
+        return
+      }
+      console.error(error.message)
+      reportError(friendlyError(error.message))
+      finishWrite(true)
+      return
+    }
+    finishWrite(false)
+  }, [isAdmin, events, finishWrite])
+
   const saveTag = useCallback(async (playerId: string, tagNumber: number | null) => {
     if (!isAdmin) {
       const message = 'You are not signed in as a director. Sign in again, then retry that save.'
@@ -375,9 +408,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
       tags, events, entries, ledger,
       liveEvent: events.find(e => e.status !== 'complete' && e.status !== 'scheduled') ?? null,
       viewEventId, openEvent,
-      records, recordHolders, reload, patchEntry, patchEvent, saveTag, authReady, signOut,
+      records, recordHolders, reload, patchEntry, patchEvent, saveCardsToEvent, saveTag, authReady, signOut,
     }
-  }, [loading, session, isAdmin, authReady, seasons, players, tags, events, entries, ledger, viewEventId, openEvent, reload, patchEntry, patchEvent, saveTag, signOut])
+  }, [loading, session, isAdmin, authReady, seasons, players, tags, events, entries, ledger, viewEventId, openEvent, reload, patchEntry, patchEvent, saveCardsToEvent, saveTag, signOut])
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }

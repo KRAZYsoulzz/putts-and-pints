@@ -63,7 +63,9 @@ import {
   loadEventCards,
   loadScoreViewMode,
   movePlayerBetweenCards,
+  playerCardLabelMap,
   removePlayerFromCards,
+  resolveEventCards,
   saveCheckinViewMode,
   saveEventCards,
   saveScoreViewMode,
@@ -71,6 +73,7 @@ import {
   type CardSortMode,
   type PPEvtCards,
 } from '../lib/cards'
+import { localTodayIso } from '../lib/special-events'
 
 const STEPS: { status: EventStatus; label: string }[] = [
   { status: 'checkin', label: '1. Check-in' },
@@ -88,6 +91,7 @@ function LeaderboardDivisionColumn({
   entryMap,
   playerById,
   isProjector,
+  cardNumberByPlayer,
 }: {
   d: Division
   dEntries: Entry[]
@@ -95,6 +99,7 @@ function LeaderboardDivisionColumn({
   entryMap: Map<string, Entry>
   playerById: Map<string, Player>
   isProjector: boolean
+  cardNumberByPlayer?: Map<string, number>
 }) {
   const scrollRef = useAutoScroll<HTMLDivElement>(isProjector, dEntries)
 
@@ -102,11 +107,15 @@ function LeaderboardDivisionColumn({
     const ent = entryMap.get(row.id)
     const p = ent ? playerById.get(ent.player_id) : null
     const playerName = p?.name ?? 'Unknown Player'
+    const cardNum = ent ? cardNumberByPlayer?.get(ent.player_id) : undefined
     return (
       <tr key={row.id} className={row.place === 1 ? 'leader' : ''}>
         <td className="place col-plc">{row.place != null && row.place > 0 ? ordinal(row.place) : '—'}</td>
         <td className="strong col-player" title={playerName}>
           <span className="player-name">{playerName}</span>
+          {cardNum != null && (
+            <span className="chip" style={{ marginLeft: 6 }}>C{cardNum}</span>
+          )}
           {ent?.awards && ent.awards.length > 0 && (
             <span className="chips">
               {ent.awards.map(a => <span key={a} className="chip chip-teal">{AWARD_SHORT[a]}</span>)}
@@ -200,7 +209,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
   const data = useData()
   const {
     isAdmin: authIsAdmin, season, settings, liveEvent, events, viewEventId, openEvent, loading,
-    entries, players, playerById, tags, ledger, records, reload, patchEntry, patchEvent,
+    entries, players, playerById, tags, ledger, records, reload, patchEntry, patchEvent, saveCardsToEvent,
   } = data
 
   const nav = useNavigate()
@@ -254,7 +263,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
   const [isFinalizing, setIsFinalizing] = useState(false)
   const [startOpen, setStartOpen] = useState(false)
   const [eventName, setEventName] = useState('')
-  const [eventDate, setEventDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [eventDate, setEventDate] = useState(() => localTodayIso())
   const [barError, setBarError] = useState('')
   const [payoutNote, setPayoutNote] = useState<{ scope: string; text: string } | null>(null)
   const [cutOverride, setCutOverride] = useState<{ key: string; value: number } | null>(null)
@@ -270,8 +279,9 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
 
   const [eventCards, setEventCards] = useState<PPEvtCards | null>(() => {
     if (!event) return null
-    return loadEventCards(event.id)
+    return resolveEventCards(event.id, event.cards, loadEventCards(event.id))
   })
+  const prevRemoteCardsRef = useRef<Record<string, string | null | undefined>>({})
   const [makeCardsOpen, setMakeCardsOpen] = useState(false)
   const [cardSizeInput, setCardSizeInput] = useState(4)
   const [cardSortInput, setCardSortInput] = useState<CardSortMode>('checkin')
@@ -283,11 +293,28 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
       setEventCards(null)
       return
     }
+    if (event.cards != null) {
+      const loaded = resolveEventCards(event.id, event.cards, null)
+      setEventCards(loaded)
+      if (loaded) {
+        if (!isSeason9Week1(event)) saveEventCards(event.id, loaded, event)
+        if (loaded.targetCardSize) setCardSizeInput(loaded.targetCardSize)
+        if (loaded.sortMode) setCardSortInput(loaded.sortMode)
+      }
+      prevRemoteCardsRef.current[event.id] = loaded?.updatedAt ?? null
+      return
+    }
+    if (event.cards === null && prevRemoteCardsRef.current[event.id]) {
+      setEventCards(null)
+      clearEventCards(event.id, event)
+      prevRemoteCardsRef.current[event.id] = null
+      return
+    }
     const loaded = loadEventCards(event.id)
     setEventCards(loaded)
     if (loaded?.targetCardSize) setCardSizeInput(loaded.targetCardSize)
     if (loaded?.sortMode) setCardSortInput(loaded.sortMode)
-  }, [event?.id])
+  }, [event?.id, event?.cards])
 
   const checkingIn = useRef(new Set<string>())
   const dirtyScores = useRef(new Set<string>())
@@ -511,7 +538,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                 return
               }
               setEventName('')
-              setEventDate(new Date().toISOString().slice(0, 10))
+              setEventDate(localTodayIso())
               setStartOpen(true)
             }}>
               <Plus size={16} /> {loading ? 'Loading season…' : 'Start New Event'}
@@ -710,8 +737,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
             },
             updatedAt: new Date().toISOString(),
           }
-          setEventCards(updated)
-          saveEventCards(event.id, updated, event)
+          persistEventCards(updated)
         }
       }
       await reload()
@@ -740,6 +766,19 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
     }
   }
 
+  const persistEventCards = (next: PPEvtCards | null) => {
+    if (!event || isSeason9Week1(event)) return
+    setEventCards(next)
+    if (next) {
+      saveEventCards(event.id, next, event)
+      prevRemoteCardsRef.current[event.id] = next.updatedAt
+    } else {
+      clearEventCards(event.id, event)
+      prevRemoteCardsRef.current[event.id] = null
+    }
+    void saveCardsToEvent(event.id, next)
+  }
+
   const handleSetScoreViewMode = (mode: 'list' | 'card') => {
     setScoreViewMode(mode)
     saveScoreViewMode(mode)
@@ -761,8 +800,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
       allEntries: entries,
       events,
     })
-    setEventCards(generated)
-    saveEventCards(event.id, generated, event)
+    persistEventCards(generated)
     setMakeCardsOpen(false)
     setCheckinViewMode('card')
     reportInfo(`Cards generated for tonight (${size} players per card).`)
@@ -788,8 +826,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
       },
       updatedAt: new Date().toISOString(),
     }
-    setEventCards(updated)
-    saveEventCards(event.id, updated, event)
+    persistEventCards(updated)
     reportInfo(`${division === 'M' ? "Men's" : "Women's"} cards reshuffled.`)
   }
 
@@ -810,14 +847,12 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
       },
       updatedAt: new Date().toISOString(),
     }
-    setEventCards(updated)
-    saveEventCards(event.id, updated, event)
+    persistEventCards(updated)
   }
 
   const handleClearCards = () => {
     if (!event || isWeek1Locked) return
-    clearEventCards(event.id, event)
-    setEventCards(null)
+    persistEventCards(null)
     setMakeCardsOpen(false)
     reportInfo('Cards cleared for tonight.')
   }
@@ -1359,7 +1394,12 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
               : `${money(settings.entryFee - settings.perfectRoundShare)}/player + ${money(barAmount)} bar`}
           />
         )}
-        {(!isPublicLeaderboard || settings.potsVisibility?.perfect_round !== false) && (
+        {(!isPublicLeaderboard || (
+          settings.pp_pot_visibility?.[`perfect_round_${division}`] ??
+          settings.pp_pot_visibility?.perfect_round ??
+          settings.potsVisibility?.perfect_round ??
+          true
+        )) && (
           <Stat
             label="Perfect Round Pot"
             value={money(perfectRoundShown)}
@@ -1621,8 +1661,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                                                   cards: { ...eventCards.cards, [ent.division]: nextCards },
                                                   updatedAt: new Date().toISOString(),
                                                 }
-                                                setEventCards(updated)
-                                                saveEventCards(event.id, updated, event)
+                                                persistEventCards(updated)
                                               }
                                               reload()
                                             }}
@@ -1671,8 +1710,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                                 cards: { ...eventCards.cards, [division]: cur },
                                 updatedAt: new Date().toISOString(),
                               }
-                              setEventCards(updated)
-                              saveEventCards(event.id, updated, event)
+                              persistEventCards(updated)
                             }}
                           >
                             Put in smallest cards
@@ -1883,8 +1921,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                                         cards: { ...eventCards.cards, [ent.division]: nextCards },
                                         updatedAt: new Date().toISOString(),
                                       }
-                                      setEventCards(updated)
-                                      saveEventCards(event.id, updated, event)
+                                      persistEventCards(updated)
                                     }
                                     reload()
                                   }}
@@ -1934,7 +1971,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                     : <>Automatic from entries: {money(moneyCalc.barSplit[division])}. Type an amount to override.</>}
                 </small>
               </div>
-              <button style={{ marginTop: 16 }} className="btn btn-primary btn-block" disabled={divEntries.length === 0 || isSeason9Week1(event)} onClick={() => setStatus('scoring')}>
+              <button style={{ marginTop: 16 }} className="btn btn-primary btn-block" disabled={nightEntries.length === 0 || isSeason9Week1(event)} onClick={() => setStatus('scoring')}>
                 Start 18-Holes Scoring <ChevronRight size={16} />
               </button>
             </div>
@@ -1948,7 +1985,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
             <div>
               <h2 className="display section-title">18-Holes Scoring Grid</h2>
               <p className="muted" style={{ fontSize: 13, marginTop: 4 }}>
-                Front 9 and Back 9, each 0–50, rows staying in check-in order. Right-click a player to award a bonus.
+                Front 9 and Back 9, each 0–50, rows staying in check-in order. Tap Awards on any row (or right-click) to award a bonus.
               </p>
             </div>
             <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -2118,6 +2155,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
               <h2 className="display section-title">Final 9 Round</h2>
               <p className="muted" style={{ fontSize: 13, marginTop: 4 }}>
                 Final 9 is added to the 18-hole score. 18 holes max 100, the Final 9 maxes at 50, and the night maxes at 150.
+                {settings.ties.cut === 'playoff' ? ' Tap Finalist / Cut on any row to settle a cut-line playoff.' : ''}
               </p>
             </div>
             <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -2317,6 +2355,11 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                   entryMap={entryMap}
                   playerById={playerById}
                   isProjector={isProjector}
+                  cardNumberByPlayer={
+                    event.status === 'checkin' || event.status === 'scoring'
+                      ? playerCardLabelMap(eventCards, d)
+                      : undefined
+                  }
                 />
               )
             })}
@@ -2349,6 +2392,26 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
             )}
           </div>
 
+          {(() => {
+            const totalCounts = new Map<number, number>()
+            for (const row of result.ranked) {
+              if (row.place > 0 && row.totals.total != null) {
+                totalCounts.set(row.totals.total, (totalCounts.get(row.totals.total) ?? 0) + 1)
+              }
+            }
+            const tiedFinalTotals = new Set<number>()
+            for (const [tot, count] of totalCounts) {
+              if (count >= 2) tiedFinalTotals.add(tot)
+            }
+            const showPlayoffCol =
+              isAdmin &&
+              event.status === 'results' &&
+              !isWeek1Locked &&
+              settings.ties.placement === 'playoff' &&
+              tiedFinalTotals.size > 0
+            const showResultAwardsCol = isAdmin && event.status !== 'complete' && !isWeek1Locked
+
+            return (
           <div className="grid-2">
             <div className="panel">
               <div className="table-wrap">
@@ -2363,6 +2426,8 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                       <th className="r bl" style={{ width: 85 }}>Payout</th>
                       <th className="c bl" style={{ width: 60 }}>Points</th>
                       <th className="c bl" style={{ width: 95 }}>Tag In → Out</th>
+                      {showPlayoffCol && <th className="r bl" style={{ width: 108 }}>Playoff</th>}
+                      {showResultAwardsCol && <th className="c bl" style={{ width: 96 }}>Awards</th>}
                     </tr>
                   </thead>
                   <tbody>
@@ -2373,6 +2438,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                       const payoutAmt = result.payouts.get(ent.id) ?? 0
                       const pts = result.points.get(ent.id) ?? 0
                       const tagOut = result.tagsOut.get(ent.id)
+                      const isPlayoffEligible = t.total != null && tiedFinalTotals.has(t.total)
                       return (
                         <tr key={ent.id} className={r.place === 1 ? 'leader' : ''} onContextMenu={e => handleContextMenu(e, ent)}>
                           <td className="place">{r.place > 0 ? ordinal(r.place) : '—'}</td>
@@ -2400,6 +2466,42 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                                 ? <span>#{ent.tag_in} → <strong style={{ color: 'var(--text)' }}>#{tagOut}</strong></span>
                                 : <strong style={{ color: 'var(--text)' }}>#{tagOut}</strong>}
                           </td>
+                          {showPlayoffCol && (
+                            <td className="r bl">
+                              {isPlayoffEligible ? (
+                                <select
+                                  className="select"
+                                  style={{ width: 98, height: 28, fontSize: 11 }}
+                                  aria-label={`Playoff finish for ${p?.name ?? 'player'}`}
+                                  value={ent.tiebreak ?? ''}
+                                  onChange={e => {
+                                    const val = e.target.value ? Number(e.target.value) : null
+                                    void patchEntry(ent.id, { tiebreak: val })
+                                  }}
+                                >
+                                  <option value="">Unset</option>
+                                  <option value="1">Playoff #1</option>
+                                  <option value="2">Playoff #2</option>
+                                  <option value="3">Playoff #3</option>
+                                  <option value="4">Playoff #4</option>
+                                </select>
+                              ) : (
+                                <span className="faint">—</span>
+                              )}
+                            </td>
+                          )}
+                          {showResultAwardsCol && (
+                            <td className="c bl">
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-sm"
+                                style={{ fontSize: 11 }}
+                                onClick={e => handleContextMenu(e, ent)}
+                              >
+                                <Sparkles size={12} /> Awards
+                              </button>
+                            </td>
+                          )}
                         </tr>
                       )
                     })}
@@ -2562,6 +2664,8 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
               </div>
             </div>
           </div>
+          )
+          })()}
         </div>
       )}
 
@@ -3009,7 +3113,7 @@ function ScoreTable({ rows, allRows, rankedById, playerById, settings, mode, dis
                   <th className="c bl" title="Front 9, 50 points maximum">/ 50</th>
                   <th className="c bl" title="Back 9, 50 points maximum">/ 50</th>
                   <th className="c bl" title="18 holes, 100 points maximum">/ 100</th>
-                  <th className="c bl">Right-Click</th>
+                  <th className="c bl">Tap / Click</th>
                 </tr>
               </>
             ) : (
@@ -3021,12 +3125,14 @@ function ScoreTable({ rows, allRows, rankedById, playerById, settings, mode, dis
                   <th className="c bl" style={{ width: 70 }}>18 Total</th>
                   <th className="c bl" style={{ width: 90 }} title="Final 9, 50 points maximum">Final 9 (/ 50)</th>
                   <th className="c bl" style={{ width: 90 }}>27 Total</th>
+                  <th className="c bl" style={{ width: 96 }}>Awards</th>
                 </tr>
                 <tr>
                   <th></th><th></th><th></th>
                   <th className="c bl" title="18 holes, 100 points maximum">/ 100</th>
                   <th className="c bl" title="Final 9, 50 points maximum">/ 50</th>
                   <th className="c bl" title="18 holes plus Final 9, 150 points maximum">/ 150</th>
+                  <th className="c bl">Tap</th>
                 </tr>
               </>
             )}
@@ -3082,7 +3188,12 @@ function ScoreTable({ rows, allRows, rankedById, playerById, settings, mode, dis
               return (
                 <tr key={ent.id} onContextMenu={e => onContextMenu(e, ent)} className={`${!ent.made_final ? 'out' : ''} ${place === 1 ? 'leader' : ''}`}>
                   <td className="place">{place ?? '—'}</td>
-                  <td className="strong">{p?.name}</td>
+                  <td className="strong">
+                    {p?.name}
+                    {ent.awards?.length > 0 && (
+                      <span className="chips">{ent.awards.map(a => <span key={a} className="chip chip-teal">{AWARD_SHORT[a]}</span>)}</span>
+                    )}
+                  </td>
                   <td className="c">
                     <button className="btn btn-sm btn-ghost" style={{ fontSize: 11 }} disabled={disabledScores} onClick={() => { if (!disabledScores) onToggleFinal?.(ent) }}>
                       {ent.made_final ? <span className="chip chip-teal">Finalist</span> : <span className="faint">Cut</span>}
@@ -3091,6 +3202,11 @@ function ScoreTable({ rows, allRows, rankedById, playerById, settings, mode, dis
                   <td className="c bl strong">{t.t18 ?? '—'}</td>
                   <td className="c bl"><ScoreInput value={ent.made_final ? t.f : null} max={MAX_FINAL} disabled={!ent.made_final || disabledScores} onDirty={dirty => onDirty(ent.id, 'final', dirty)} onCommit={n => onScore(ent.id, { score_final: n })} /></td>
                   <td className="c bl big" style={{ color: nightTot != null ? 'var(--orange)' : 'var(--text-3)' }}>{nightTot != null ? nightTot : ''}</td>
+                  <td className="c bl">
+                    <button type="button" className="btn btn-ghost btn-sm" style={{ fontSize: 11 }} disabled={disabledScores} onClick={e => { if (!disabledScores) onContextMenu(e, ent) }}>
+                      <Sparkles size={12} /> Awards
+                    </button>
+                  </td>
                 </tr>
               )
             })}

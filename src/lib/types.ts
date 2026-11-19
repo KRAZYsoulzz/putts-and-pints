@@ -130,6 +130,7 @@ export interface PPEvent {
   pp_reserve_p4_women?: number
   pp_reserve_p5_women?: number
   pp_shared_pots_posted?: boolean
+  cards?: import('./cards').PPEvtCards | null
 }
 
 export interface Entry {

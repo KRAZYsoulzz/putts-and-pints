@@ -9,6 +9,15 @@ import { isSeason9Week1 } from '../lib/scoring'
 import { Dialog, MoneyInput, PageHead, fmtDate } from '../components/ui'
 import type { Division, Fund, PPEvent } from '../lib/types'
 
+const EMPTY_CARRYOVER = {
+  prM: 0,
+  prW: 0,
+  p5: 0,
+  p4: 0,
+  hsM: 0,
+  hsW: 0,
+}
+
 export default function SeasonPage() {
   const { season, events, entries, isAdmin, reload, openEvent, viewEventId } = useData()
   const nav = useNavigate()
@@ -16,6 +25,7 @@ export default function SeasonPage() {
   const [newSeasonName, setNewSeasonName] = useState('')
   const [seasonError, setSeasonError] = useState('')
   const [carryoverModal, setCarryoverModal] = useState(false)
+  const [savingCarryover, setSavingCarryover] = useState(false)
   const [editEvent, setEditEvent] = useState<PPEvent | null>(null)
   const [editName, setEditName] = useState('')
   const [editDate, setEditDate] = useState('')
@@ -23,14 +33,7 @@ export default function SeasonPage() {
   const [carryError, setCarryError] = useState('')
 
   // Carryover form state (Perfect 4 and 5 are shared pots across divisions)
-  const [carryover, setCarryover] = useState({
-    prM: 0,
-    prW: 0,
-    p5: 0,
-    p4: 0,
-    hsM: 0,
-    hsW: 0,
-  })
+  const [carryover, setCarryover] = useState(EMPTY_CARRYOVER)
 
   const handleCreateSeason = async () => {
     const name = normalizeName(newSeasonName)
@@ -62,6 +65,7 @@ export default function SeasonPage() {
   }
 
   const handleSaveCarryover = async () => {
+    if (savingCarryover) return
     if (!season) {
       setCarryError('Create or activate a season before saving carryovers.')
       return
@@ -74,28 +78,35 @@ export default function SeasonPage() {
       { division: 'M', fund: 'high_score', amount: carryover.hsM, note: 'Carried over from last year' },
       { division: 'W', fund: 'high_score', amount: carryover.hsW, note: 'Carried over from last year' },
     ]
+    const toInsert = entriesToPost.filter(item => item.amount > 0)
+    if (toInsert.length === 0) {
+      setCarryError('Enter at least one carryover amount greater than $0.')
+      return
+    }
 
     setCarryError('')
+    setSavingCarryover(true)
     try {
-      for (const item of entriesToPost) {
-        if (item.amount > 0) {
-          await must(
-            supabase.from('pp_ledger').insert({
-              season_id: season.id,
-              division: item.division,
-              fund: item.fund,
-              kind: 'carryover',
-              amount: item.amount,
-              note: item.note,
-            }),
-          )
-        }
+      for (const item of toInsert) {
+        await must(
+          supabase.from('pp_ledger').insert({
+            season_id: season.id,
+            division: item.division,
+            fund: item.fund,
+            kind: 'carryover',
+            amount: item.amount,
+            note: item.note,
+          }),
+        )
       }
     } catch (err) {
       setCarryError(messageOf(err))
       return
+    } finally {
+      setSavingCarryover(false)
     }
 
+    setCarryover(EMPTY_CARRYOVER)
     setCarryoverModal(false)
     reportInfo('Carryover balances saved.')
     reload()
@@ -158,7 +169,14 @@ export default function SeasonPage() {
       <PageHead eyebrow="Season Management" title="Seasons & Events">
         {isAdmin && (
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            <button className="btn btn-ghost" onClick={() => setCarryoverModal(true)}>
+            <button
+              className="btn btn-ghost"
+              onClick={() => {
+                setCarryover(EMPTY_CARRYOVER)
+                setCarryError('')
+                setCarryoverModal(true)
+              }}
+            >
               <Sparkles size={16} /> Enter Last Year's Carryovers
             </button>
             <button className="btn btn-primary" onClick={() => setNewSeasonModal(true)}>
@@ -404,8 +422,8 @@ export default function SeasonPage() {
 
             {carryError && <small className="field-error">{carryError}</small>}
             <div style={{ marginTop: 16 }}>
-              <button className="btn btn-primary btn-block" onClick={handleSaveCarryover}>
-                Save Carryovers to Ledger
+              <button className="btn btn-primary btn-block" disabled={savingCarryover} onClick={handleSaveCarryover}>
+                {savingCarryover ? 'Saving…' : 'Save Carryovers to Ledger'}
               </button>
             </div>
           </div>

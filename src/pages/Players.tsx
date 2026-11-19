@@ -16,11 +16,11 @@ import {
   type Entry,
   type Player,
 } from '../lib/types'
-import { Dialog, DivisionSeg, MoneyInput, PageHead, Toggle, money, ordinal } from '../components/ui'
+import { Dialog, MoneyInput, PageHead, Seg, Toggle, money, ordinal } from '../components/ui'
 
 export default function Players() {
   const { players, tags, entries, events, season, isAdmin, reload, saveTag } = useData()
-  const [division, setDivision] = useState<Division>('M')
+  const [divisionFilter, setDivisionFilter] = useState<'ALL' | Division>('ALL')
   const [query, setQuery] = useState('')
   const [selectedPlayer, setSelectedPlayer] = useState<Player | null>(null)
 
@@ -48,10 +48,11 @@ export default function Players() {
 
   // Filter players
   const filtered = useMemo(() => {
+    const q = query.toLowerCase().trim()
     return players
-      .filter((p) => p.division === division && p.name.toLowerCase().includes(query.toLowerCase().trim()))
+      .filter((p) => (divisionFilter === 'ALL' || p.division === divisionFilter) && p.name.toLowerCase().includes(q))
       .sort((a, b) => a.name.localeCompare(b.name))
-  }, [players, division, query])
+  }, [players, divisionFilter, query])
 
   // Player profile stats
   const profileStats = useMemo(() => {
@@ -311,9 +312,17 @@ export default function Players() {
     <div className="players-page">
       <PageHead eyebrow="Roster & Profiles" title="Players Directory">
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-          <DivisionSeg value={division} onChange={setDivision} />
+          <Seg
+            value={divisionFilter}
+            onChange={setDivisionFilter}
+            options={[
+              { value: 'ALL', label: 'All', count: players.length },
+              { value: 'M', label: "Men's", count: players.filter(p => p.division === 'M').length },
+              { value: 'W', label: "Women's", count: players.filter(p => p.division === 'W').length },
+            ]}
+          />
           {isAdmin && (
-            <button className="btn btn-primary" onClick={() => { setAddError(''); setAddInTags(false); setInitialTag(''); setAddModal(true) }}>
+            <button className="btn btn-primary" onClick={() => { setAddError(''); setAddInTags(false); setInitialTag(''); setNewDivision(divisionFilter === 'W' ? 'W' : 'M'); setAddModal(true) }}>
               <Plus size={16} /> Add Player
             </button>
           )}
@@ -326,7 +335,7 @@ export default function Players() {
           <input
             className="input"
             type="search"
-            placeholder="Search by player name..."
+            placeholder="Search all players by name..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -351,7 +360,9 @@ export default function Players() {
               {filtered.length === 0 ? (
                 <tr>
                   <td colSpan={6} style={{ textAlign: 'center', padding: '36px 0' }} className="muted">
-                    No players found in this division matching "{query}".
+                    {query.trim()
+                      ? `No players found matching "${query}".`
+                      : 'No players on the roster yet.'}
                   </td>
                 </tr>
               ) : (
@@ -369,6 +380,11 @@ export default function Players() {
                         style={{ cursor: 'pointer' }}
                       >
                         {p.name}
+                        {divisionFilter === 'ALL' && (
+                          <span className={`chip ${p.division === 'M' ? 'chip-orange' : 'chip-teal'}`} style={{ marginLeft: 8 }}>
+                            {p.division}
+                          </span>
+                        )}
                         {!p.active && <span className="chip chip-danger" style={{ marginLeft: 6 }}>Inactive</span>}
                       </td>
                       <td className="c col-tag">

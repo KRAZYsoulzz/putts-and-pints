@@ -1713,6 +1713,7 @@ const changedFiles = [
   'supabase/pp_009_score_front_back.sql',
   'supabase/pp_finance_010_division_closeout.sql',
   'supabase/pp_011_special_events.sql',
+  'supabase/pp_012_event_cards.sql',
 ]
 for (const relPath of changedFiles) {
   const bytes = fs.readFileSync(new URL(`../${relPath}`, import.meta.url))

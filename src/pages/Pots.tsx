@@ -68,15 +68,21 @@ export default function Pots() {
     const current = isPublicVisible(potKey)
     const nextVal = !current
 
-    const nextPpVis = {
-      ...(season.settings?.pp_pot_visibility ?? {}),
-      [targetKey]: nextVal,
-      [potKey]: nextVal,
-    }
-    const nextPotsVis = {
-      ...settings.potsVisibility,
-      [potKey]: nextVal,
-    }
+    const nextPpVis = isPerDiv
+      ? {
+          ...(season.settings?.pp_pot_visibility ?? {}),
+          [targetKey]: nextVal,
+        }
+      : {
+          ...(season.settings?.pp_pot_visibility ?? {}),
+          [potKey]: nextVal,
+        }
+    const nextPotsVis = isPerDiv
+      ? { ...settings.potsVisibility }
+      : {
+          ...settings.potsVisibility,
+          [potKey]: nextVal,
+        }
     const nextSettings = {
       ...season.settings,
       potsVisibility: nextPotsVis,

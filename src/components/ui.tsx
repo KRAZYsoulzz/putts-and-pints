@@ -96,8 +96,8 @@ export function Menu({ x, y, onClose, children }: { x: number; y: number; onClos
       window.removeEventListener('scroll', onClose, true)
     }
   }, [onClose])
-  const left = Math.min(x, window.innerWidth - 240)
-  const top = Math.min(y, window.innerHeight - 320)
+  const left = Math.max(8, Math.min(x, window.innerWidth - 240))
+  const top = Math.max(8, Math.min(y, window.innerHeight - 320))
   return <div ref={ref} className="menu" style={{ left, top }} role="menu">{children}</div>
 }
 

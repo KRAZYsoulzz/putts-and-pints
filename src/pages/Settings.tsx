@@ -8,8 +8,12 @@ import type { Fund, Settings } from '../lib/types'
 import { MoneyInput, PageHead, Toggle } from '../components/ui'
 
 export default function SettingsPage() {
-  const { season, settings: initialSettings, isAdmin, reload } = useData()
-  const [form, setForm] = useState<Settings>(initialSettings)
+  const { season, settings: initialSettings, isAdmin, loading, reload } = useData()
+  const [draft, setDraft] = useState<Settings | null>(null)
+  const form = draft ?? initialSettings
+  const setForm = (updater: Settings | ((prev: Settings) => Settings)) => {
+    setDraft(prev => (typeof updater === 'function' ? updater(prev ?? initialSettings) : updater))
+  }
   const [saved, setSaved] = useState(false)
   const [saveError, setSaveError] = useState('')
 
@@ -30,9 +34,10 @@ export default function SettingsPage() {
       setSaveError(messageOf(err))
       return
     }
+    await reload()
+    setDraft(null)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
-    reload()
   }
 
   const handleResetDefaults = async () => {
@@ -48,7 +53,7 @@ export default function SettingsPage() {
             <button className="btn btn-ghost" onClick={handleResetDefaults}>
               <RotateCcw size={14} /> Reset Defaults
             </button>
-            <button className="btn btn-primary" onClick={handleSave}>
+            <button className="btn btn-primary" disabled={loading || !season} onClick={handleSave}>
               {saved ? <Check size={16} /> : <Save size={16} />}
               {saved ? 'Saved!' : 'Save Settings'}
             </button>
@@ -255,7 +260,13 @@ export default function SettingsPage() {
                       setForm((s) => ({
                         ...s,
                         potsVisibility: { ...s.potsVisibility, [item.key]: val },
-                        pp_pot_visibility: { ...(s.pp_pot_visibility ?? {}), [item.key]: val },
+                        pp_pot_visibility: {
+                          ...(s.pp_pot_visibility ?? {}),
+                          [item.key]: val,
+                          ...(item.key === 'perfect_round' || item.key === 'backup'
+                            ? { [`${item.key}_M`]: val, [`${item.key}_W`]: val }
+                            : {}),
+                        },
                       }))
                     }
                   />
