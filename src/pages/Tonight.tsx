@@ -36,7 +36,7 @@ import {
 } from '../lib/types'
 import { applyScoreDirty, byEntryOrder, canAdvanceToStatus, canConfirmCut, cents, computeNineCommit, cutConfirmationReady, displayedBack, displayedFront, effectiveCut, eighteenGridRows, final9EntryOrder, isOpeningTagNight, isSeason9Week1, liveNightTotal, MAX_FINAL, MAX_NINE, mergeNinePatch, qualifiers, suggestedCut, tonightBoard, totals, week1AllowsScorePatch, type Ranked } from '../lib/scoring'
 import { completeRefresh, requestRefresh, type ScoreBoard } from '../lib/score-refresh'
-import { balances, clampPaidPlaces, displayedPerfectRound, displayedSharedPot, divisionResult, eventLedgerPosted, effectiveBar, eventMoney, nightBonusCost, otherDivisionNights, paidPlaceCount, payoutPool, payoutsForPlaceCount, placeBudget, placeRemainder, postedBonusCost, postedPlaceRemainder, postedRemainderBackup, suggestedPaidPlaces } from '../lib/money'
+import { balances, clampPaidPlaces, displayedPerfectRound, displayedSharedPot, divisionResult, eventLedgerPosted, effectiveBar, eventMoney, nightBonusCost, otherDivisionNights, paidPlaceCount, payoutPool, payoutsForPlaceCount, PLACE_REMAINDER_BACKUP_NOTE, placeBudget, placeRemainder, postedBonusCost, postedPlaceRemainder, postedRemainderBackup, suggestedPaidPlaces } from '../lib/money'
 import { duplicateName, friendlyError, normalizeName, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../lib/validation'
 import { buyingTagAfter, checkinTagIn, freshBuyingTag, newPlayerInsert } from '../lib/newPlayer'
 import {
@@ -2435,13 +2435,14 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                       const ent = r.entry
                       const p = playerById.get(ent.player_id)
                       const t = r.totals
-                      const payoutAmt = result.payouts.get(ent.id) ?? 0
-                      const pts = result.points.get(ent.id) ?? 0
-                      const tagOut = result.tagsOut.get(ent.id)
+                      const payoutAmt = isDivisionClosed ? Number(ent.payout || 0) : (result.payouts.get(ent.id) ?? 0)
+                      const pts = isDivisionClosed ? Number(ent.points || 0) : (result.points.get(ent.id) ?? 0)
+                      const tagOut = isDivisionClosed ? ent.tag_out : result.tagsOut.get(ent.id)
+                      const displayPlace = isDivisionClosed ? (ent.place ?? 0) : r.place
                       const isPlayoffEligible = t.total != null && tiedFinalTotals.has(t.total)
                       return (
-                        <tr key={ent.id} className={r.place === 1 ? 'leader' : ''} onContextMenu={e => handleContextMenu(e, ent)}>
-                          <td className="place">{r.place > 0 ? ordinal(r.place) : '—'}</td>
+                        <tr key={ent.id} className={displayPlace === 1 ? 'leader' : ''} onContextMenu={e => handleContextMenu(e, ent)}>
+                          <td className="place">{displayPlace > 0 ? ordinal(displayPlace) : '—'}</td>
                           <td className="strong">
                             {p?.name}
                             {ent.awards?.length > 0 && (
@@ -2510,20 +2511,41 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
               </div>
             </div>
 
+            {(() => {
+              const postedPrEntry = cents(
+                ledger
+                  .filter(
+                    r =>
+                      r.event_id === event.id &&
+                      r.division === division &&
+                      (r.fund === 'perfect_round' || r.fund === 'backup') &&
+                      (r.kind === 'entry' || (r.kind === 'overflow' && r.note !== PLACE_REMAINDER_BACKUP_NOTE)),
+                  )
+                  .reduce((sum, r) => sum + Number(r.amount), 0),
+              )
+              const prEntryShare =
+                isDivisionClosed && postedPrEntry > 0
+                  ? postedPrEntry
+                  : cents(counts[division] * settings.perfectRoundShare)
+              return (
             <div className="panel panel-pad stack">
               <div className="eyebrow">Payout Pool & Allocation</div>
-              <div className="kv"><dt>Entry share</dt><dd>{counts[division]} × {money(settings.entryFee - settings.perfectRoundShare)}</dd></div>
+              <div className="kv"><dt>Entry share (purse)</dt><dd>{counts[division]} × {money(settings.entryFee - settings.perfectRoundShare)}</dd></div>
               <div className="kv"><dt>Bar match</dt><dd>+{money(barAmount)}</dd></div>
               <div className="kv"><dt>Bonuses awarded</dt><dd>{bonusCost ? `−${money(bonusCost)}` : money(0)}</dd></div>
               <div className="kv"><dt>Available pool</dt><dd style={{ color: 'var(--teal)' }}>{money(pool)}</dd></div>
               <div className="kv"><dt>Allocated</dt><dd>{money(allocated)}</dd></div>
-              <div className="kv"><dt>Perfect Round pot</dt><dd>+{money(toPerfectRound)}</dd></div>
+              <div className="kv"><dt>Remainder to Perfect Round</dt><dd>+{money(toPerfectRound)}</dd></div>
               {toBackup > 0 && (
-                <div className="kv"><dt>Backup pot</dt><dd>+{money(toBackup)} over the cap</dd></div>
+                <div className="kv"><dt>Remainder to Backup</dt><dd>+{money(toBackup)} over the cap</dd></div>
               )}
               <div className="kv">
                 <dt>Left in the purse</dt>
                 <dd style={{ color: purseLeft < -0.001 ? 'var(--danger)' : 'var(--text)' }}>{money(purseLeft)}</dd>
+              </div>
+              <div className="kv" style={{ borderTop: '1px solid var(--line-strong)', paddingTop: 10, marginTop: 2 }}>
+                <dt>Perfect Round entries ({counts[division]} × {money(settings.perfectRoundShare)})</dt>
+                <dd style={{ color: 'var(--orange)' }}>+{money(prEntryShare)}</dd>
               </div>
 
               {isAdmin && canEditPayouts && (
@@ -2663,6 +2685,8 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                 })}
               </div>
             </div>
+              )
+            })()}
           </div>
           )
           })()}
