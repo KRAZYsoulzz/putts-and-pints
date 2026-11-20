@@ -308,7 +308,12 @@ export function nextStationIndexForCard(
   if (entries.length === 0) return 0
   if (round === 'final') {
     for (let idx = 0; idx < 9; idx++) {
-      if (entries.some(e => clampStationMake(e.station_scores?.final?.[idx]) == null)) {
+      if (
+        entries.some(e => {
+          if (!e.station_scores?.final && e.score_final != null) return false
+          return clampStationMake(e.station_scores?.final?.[idx]) == null
+        })
+      ) {
         return idx
       }
     }
@@ -318,7 +323,13 @@ export function nextStationIndexForCard(
   for (let idx = 0; idx < 18; idx++) {
     const arrKey = idx < 9 ? 'front' : 'back'
     const inner = idx < 9 ? idx : idx - 9
-    if (entries.some(e => clampStationMake(e.station_scores?.[arrKey]?.[inner]) == null)) {
+    if (
+      entries.some(e => {
+        if (arrKey === 'front' && !e.station_scores?.front && e.score_front != null) return false
+        if (arrKey === 'back' && !e.station_scores?.back && e.score_back != null) return false
+        return clampStationMake(e.station_scores?.[arrKey]?.[inner]) == null
+      })
+    ) {
       return idx
     }
   }

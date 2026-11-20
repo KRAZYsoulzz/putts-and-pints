@@ -254,6 +254,13 @@ const fullMakes = (val: 0 | 1 | 2 = 2): StationMake[] =>
     6,
     'jumps to missed station in Final 9',
   )
+
+  const manualFrontEnt = makeEntry({ score_front: 32, station_scores: null })
+  assert.equal(
+    nextStationIndexForCard('18', [manualFrontEnt]),
+    9,
+    'skips manually entered Front 9 and opens directly on Station 10 (Back 9)',
+  )
 }
 
 // ---------------------------------------------------------------------------

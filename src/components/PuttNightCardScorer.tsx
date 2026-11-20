@@ -85,15 +85,18 @@ export default function PuttNightCardScorer({
         : 'Back 9 (10–18)'
 
   const firstMissing = nextStationIndexForCard(round, cardEntries)
+  const isNineComplete = (e: Entry, key: 'front' | 'back' | 'final') => {
+    const arr = e.station_scores?.[key]
+    if (arr) return summarizeStationRound(arr).isComplete
+    if (key === 'front') return e.score_front != null
+    if (key === 'back') return e.score_back != null
+    return e.score_final != null
+  }
   const allComplete =
     cardEntries.length > 0 &&
     (round === 'final'
-      ? cardEntries.every(e => summarizeStationRound(e.station_scores?.final).isComplete)
-      : cardEntries.every(
-          e =>
-            summarizeStationRound(e.station_scores?.front).isComplete &&
-            summarizeStationRound(e.station_scores?.back).isComplete,
-        ))
+      ? cardEntries.every(e => isNineComplete(e, 'final'))
+      : cardEntries.every(e => isNineComplete(e, 'front') && isNineComplete(e, 'back')))
 
   const handleSelectCard = (nextCard: PPCard) => {
     setSelectedCardId(nextCard.id)
@@ -446,71 +449,119 @@ export default function PuttNightCardScorer({
           </div>
 
           {showSummaryTable && (
-            <div className="table-wrap">
-              <table className="table">
-                <thead>
-                  {round === '18' ? (
+            <div className="stack" style={{ gap: 10 }}>
+              <div className="table-wrap">
+                <table className="table mini-scorecard">
+                  <thead>
                     <tr>
-                      <th>Player</th>
-                      <th className="c">F9 (/50)</th>
-                      <th className="c">B9 (/50)</th>
-                      <th className="c bl">18 Total</th>
-                      <th className="c">Awards</th>
+                      <th style={{ textAlign: 'left' }}>{halfLabel}</th>
+                      {PUTT_STATIONS_9.map((st, idx) => (
+                        <th key={st.index} title={`${st.label} (${st.pointsPerPutt} pt/putt)`}>
+                          {roundKey === 'back' ? idx + 10 : idx + 1}
+                        </th>
+                      ))}
+                      <th className="bl">Tot</th>
                     </tr>
-                  ) : (
-                    <tr>
-                      <th>Player</th>
-                      <th className="c">18 Total</th>
-                      <th className="c">F9 B1 (/30)</th>
-                      <th className="c">F9 B2 (/20)</th>
-                      <th className="c bl">Final 9</th>
-                      <th className="c bl">27 Total</th>
-                    </tr>
-                  )}
-                </thead>
-                <tbody>
-                  {cardEntries.map(ent => {
-                    const pName = playerById.get(ent.player_id)?.name ?? 'Unknown'
-                    const f = displayedFront(ent)
-                    const b = displayedBack(ent)
-                    const t = totals(ent)
-                    if (round === '18') {
-                      const run18 = f != null || b != null ? (f ?? 0) + (b ?? 0) : t.t18
+                  </thead>
+                  <tbody>
+                    {cardEntries.map(ent => {
+                      const pName = playerById.get(ent.player_id)?.name ?? 'Unknown'
+                      const arr = ent.station_scores?.[roundKey]
+                      const manualNine =
+                        !arr &&
+                        (roundKey === 'front'
+                          ? ent.score_front
+                          : roundKey === 'back'
+                            ? ent.score_back
+                            : ent.score_final)
+                      const sumPts = arr ? summarizeStationRound(arr).totalPoints : manualNine
                       return (
                         <tr key={ent.id}>
-                          <td className="strong">{pName}</td>
-                          <td className="c num">{f ?? '--'}</td>
-                          <td className="c num">{b ?? '--'}</td>
-                          <td className="c bl num strong" style={{ color: 'var(--orange)' }}>
-                            {run18 ?? '--'}
-                          </td>
-                          <td className="c">
-                            {ent.awards?.length > 0
-                              ? ent.awards.map(a => AWARD_SHORT[a]).join(', ')
-                              : '--'}
+                          <td className="strong" style={{ textAlign: 'left' }}>{pName}</td>
+                          {PUTT_STATIONS_9.map((st, idx) => {
+                            const mk = arr ? clampStationMake(arr[idx]) : null
+                            return (
+                              <td key={st.index} className="num">
+                                {mk != null ? mk : manualNine != null ? '·' : '—'}
+                              </td>
+                            )
+                          })}
+                          <td className="bl num strong" style={{ color: 'var(--orange)' }}>
+                            {sumPts ?? '—'}
                           </td>
                         </tr>
                       )
-                    }
-                    const finB1 = summarizeStationRound(ent.station_scores?.final).basket1Points ?? ent.f_b1
-                    const finB2 = summarizeStationRound(ent.station_scores?.final).basket2Points ?? ent.f_b2
-                    const finTot = ent.score_final ?? t.f
-                    const night = t.t18 != null ? t.t18 + (finTot ?? 0) : finTot
-                    return (
-                      <tr key={ent.id}>
-                        <td className="strong">{pName}</td>
-                        <td className="c num">{t.t18 ?? '--'}</td>
-                        <td className="c num">{finB1 ?? '--'}</td>
-                        <td className="c num">{finB2 ?? '--'}</td>
-                        <td className="c bl num strong">{finTot ?? '--'}</td>
-                        <td className="c bl num strong" style={{ color: 'var(--orange)' }}>
-                          {night ?? '--'}
-                        </td>
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="table-wrap">
+                <table className="table">
+                  <thead>
+                    {round === '18' ? (
+                      <tr>
+                        <th>Player</th>
+                        <th className="c">F9 (/50)</th>
+                        <th className="c">B9 (/50)</th>
+                        <th className="c bl">18 Total</th>
+                        <th className="c">Awards</th>
                       </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
+                    ) : (
+                      <tr>
+                        <th>Player</th>
+                        <th className="c">18 Total</th>
+                        <th className="c">F9 B1 (/30)</th>
+                        <th className="c">F9 B2 (/20)</th>
+                        <th className="c bl">Final 9</th>
+                        <th className="c bl">27 Total</th>
+                      </tr>
+                    )}
+                  </thead>
+                  <tbody>
+                    {cardEntries.map(ent => {
+                      const pName = playerById.get(ent.player_id)?.name ?? 'Unknown'
+                      const f = displayedFront(ent)
+                      const b = displayedBack(ent)
+                      const t = totals(ent)
+                      if (round === '18') {
+                        const run18 = f != null || b != null ? (f ?? 0) + (b ?? 0) : t.t18
+                        return (
+                          <tr key={ent.id}>
+                            <td className="strong">{pName}</td>
+                            <td className="c num">{f ?? '--'}</td>
+                            <td className="c num">{b ?? '--'}</td>
+                            <td className="c bl num strong" style={{ color: 'var(--orange)' }}>
+                              {run18 ?? '--'}
+                            </td>
+                            <td className="c">
+                              {ent.awards?.length > 0
+                                ? ent.awards.map(a => AWARD_SHORT[a]).join(', ')
+                                : '--'}
+                            </td>
+                          </tr>
+                        )
+                      }
+                      const finB1 = summarizeStationRound(ent.station_scores?.final).basket1Points ?? ent.f_b1
+                      const finB2 = summarizeStationRound(ent.station_scores?.final).basket2Points ?? ent.f_b2
+                      const finTot = ent.score_final ?? t.f
+                      const night = t.t18 != null ? t.t18 + (finTot ?? 0) : finTot
+                      return (
+                        <tr key={ent.id}>
+                          <td className="strong">{pName}</td>
+                          <td className="c num">{t.t18 ?? '--'}</td>
+                          <td className="c num">{finB1 ?? '--'}</td>
+                          <td className="c num">{finB2 ?? '--'}</td>
+                          <td className="c bl num strong">{finTot ?? '--'}</td>
+                          <td className="c bl num strong" style={{ color: 'var(--orange)' }}>
+                            {night ?? '--'}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </div>
