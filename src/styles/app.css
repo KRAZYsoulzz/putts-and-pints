@@ -814,3 +814,22 @@ input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
   white-space: nowrap;
 }
 
+.station-pills {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.hole-pill.done {
+  background: var(--teal-dim);
+  border-color: rgba(31, 167, 154, 0.55);
+  color: var(--teal);
+}
+
+.hole-scrubber-sep {
+  width: 1px;
+  background: var(--line-strong);
+  margin: 4px 2px;
+  flex: none;
+}
+

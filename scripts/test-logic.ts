@@ -1712,8 +1712,12 @@ const changedFiles = [
   'src/pages/SpecialEvents.tsx',
   'supabase/pp_009_score_front_back.sql',
   'supabase/pp_finance_010_division_closeout.sql',
+  'src/lib/putt-stations.ts',
+  'src/lib/putt-stations.test.ts',
+  'src/components/PuttNightCardScorer.tsx',
   'supabase/pp_011_special_events.sql',
   'supabase/pp_012_event_cards.sql',
+  'supabase/pp_013_putt_night_card_scoring.sql',
 ]
 for (const relPath of changedFiles) {
   const bytes = fs.readFileSync(new URL(`../${relPath}`, import.meta.url))
@@ -1743,6 +1747,7 @@ await import('../src/lib/projector.test')
 await import('../src/lib/mobile-width.test')
 await import('../src/lib/special-events.test')
 await import('../src/lib/special-events-e2e.test')
+await import('../src/lib/putt-stations.test')
 
 console.log('All rules checks passed ✔')
 

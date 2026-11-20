@@ -1,12 +1,95 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js'
 import { supabase } from './supabase'
-import { normalizeEventCards, type PPEvtCards } from './cards'
+import { allCardIdsFromEventCards, normalizeEventCards, type PPEvtCards } from './cards'
+import {
+  applyStationScoresToEntry,
+  normalizeStationScores,
+  type PuttCardRound,
+  type StationMake,
+} from './putt-stations'
+import { generateCardPins } from './special-events'
 import { resolveSettings } from './settings'
 import { isSeason9Week1, mergeNinePatch, seasonHighScoreRecord, week1AllowsEventPatch, week1AllowsScorePatch } from './scoring'
 import { reportError } from './notify'
 import { friendlyError } from './validation'
 import type { Division, Entry, LedgerRow, PPEvent, Player, Season, Settings, Tag } from './types'
+
+const PP_EVENT_LOCAL_PINS_KEY = 'pp_event_card_pins_v1'
+const PP_EVENT_UNLOCKED_PINS_KEY = 'pp_event_unlocked_cards_v1'
+
+function readLocalEventPins(): Record<string, Record<string, string>> {
+  if (typeof window === 'undefined') return {}
+  try {
+    const raw = window.localStorage.getItem(PP_EVENT_LOCAL_PINS_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeLocalEventPins(map: Record<string, Record<string, string>>): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(PP_EVENT_LOCAL_PINS_KEY, JSON.stringify(map))
+  } catch {
+    // Ignore storage quota/private-mode errors
+  }
+}
+
+function readSessionUnlockedEventPins(): Record<string, string> {
+  if (typeof window === 'undefined') return {}
+  try {
+    const raw = window.sessionStorage.getItem(PP_EVENT_UNLOCKED_PINS_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeSessionUnlockedEventPins(map: Record<string, string>): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.sessionStorage.setItem(PP_EVENT_UNLOCKED_PINS_KEY, JSON.stringify(map))
+  } catch {
+    // Ignore sessionStorage errors
+  }
+}
+
+function isMissingFunctionError(error: { code?: string; message?: string } | null | undefined): boolean {
+  if (!error) return false
+  const code = (error.code ?? '').toUpperCase()
+  const msg = error.message ?? ''
+  return (
+    code === 'PGRST202' ||
+    code === '42883' ||
+    /pp_.*event_card|could not find the function|function .* does not exist/i.test(msg)
+  )
+}
+
+function isMissingColumnError(
+  error: { code?: string; message?: string } | null | undefined,
+  column: string,
+): boolean {
+  if (!error) return false
+  const code = (error.code ?? '').toUpperCase()
+  const msg = error.message ?? ''
+  return (
+    code === 'PGRST204' ||
+    code === '42703' ||
+    msg.toLowerCase().includes(column.toLowerCase()) ||
+    /schema cache|does not exist/i.test(msg)
+  )
+}
+
+export type StationPlayerPayload = Record<
+  string,
+  { front?: StationMake[]; back?: StationMake[]; final?: StationMake[] }
+>
 
 interface Data {
   loading: boolean
@@ -33,6 +116,16 @@ interface Data {
   patchEntry: (id: string, patch: Partial<Entry>) => Promise<boolean>
   patchEvent: (id: string, patch: Partial<PPEvent>) => Promise<void>
   saveCardsToEvent: (id: string, cards: PPEvtCards | null) => Promise<void>
+  eventCardPins: Record<string, Record<string, string>>
+  regenerateEventCardPin: (eventId: string, cardId: string) => Promise<string | null>
+  unlockEventCardWithPin: (eventId: string, cardId: string, pin: string) => Promise<boolean>
+  isEventCardUnlocked: (eventId: string, cardId: string) => boolean
+  submitEventCardStationScores: (
+    eventId: string,
+    cardId: string,
+    round: PuttCardRound,
+    playerStations: StationPlayerPayload,
+  ) => Promise<boolean>
   /** Write the season tag immediately and show it on the roster without waiting for an event. */
   saveTag: (playerId: string, tagNumber: number | null) => Promise<void>
   /** True once the first session and director check have finished. */
@@ -191,10 +284,32 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const reloadQueued = useRef(false)
   const reloadGen = useRef(0)
   const cardsColumnMissing = useRef(false)
+  const stationColMissingRef = useRef(false)
+  const pinRpcMissingRef = useRef(false)
+  const eventPinsRef = useRef<Record<string, Record<string, string>>>({})
+  const cardWriteQueueRef = useRef<Map<string, Promise<unknown>>>(new Map())
+  const pendingCardWritesRef = useRef<Map<string, number>>(new Map())
+  const [eventCardPins, setEventCardPins] = useState<Record<string, Record<string, string>>>({})
+  const [unlockedEventPins, setUnlockedEventPins] = useState<Record<string, string>>(() =>
+    readSessionUnlockedEventPins(),
+  )
   const seasonsRef = useRef(seasons)
   const entriesRef = useRef(entries)
+  const eventsRef = useRef(events)
   useEffect(() => { seasonsRef.current = seasons }, [seasons])
   useEffect(() => { entriesRef.current = entries }, [entries])
+  useEffect(() => { eventsRef.current = events }, [events])
+
+  const setEventCardPinsSafe = useCallback(
+    (updater: (prev: Record<string, Record<string, string>>) => Record<string, Record<string, string>>) => {
+      setEventCardPins(prev => {
+        const next = updater(prev)
+        eventPinsRef.current = next
+        return next
+      })
+    },
+    [],
+  )
 
   const reload = useCallback(async (): Promise<'applied' | 'busy' | 'error'> => {
     if (writes.current > 0) { reloadQueued.current = true; return 'busy' }
@@ -227,7 +342,12 @@ export function DataProvider({ children }: { children: ReactNode }) {
       if (en.error) { setLoading(false); return 'error' }
       nextTags = (t.data ?? []) as Tag[]
       nextEvents = evs.map(normalizeEvent)
-      nextEntries = (en.data ?? []) as Entry[]
+      nextEntries = ((en.data ?? []) as Entry[]).map(e => ({
+        ...e,
+        ...(Object.prototype.hasOwnProperty.call(e, 'station_scores')
+          ? { station_scores: normalizeStationScores(e.station_scores) }
+          : {}),
+      }))
       nextLedger = (l.data ?? []) as LedgerRow[]
     }
     if (gen !== reloadGen.current) return 'busy'
@@ -236,6 +356,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     setSeasons(allSeasons)
     setPlayers(allPlayers)
     setTags(nextTags)
+    eventsRef.current = nextEvents
     setEvents(nextEvents)
     entriesRef.current = nextEntries
     setEntries(nextEntries)
@@ -274,6 +395,35 @@ export function DataProvider({ children }: { children: ReactNode }) {
     return () => { supabase.removeChannel(ch) }
   }, [reload])
 
+  const fetchServerEventPins = useCallback(
+    async (eventId: string, force = false): Promise<Record<string, string> | null> => {
+      if (!isAdmin) return null
+      if (pinRpcMissingRef.current) {
+        const local = readLocalEventPins()
+        setEventCardPinsSafe(() => local)
+        return local[eventId] ?? {}
+      }
+      if (!force && Object.prototype.hasOwnProperty.call(eventPinsRef.current, eventId)) {
+        return eventPinsRef.current[eventId]
+      }
+      const { data, error } = await supabase.rpc('pp_get_event_card_pins', { p_event_id: eventId })
+      if (error) {
+        if (isMissingFunctionError(error)) {
+          pinRpcMissingRef.current = true
+          const local = readLocalEventPins()
+          setEventCardPinsSafe(() => local)
+          return local[eventId] ?? {}
+        }
+        console.error(error.message)
+        return null
+      }
+      const pins = (data && typeof data === 'object' ? data : {}) as Record<string, string>
+      setEventCardPinsSafe(prev => ({ ...prev, [eventId]: pins }))
+      return pins
+    },
+    [isAdmin, setEventCardPinsSafe],
+  )
+
   const patchEntry = useCallback(async (id: string, patch: Partial<Entry>) => {
     if (!isAdmin) return false
     const entry = entriesRef.current.find(e => e.id === id) ?? entries.find(e => e.id === id)
@@ -285,17 +435,27 @@ export function DataProvider({ children }: { children: ReactNode }) {
       Object.prototype.hasOwnProperty.call(patch, 'score_front') ||
       Object.prototype.hasOwnProperty.call(patch, 'score_back') ||
       Object.prototype.hasOwnProperty.call(patch, 'score_18')
-    let dbPatch: Partial<Entry> = patch
+    let dbPatch: Partial<Entry> = { ...patch }
     if (entry && touchesNine) {
       const merged = mergeNinePatch(entry, patch)
-      dbPatch = { ...patch, score_18: merged.score_18 }
+      dbPatch = { ...dbPatch, score_18: merged.score_18 }
       entriesRef.current = entriesRef.current.map(e => (e.id === id ? merged : e))
     } else if (entry) {
       entriesRef.current = entriesRef.current.map(e => (e.id === id ? { ...e, ...patch } : e))
     }
+    if (stationColMissingRef.current) {
+      delete dbPatch.station_scores
+    }
     writes.current += 1
     setEntries(prev => prev.map(e => (e.id === id ? mergeNinePatch(e, dbPatch) : e)))
-    const { error } = await supabase.from('pp_entries').update(dbPatch).eq('id', id)
+    let { error } = await supabase.from('pp_entries').update(dbPatch).eq('id', id)
+    if (error && Object.prototype.hasOwnProperty.call(dbPatch, 'station_scores') && isMissingColumnError(error, 'station_scores')) {
+      stationColMissingRef.current = true
+      const fallbackPatch = { ...dbPatch }
+      delete fallbackPatch.station_scores
+      const retry = await supabase.from('pp_entries').update(fallbackPatch).eq('id', id)
+      error = retry.error
+    }
     if (error) {
       console.error(error.message)
       reportError(friendlyError(error.message))
@@ -320,32 +480,398 @@ export function DataProvider({ children }: { children: ReactNode }) {
     finishWrite(!!error)
   }, [isAdmin, events, finishWrite])
 
-  const saveCardsToEvent = useCallback(async (id: string, cards: PPEvtCards | null) => {
-    if (!isAdmin) return
-    const targetEvent = events.find(ev => ev.id === id)
-    if (isSeason9Week1(targetEvent)) return
-    if (cardsColumnMissing.current) return
-    writes.current += 1
-    setEvents(prev => prev.map(e => (e.id === id ? { ...e, cards } : e)))
-    const { error } = await supabase.from('pp_events').update({ cards }).eq('id', id)
-    if (error) {
-      const code = (error.code ?? '').toUpperCase()
-      const missing =
-        code === 'PGRST204' ||
-        code === '42703' ||
-        /column.*cards|schema cache|does not exist/i.test(error.message)
-      if (missing) {
-        cardsColumnMissing.current = true
-        finishWrite(false)
+  const syncPinsForEventCards = useCallback(
+    async (eventId: string, cards: PPEvtCards | null) => {
+      const ev = eventsRef.current.find(e => e.id === eventId)
+      if (!isAdmin || isSeason9Week1(ev ?? { id: eventId })) return
+      const cardIds = allCardIdsFromEventCards(cards)
+      if (cardIds.length === 0) {
+        if (pinRpcMissingRef.current) {
+          const map = readLocalEventPins()
+          delete map[eventId]
+          writeLocalEventPins(map)
+          setEventCardPinsSafe(() => map)
+          return
+        }
+        const { error } = await supabase.rpc('pp_set_event_card_pins', {
+          p_event_id: eventId,
+          p_pins: {},
+        })
+        if (error && isMissingFunctionError(error)) {
+          pinRpcMissingRef.current = true
+          const map = readLocalEventPins()
+          delete map[eventId]
+          writeLocalEventPins(map)
+          setEventCardPinsSafe(() => map)
+          return
+        }
+        if (!error) {
+          setEventCardPinsSafe(prev => ({ ...prev, [eventId]: {} }))
+        }
         return
       }
-      console.error(error.message)
-      reportError(friendlyError(error.message))
-      finishWrite(true)
+
+      const basePins = await fetchServerEventPins(eventId, true)
+      if (basePins === null) return
+
+      const pinsAlreadyMatch =
+        Object.keys(basePins).length === cardIds.length &&
+        cardIds.every(cid => /^\d{4}$/.test(basePins[cid] ?? ''))
+      if (pinsAlreadyMatch) return
+
+      const nextPins = generateCardPins(
+        cardIds.map((cid, i) => ({ id: cid, cardNumber: i + 1, startingHole: 1 })),
+        basePins,
+      )
+
+      if (pinRpcMissingRef.current) {
+        const map = readLocalEventPins()
+        map[eventId] = nextPins
+        writeLocalEventPins(map)
+        setEventCardPinsSafe(() => map)
+        return
+      }
+
+      const { error } = await supabase.rpc('pp_set_event_card_pins', {
+        p_event_id: eventId,
+        p_pins: nextPins,
+      })
+      if (error) {
+        if (isMissingFunctionError(error)) {
+          pinRpcMissingRef.current = true
+          const map = readLocalEventPins()
+          map[eventId] = nextPins
+          writeLocalEventPins(map)
+          setEventCardPinsSafe(() => map)
+          return
+        }
+        console.error(error.message)
+        return
+      }
+      setEventCardPinsSafe(prev => ({ ...prev, [eventId]: nextPins }))
+    },
+    [isAdmin, fetchServerEventPins, setEventCardPinsSafe],
+  )
+
+  const activePinTarget = useMemo(() => {
+    const picked = viewEventId ? events.find(e => e.id === viewEventId) : null
+    return picked ?? events.find(e => e.status !== 'complete' && e.status !== 'scheduled') ?? null
+  }, [viewEventId, events])
+  const activePinEventId = activePinTarget?.id ?? null
+  const activePinCardsStamp = activePinTarget?.cards?.updatedAt ?? ''
+
+  useEffect(() => {
+    if (!isAdmin) {
+      setEventCardPinsSafe(() => ({}))
       return
     }
-    finishWrite(false)
-  }, [isAdmin, events, finishWrite])
+    if (!activePinEventId) return
+    let cancelled = false
+    void fetchServerEventPins(activePinEventId, true).then(pins => {
+      if (cancelled || !pins) return
+      const ev = eventsRef.current.find(e => e.id === activePinEventId)
+      if (!ev || isSeason9Week1(ev) || !ev.cards) return
+      const cardIds = allCardIdsFromEventCards(ev.cards)
+      if (cardIds.length > 0 && cardIds.some(cid => !/^\d{4}$/.test(pins[cid] ?? ''))) {
+        void syncPinsForEventCards(ev.id, ev.cards)
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [isAdmin, activePinEventId, activePinCardsStamp, fetchServerEventPins, setEventCardPinsSafe, syncPinsForEventCards])
+
+  const saveCardsToEvent = useCallback(async (id: string, cards: PPEvtCards | null) => {
+    if (!isAdmin) return
+    const targetEvent = eventsRef.current.find(ev => ev.id === id)
+    if (isSeason9Week1(targetEvent ?? { id })) return
+    eventsRef.current = eventsRef.current.map(e => (e.id === id ? { ...e, cards } : e))
+    setEvents(prev => prev.map(e => (e.id === id ? { ...e, cards } : e)))
+    if (!cardsColumnMissing.current) {
+      writes.current += 1
+      const { error } = await supabase.from('pp_events').update({ cards }).eq('id', id)
+      if (error) {
+        if (isMissingColumnError(error, 'cards')) {
+          cardsColumnMissing.current = true
+          finishWrite(false)
+        } else {
+          console.error(error.message)
+          reportError(friendlyError(error.message))
+          finishWrite(true)
+          return
+        }
+      } else {
+        finishWrite(false)
+      }
+    }
+    await syncPinsForEventCards(id, cards)
+  }, [isAdmin, finishWrite, syncPinsForEventCards])
+
+  const regenerateEventCardPin = useCallback(
+    async (eventId: string, cardId: string): Promise<string | null> => {
+      const ev = eventsRef.current.find(e => e.id === eventId)
+      if (!isAdmin || isSeason9Week1(ev ?? { id: eventId })) return null
+      const cardIds = allCardIdsFromEventCards(ev?.cards)
+      if (!cardIds.includes(cardId)) cardIds.push(cardId)
+
+      const currentPins = await fetchServerEventPins(eventId, true)
+      if (currentPins === null) {
+        reportError('Could not load existing card PINs. Try again.')
+        return null
+      }
+
+      const prevPin = currentPins[cardId]
+      const withoutTarget = { ...currentPins }
+      delete withoutTarget[cardId]
+
+      const pseudoCards = cardIds.map((cid, i) => ({ id: cid, cardNumber: i + 1, startingHole: 1 }))
+      let nextPins = generateCardPins(pseudoCards, withoutTarget)
+      if (prevPin && nextPins[cardId] === prevPin) {
+        for (let i = 0; i < 10; i++) {
+          const retry = generateCardPins(pseudoCards, withoutTarget)
+          if (retry[cardId] !== prevPin) {
+            nextPins = retry
+            break
+          }
+        }
+      }
+
+      if (pinRpcMissingRef.current) {
+        const map = readLocalEventPins()
+        map[eventId] = nextPins
+        writeLocalEventPins(map)
+        setEventCardPinsSafe(() => map)
+        return nextPins[cardId] ?? null
+      }
+
+      const { error } = await supabase.rpc('pp_set_event_card_pins', {
+        p_event_id: eventId,
+        p_pins: nextPins,
+      })
+      if (error) {
+        if (isMissingFunctionError(error)) {
+          pinRpcMissingRef.current = true
+          const map = readLocalEventPins()
+          map[eventId] = nextPins
+          writeLocalEventPins(map)
+          setEventCardPinsSafe(() => map)
+          return nextPins[cardId] ?? null
+        }
+        console.error(error.message)
+        reportError(friendlyError(error.message))
+        return null
+      }
+      setEventCardPinsSafe(prev => ({ ...prev, [eventId]: nextPins }))
+      return nextPins[cardId] ?? null
+    },
+    [isAdmin, fetchServerEventPins, setEventCardPinsSafe],
+  )
+
+  const unlockEventCardWithPin = useCallback(
+    async (eventId: string, cardId: string, rawPin: string): Promise<boolean> => {
+      const clean = rawPin.trim()
+      if (!/^\d{4}$/.test(clean)) return false
+
+      let ok = false
+      if (pinRpcMissingRef.current) {
+        ok = readLocalEventPins()[eventId]?.[cardId] === clean
+      } else {
+        const { data, error } = await supabase.rpc('pp_verify_event_card_pin', {
+          p_event_id: eventId,
+          p_card_id: cardId,
+          p_pin: clean,
+        })
+        if (error) {
+          if (isMissingFunctionError(error)) {
+            pinRpcMissingRef.current = true
+            ok = readLocalEventPins()[eventId]?.[cardId] === clean
+          } else {
+            console.error(error.message)
+            reportError(friendlyError(error.message))
+            return false
+          }
+        } else {
+          ok = data === true
+        }
+      }
+
+      if (!ok) return false
+
+      const key = `${eventId}:${cardId}`
+      const nextMap = { ...readSessionUnlockedEventPins(), [key]: clean }
+      writeSessionUnlockedEventPins(nextMap)
+      setUnlockedEventPins(nextMap)
+      return true
+    },
+    [],
+  )
+
+  const isEventCardUnlocked = useCallback(
+    (eventId: string, cardId: string): boolean => {
+      if (isAdmin) return true
+      const key = `${eventId}:${cardId}`
+      const cached = unlockedEventPins[key]
+      if (!cached) return false
+      if (pinRpcMissingRef.current) {
+        return cached === readLocalEventPins()[eventId]?.[cardId]
+      }
+      return true
+    },
+    [isAdmin, unlockedEventPins],
+  )
+
+  const submitEventCardStationScores = useCallback(
+    async (
+      eventId: string,
+      cardId: string,
+      round: PuttCardRound,
+      playerStations: StationPlayerPayload,
+    ): Promise<boolean> => {
+      const ev = eventsRef.current.find(e => e.id === eventId)
+      if (!ev) return false
+      if (isSeason9Week1(ev) || ev.status === 'complete') {
+        reportError('Scores are locked for this event.')
+        return false
+      }
+
+      // Apply optimistically onto latest entriesRef so consecutive rapid taps accumulate cleanly
+      const updatedMap = new Map<string, Entry>()
+      const nextEntries = entriesRef.current.map(ent => {
+        if (ent.event_id !== eventId) return ent
+        const patch = playerStations[ent.player_id]
+        if (!patch) return ent
+        if (round === 'final' && !ent.made_final) return ent
+        const updated = applyStationScoresToEntry(ent, round, patch)
+        updatedMap.set(ent.id, updated)
+        return updated
+      })
+      if (updatedMap.size === 0) return false
+      entriesRef.current = nextEntries
+      setEntries(nextEntries)
+
+      const queueKey = `${eventId}:${cardId}`
+      pendingCardWritesRef.current.set(queueKey, (pendingCardWritesRef.current.get(queueKey) ?? 0) + 1)
+      writes.current += 1
+
+      const prior = cardWriteQueueRef.current.get(queueKey) ?? Promise.resolve()
+      const task = prior
+        .catch(() => undefined)
+        .then(async (): Promise<boolean> => {
+          try {
+            const cachedPin = unlockedEventPins[queueKey] ?? readSessionUnlockedEventPins()[queueKey]
+            let effectivePin =
+              cachedPin || (isAdmin ? eventPinsRef.current[eventId]?.[cardId] : undefined)
+            if (isAdmin && !effectivePin) {
+              const loadedPins = await fetchServerEventPins(eventId)
+              effectivePin = loadedPins?.[cardId]
+            }
+
+            if (!pinRpcMissingRef.current && effectivePin) {
+              const { data, error } = await supabase.rpc('pp_submit_event_card_scores', {
+                p_event_id: eventId,
+                p_card_id: cardId,
+                p_pin: effectivePin,
+                p_round: round,
+                p_player_stations: playerStations,
+              })
+
+              if (!error) {
+                const remaining = (pendingCardWritesRef.current.get(queueKey) ?? 1) - 1
+                if (remaining <= 0 && Array.isArray(data)) {
+                  const serverById = new Map<string, Entry>()
+                  for (const row of data as Entry[]) {
+                    if (row?.id) {
+                      serverById.set(row.id, {
+                        ...row,
+                        station_scores: normalizeStationScores(row.station_scores),
+                      })
+                    }
+                  }
+                  if (serverById.size > 0) {
+                    const merged = entriesRef.current.map(e => serverById.get(e.id) ?? e)
+                    entriesRef.current = merged
+                    setEntries(merged)
+                  }
+                }
+                finishWrite(false)
+                return true
+              }
+
+              if (!isMissingFunctionError(error)) {
+                console.error(error.message)
+                if (/invalid.*pin/i.test(error.message)) {
+                  const nextMap = { ...readSessionUnlockedEventPins() }
+                  delete nextMap[queueKey]
+                  writeSessionUnlockedEventPins(nextMap)
+                  setUnlockedEventPins(nextMap)
+                  reportError('That Card PIN is no longer valid. Re-enter the PIN from the director.')
+                } else {
+                  reportError(friendlyError(error.message))
+                }
+                finishWrite(true)
+                return false
+              }
+
+              pinRpcMissingRef.current = true
+            }
+
+            // Admin fallback when pp_013 SQL RPC is not installed yet or no PIN exists
+            if (isAdmin) {
+              for (const updated of updatedMap.values()) {
+                const dbRow: Partial<Entry> =
+                  round === '18'
+                    ? {
+                        r1_b1: updated.r1_b1,
+                        r1_b2: updated.r1_b2,
+                        r2_b1: updated.r2_b1,
+                        r2_b2: updated.r2_b2,
+                        score_front: updated.score_front,
+                        score_back: updated.score_back,
+                        score_18: updated.score_18,
+                        awards: updated.awards,
+                        ...(stationColMissingRef.current ? {} : { station_scores: updated.station_scores ?? null }),
+                      }
+                    : {
+                        f_b1: updated.f_b1,
+                        f_b2: updated.f_b2,
+                        score_final: updated.score_final,
+                        awards: updated.awards,
+                        ...(stationColMissingRef.current ? {} : { station_scores: updated.station_scores ?? null }),
+                      }
+                let { error } = await supabase.from('pp_entries').update(dbRow).eq('id', updated.id)
+                if (error && !stationColMissingRef.current && isMissingColumnError(error, 'station_scores')) {
+                  stationColMissingRef.current = true
+                  const withoutStations = { ...dbRow }
+                  delete withoutStations.station_scores
+                  const retry = await supabase.from('pp_entries').update(withoutStations).eq('id', updated.id)
+                  error = retry.error
+                }
+                if (error) {
+                  console.error(error.message)
+                  reportError(friendlyError(error.message))
+                  finishWrite(true)
+                  return false
+                }
+              }
+              finishWrite(false)
+              return true
+            }
+
+            reportError('Enter the 4-digit Card PIN to submit scores.')
+            finishWrite(true)
+            return false
+          } finally {
+            const left = Math.max(0, (pendingCardWritesRef.current.get(queueKey) ?? 1) - 1)
+            if (left === 0) pendingCardWritesRef.current.delete(queueKey)
+            else pendingCardWritesRef.current.set(queueKey, left)
+          }
+        })
+
+      cardWriteQueueRef.current.set(queueKey, task)
+      return task
+    },
+    [isAdmin, unlockedEventPins, fetchServerEventPins, finishWrite],
+  )
 
   const saveTag = useCallback(async (playerId: string, tagNumber: number | null) => {
     if (!isAdmin) {
@@ -408,9 +934,46 @@ export function DataProvider({ children }: { children: ReactNode }) {
       tags, events, entries, ledger,
       liveEvent: events.find(e => e.status !== 'complete' && e.status !== 'scheduled') ?? null,
       viewEventId, openEvent,
-      records, recordHolders, reload, patchEntry, patchEvent, saveCardsToEvent, saveTag, authReady, signOut,
+      records,
+      recordHolders,
+      reload,
+      patchEntry,
+      patchEvent,
+      saveCardsToEvent,
+      eventCardPins,
+      regenerateEventCardPin,
+      unlockEventCardWithPin,
+      isEventCardUnlocked,
+      submitEventCardStationScores,
+      saveTag,
+      authReady,
+      signOut,
     }
-  }, [loading, session, isAdmin, authReady, seasons, players, tags, events, entries, ledger, viewEventId, openEvent, reload, patchEntry, patchEvent, saveCardsToEvent, saveTag, signOut])
+  }, [
+    loading,
+    session,
+    isAdmin,
+    authReady,
+    seasons,
+    players,
+    tags,
+    events,
+    entries,
+    ledger,
+    viewEventId,
+    openEvent,
+    reload,
+    patchEntry,
+    patchEvent,
+    saveCardsToEvent,
+    eventCardPins,
+    regenerateEventCardPin,
+    unlockEventCardWithPin,
+    isEventCardUnlocked,
+    submitEventCardStationScores,
+    saveTag,
+    signOut,
+  ])
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }

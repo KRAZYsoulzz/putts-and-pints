@@ -158,6 +158,7 @@ export interface Entry {
   place: number | null
   payout: number
   points: number
+  station_scores?: import('./putt-stations').StationScores | null
   created_at?: string
 }
 

@@ -1,4 +1,5 @@
 import type { CountbackKey, CutTieMode, Division, Entry, EventStatus, PPEvent, Player, Settings, TieMode } from './types'
+import { clearStationRound, hasPartialStation18 } from './putt-stations'
 
 // ---------------------------------------------------------------------------
 // Scores
@@ -177,6 +178,10 @@ export function computeNineCommit(current: Entry, which: 'front' | 'back', nextV
     patch.r2_b2 = null
   }
 
+  if (current.station_scores != null) {
+    patch.station_scores = clearStationRound(current.station_scores, which)
+  }
+
   return patch
 }
 
@@ -263,7 +268,7 @@ export function applyScoreDirty(
 }
 
 export function canConfirmCut(entries: Entry[]): boolean {
-  return entries.every(e => totals(e).t18 != null)
+  return entries.every(e => totals(e).t18 != null && !hasPartialStation18(e.station_scores))
 }
 
 export function liveNightTotal(e: Entry): number | null {

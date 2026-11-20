@@ -1,5 +1,5 @@
-import type { Division, Entry, PPEvent } from './types'
-import { byEntryOrder, isSeason9Week1 } from './scoring'
+import type { Division, Entry, PPEvent, Settings } from './types'
+import { byEntryOrder, isSeason9Week1, rank18 } from './scoring'
 
 export type CardSortMode = 'checkin' | 'standings' | 'random'
 
@@ -16,6 +16,10 @@ export interface PPEvtCards {
   targetCardSize: number
   sortMode: CardSortMode
   cards: {
+    M: PPCard[]
+    W: PPCard[]
+  }
+  final9Cards?: {
     M: PPCard[]
     W: PPCard[]
   }
@@ -416,6 +420,11 @@ export function normalizeEventCards(raw: unknown): PPEvtCards | null {
       ? r.sortMode
       : 'checkin'
 
+  const finalMap =
+    r.final9Cards && typeof r.final9Cards === 'object'
+      ? (r.final9Cards as Record<string, unknown>)
+      : null
+
   return {
     eventId: r.eventId,
     targetCardSize: Number.isFinite(sizeNum) && sizeNum >= 1 ? Math.trunc(sizeNum) : DEFAULT_CARD_SIZE,
@@ -424,8 +433,97 @@ export function normalizeEventCards(raw: unknown): PPEvtCards | null {
       M: normalizeList(cardMap.M, 'M'),
       W: normalizeList(cardMap.W, 'W'),
     },
+    ...(finalMap
+      ? {
+          final9Cards: {
+            M: normalizeList(finalMap.M, 'M'),
+            W: normalizeList(finalMap.W, 'W'),
+          },
+        }
+      : {}),
     updatedAt: typeof r.updatedAt === 'string' ? r.updatedAt : '',
   }
+}
+
+/**
+ * Generates Final 9 cards for one division from `made_final === true` players,
+ * seeded by their 18-hole finish so top qualifiers play together.
+ */
+export function generateFinal9CardsForDivision(params: {
+  entries: readonly Entry[]
+  division: Division
+  cardSize?: number
+  settings: Settings
+}): PPCard[] {
+  const { entries, division, cardSize, settings } = params
+  const finalists = entries.filter(e => e.division === division && e.made_final)
+  if (finalists.length === 0) return []
+
+  const ranked = rank18(finalists, settings)
+  const ordered = ranked.map(r => r.entry)
+  const target =
+    cardSize != null && cardSize >= 1
+      ? Math.trunc(cardSize)
+      : ordered.length <= 6
+        ? ordered.length
+        : DEFAULT_CARD_SIZE
+
+  const sizes = calculateCardSizes(ordered.length, target)
+  const out: PPCard[] = []
+  let cursor = 0
+  for (let i = 0; i < sizes.length; i++) {
+    const size = sizes[i]
+    const slice = ordered.slice(cursor, cursor + size)
+    cursor += size
+    const cardNumber = i + 1
+    out.push({
+      id: `F9-${division}-${cardNumber}`,
+      division,
+      cardNumber,
+      name: `${division === 'M' ? "Men's" : "Women's"} Final 9 Card ${cardNumber}`,
+      playerIds: slice.map(e => e.player_id),
+    })
+  }
+  return out
+}
+
+/**
+ * Generates Final 9 cards for both divisions while preserving existing 18-hole cards.
+ */
+export function generateFinal9Cards(params: {
+  eventId: string
+  entries: readonly Entry[]
+  existingCards: PPEvtCards | null
+  cardSize?: number
+  settings: Settings
+}): PPEvtCards {
+  const { eventId, entries, existingCards, cardSize, settings } = params
+  const eventEntries = entries.filter(e => e.event_id === eventId)
+  return {
+    eventId,
+    targetCardSize: existingCards?.targetCardSize ?? DEFAULT_CARD_SIZE,
+    sortMode: existingCards?.sortMode ?? 'checkin',
+    cards: existingCards?.cards ?? { M: [], W: [] },
+    final9Cards: {
+      M: generateFinal9CardsForDivision({ entries: eventEntries, division: 'M', cardSize, settings }),
+      W: generateFinal9CardsForDivision({ entries: eventEntries, division: 'W', cardSize, settings }),
+    },
+    updatedAt: new Date().toISOString(),
+  }
+}
+
+/**
+ * Returns every card ID (both 18-hole and Final 9) defined on an event's card bundle.
+ */
+export function allCardIdsFromEventCards(cards: PPEvtCards | null | undefined): string[] {
+  if (!cards) return []
+  const ids: string[] = []
+  for (const list of [cards.cards?.M, cards.cards?.W, cards.final9Cards?.M, cards.final9Cards?.W]) {
+    for (const c of list ?? []) {
+      if (c.id && !ids.includes(c.id)) ids.push(c.id)
+    }
+  }
+  return ids
 }
 
 /**
