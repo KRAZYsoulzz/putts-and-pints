@@ -129,6 +129,40 @@ export function seasonHighScoreRecord(params: {
   }
 }
 
+/**
+ * Entry IDs in a division that strictly beat the prior season high-score record tonight.
+ * Opening night sets the season bar (pays $0), so no high_score payout winner is auto-awarded.
+ * If multiple players tie for the new high score, all tied winners are returned.
+ */
+export function highScoreWinnerIds(
+  entries: readonly Entry[],
+  priorRecord: number | null,
+  openingNight: boolean,
+): Set<string> {
+  if (openingNight || priorRecord == null) return new Set()
+  let best: number | null = null
+  for (const e of entries) {
+    const tot = totals(e).total
+    if (tot == null) continue
+    if (best == null || tot > best) best = tot
+  }
+  if (best == null || best <= priorRecord) return new Set()
+  const out = new Set<string>()
+  for (const e of entries) {
+    if (totals(e).total === best) out.add(e.id)
+  }
+  return out
+}
+
+/** True if any nine on this entry reached the 50-point perfect round score. */
+export function hasPerfectNineScore(entry: Entry): boolean {
+  return (
+    displayedFront(entry) === MAX_NINE ||
+    displayedBack(entry) === MAX_NINE ||
+    (entry.made_final && entry.score_final === MAX_NINE)
+  )
+}
+
 export function displayedFront(e: Entry): number | null {
   if (e.score_front != null || e.score_back != null) {
     return e.score_front

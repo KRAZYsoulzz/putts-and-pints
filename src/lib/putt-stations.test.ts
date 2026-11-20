@@ -1,7 +1,8 @@
 // Run: npx tsx src/lib/putt-stations.test.ts
 import assert from 'node:assert/strict'
 import { DEFAULT_SETTINGS } from './settings'
-import { canConfirmCut, computeNineCommit, nonCutTagAssignments, rankFinal, redistributeTags, tonightBoard, totals } from './scoring'
+import { canConfirmCut, computeNineCommit, hasPerfectNineScore, highScoreWinnerIds, nonCutTagAssignments, rankFinal, redistributeTags, tonightBoard, totals } from './scoring'
+import { bonusPayoutsByEntry } from './money'
 import {
   allCardIdsFromEventCards,
   generateEventCards,
@@ -583,6 +584,37 @@ const fullMakes = (val: 0 | 1 | 2 = 2): StationMake[] =>
   // Returns empty if no cut has been set yet
   const preCut = all.map(e => ({ ...e, made_final: false }))
   assert.equal(nonCutTagAssignments(preCut, DEFAULT_SETTINGS, inTags, false).size, 0)
+}
+
+// ---------------------------------------------------------------------------
+// 12. Auto-detected High Score, manual 50-pt Perfect Round, and Bonus Totals
+// ---------------------------------------------------------------------------
+{
+  const w1 = makeEntry({ id: 'hs-1', score_front: 23, score_back: 25, score_18: 48, score_final: 6, made_final: true }) // 54
+  const w2 = makeEntry({ id: 'hs-2', score_front: 24, score_back: 24, score_18: 48, score_final: 5, made_final: true }) // 53 (ties record, does not beat)
+
+  // Prior record 53 -> 54 strictly beats it
+  assert.deepEqual([...highScoreWinnerIds([w1, w2], 53, false)], ['hs-1'])
+  // Tying the prior record (54 vs 54) does NOT win
+  assert.equal(highScoreWinnerIds([w1, w2], 54, false).size, 0)
+  // Opening night pays $0 -> no auto winner
+  assert.equal(highScoreWinnerIds([w1, w2], 53, true).size, 0)
+  // Tied new high score -> both win
+  const w3 = makeEntry({ id: 'hs-3', score_front: 27, score_back: 21, score_18: 48, score_final: 6, made_final: true }) // 54
+  assert.deepEqual([...highScoreWinnerIds([w1, w2, w3], 53, false)].sort(), ['hs-1', 'hs-3'])
+
+  // Manual 50-point nine detects perfect round
+  assert.equal(hasPerfectNineScore(makeEntry({ score_front: 50, score_back: 30 })), true)
+  assert.equal(hasPerfectNineScore(makeEntry({ score_front: 30, score_back: 49 })), false)
+  assert.equal(hasPerfectNineScore(makeEntry({ made_final: true, score_final: 50 })), true)
+
+  // Bonus payout aggregation per entry
+  const bonusTotals = bonusPayoutsByEntry([
+    { type: 'high_score', entryIds: ['hs-1'], each: 10, amounts: [10] },
+    { type: 'perfect4', entryIds: ['hs-1', 'hs-2'], each: 7.5, amounts: [7.5, 7.5] },
+  ])
+  assert.equal(bonusTotals.get('hs-1'), 17.5)
+  assert.equal(bonusTotals.get('hs-2'), 7.5)
 }
 
 console.log('Putt Night station scoring tests passed ✔')

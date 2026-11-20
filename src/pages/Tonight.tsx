@@ -38,9 +38,9 @@ import {
   type Player,
   type PPEvent,
 } from '../lib/types'
-import { applyScoreDirty, byEntryOrder, canAdvanceToStatus, canConfirmCut, cents, computeNineCommit, cutConfirmationReady, displayedBack, displayedFront, effectiveCut, eighteenGridRows, final9EntryOrder, isOpeningTagNight, isSeason9Week1, liveNightTotal, MAX_FINAL, MAX_NINE, mergeNinePatch, nonCutTagAssignments, qualifiers, suggestedCut, tonightBoard, totals, week1AllowsScorePatch, type Ranked } from '../lib/scoring'
+import { applyScoreDirty, byEntryOrder, canAdvanceToStatus, canConfirmCut, cents, computeNineCommit, cutConfirmationReady, displayedBack, displayedFront, effectiveCut, eighteenGridRows, final9EntryOrder, hasPerfectNineScore, highScoreWinnerIds, isOpeningTagNight, isSeason9Week1, liveNightTotal, MAX_FINAL, MAX_NINE, mergeNinePatch, nonCutTagAssignments, qualifiers, seasonHighScoreRecord, suggestedCut, tonightBoard, totals, week1AllowsScorePatch, type Ranked } from '../lib/scoring'
 import { completeRefresh, requestRefresh, type ScoreBoard } from '../lib/score-refresh'
-import { balances, clampPaidPlaces, displayedPerfectRound, displayedSharedPot, divisionResult, eventLedgerPosted, effectiveBar, eventMoney, nightBonusCost, otherDivisionNights, paidPlaceCount, payoutPool, payoutsForPlaceCount, PLACE_REMAINDER_BACKUP_NOTE, placeBudget, placeRemainder, postedBonusCost, postedPlaceRemainder, postedRemainderBackup, suggestedPaidPlaces } from '../lib/money'
+import { balances, bonusPayoutsByEntry, clampPaidPlaces, displayedPerfectRound, displayedSharedPot, divisionResult, eventLedgerPosted, effectiveBar, eventMoney, nightBonusCost, otherDivisionNights, paidPlaceCount, payoutPool, payoutsForPlaceCount, PLACE_REMAINDER_BACKUP_NOTE, placeBudget, placeRemainder, postedBonusCost, postedPlaceRemainder, postedRemainderBackup, suggestedPaidPlaces } from '../lib/money'
 import { duplicateName, friendlyError, normalizeName, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../lib/validation'
 import { buyingTagAfter, checkinTagIn, freshBuyingTag, newPlayerInsert } from '../lib/newPlayer'
 import {
@@ -297,6 +297,8 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
   const [correctionDrafts, setCorrectionDrafts] = useState<Record<string, CorrectionDraft | null>>({})
   const [correctionError, setCorrectionError] = useState<string | null>(null)
   const [reopenedDivisions, setReopenedDivisions] = useState<Record<string, boolean>>({})
+  const autoAwardDismissedRef = useRef<Set<string>>(new Set())
+  const autoAwardAppliedRef = useRef<Set<string>>(new Set())
 
   const [eventCards, setEventCards] = useState<PPEvtCards | null>(() => {
     if (!event) return null
@@ -477,6 +479,14 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
     [division, event?.payouts_men, event?.payouts_women],
   )
 
+  const priorRecords = useMemo<Record<Division, number | null>>(() => {
+    const priorEvents = event ? events.filter(ev => ev.id !== event.id) : events
+    return {
+      M: seasonHighScoreRecord({ entries, events: priorEvents, division: 'M', playerById }).score,
+      W: seasonHighScoreRecord({ entries, events: priorEvents, division: 'W', playerById }).score,
+    }
+  }, [entries, events, event, playerById])
+
   const inTags = (playerId: string) => playerById.get(playerId)?.in_tags === true
   const result = useMemo(() => divisionResult({
     division,
@@ -485,12 +495,12 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
     settings,
     balances: priorBalances,
     barMatch: barAmount,
-    priorRecord: records[division],
+    priorRecord: priorRecords[division],
     openingNight,
     cohort: event ? otherDivisionNights(division, event.id, entries, ledger) : [],
     tagPlan: event && isOpeningTagNight(events, event.id) ? 'opening' : 'redistribute',
     inTags: (playerId) => playerById.get(playerId)?.in_tags === true,
-  }), [division, divEntries, payoutsList, settings, priorBalances, barAmount, records, event, events, entries, ledger, playerById, openingNight])
+  }), [division, divEntries, payoutsList, settings, priorBalances, barAmount, priorRecords, event, events, entries, ledger, playerById, openingNight])
 
   const rankedById = useMemo(() => new Map(result.ranked.map(r => [r.entry.id, r])), [result])
 
@@ -571,6 +581,48 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
       }
     }
   }, [event, entries, isAdmin, settings, patchEvent, patchEntry])
+
+  // Auto-detect score-derived awards (High Score record breakers & manual 50-pt Perfect Rounds)
+  // so the director never has to remember to manually add them on the payout screen.
+  useEffect(() => {
+    if (!event || !isAdmin || isSeason9Week1(event) || isWeek1Event(event)) return
+    if (event.status !== 'scoring' && event.status !== 'final9' && event.status !== 'results') return
+    for (const d of DIVS) {
+      const closed = d === 'M' ? Boolean(event.pp_closed_men) : Boolean(event.pp_closed_women)
+      if (closed) continue
+      const field = entries.filter(e => e.event_id === event.id && e.division === d)
+      if (!field.length) continue
+      const hsWinners = highScoreWinnerIds(field, priorRecords[d], openingNight)
+      for (const ent of field) {
+        const cur = ent.awards ?? []
+        let next = cur
+        const hsKey = `${event.id}:${ent.id}:high_score`
+        if (hsWinners.has(ent.id)) {
+          if (!next.includes('high_score') && !autoAwardDismissedRef.current.has(hsKey)) {
+            next = [...next, 'high_score']
+            autoAwardAppliedRef.current.add(hsKey)
+          }
+        } else if (next.includes('high_score') && autoAwardAppliedRef.current.has(hsKey)) {
+          next = next.filter(a => a !== 'high_score')
+          autoAwardAppliedRef.current.delete(hsKey)
+        }
+
+        if (hasPerfectNineScore(ent)) {
+          for (const pa of ['perfect_round', 'perfect5', 'perfect4'] as const) {
+            const pKey = `${event.id}:${ent.id}:${pa}`
+            if (!next.includes(pa) && !autoAwardDismissedRef.current.has(pKey)) {
+              next = [...next, pa]
+              autoAwardAppliedRef.current.add(pKey)
+            }
+          }
+        }
+
+        if (next !== cur) {
+          void patchEntry(ent.id, { awards: next })
+        }
+      }
+    }
+  }, [event, entries, isAdmin, priorRecords, openingNight, patchEntry])
 
   if (!event) {
     return (
@@ -738,7 +790,15 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
   const toggleAward = async (award: Award) => {
     if (!contextMenu || isWeek1Locked) return
     const cur = contextMenu.entry.awards || []
-    const next = cur.includes(award) ? cur.filter(a => a !== award) : [...cur, award]
+    const removing = cur.includes(award)
+    const key = `${event.id}:${contextMenu.entry.id}:${award}`
+    if (removing) {
+      autoAwardDismissedRef.current.add(key)
+      autoAwardAppliedRef.current.delete(key)
+    } else {
+      autoAwardDismissedRef.current.delete(key)
+    }
+    const next = removing ? cur.filter(a => a !== award) : [...cur, award]
     await patchEntry(contextMenu.entry.id, { awards: next })
     setContextMenu(null)
   }
@@ -1343,7 +1403,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
         settings,
         balances: balances(ledger.filter(r => r.event_id !== event.id), 'M'),
         barMatch: barOf(event, 'M'),
-        priorRecord: records.M,
+        priorRecord: priorRecords.M,
         openingNight,
         cohort: otherDivisionNights('M', event.id, entries, ledger),
         tagPlan: isOpeningTagNight(events, event.id) ? 'opening' : 'redistribute',
@@ -1356,7 +1416,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
         settings,
         balances: balances(ledger.filter(r => r.event_id !== event.id), 'W'),
         barMatch: barOf(event, 'W'),
-        priorRecord: records.W,
+        priorRecord: priorRecords.W,
         openingNight,
         cohort: otherDivisionNights('W', event.id, entries, ledger),
         tagPlan: isOpeningTagNight(events, event.id) ? 'opening' : 'redistribute',
@@ -3054,6 +3114,19 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
               settings.ties.placement === 'playoff' &&
               tiedFinalTotals.size > 0
             const showResultAwardsCol = isAdmin && event.status !== 'complete' && !isWeek1Locked
+            const previewBonusByEntry = bonusPayoutsByEntry(result.bonuses)
+            const postedBonusByPlayer = new Map<string, number>()
+            if (isDivisionClosed) {
+              for (const row of ledger) {
+                if (row.event_id === event.id && row.division === division && row.kind === 'bonus_payout' && row.player_id) {
+                  postedBonusByPlayer.set(
+                    row.player_id,
+                    cents((postedBonusByPlayer.get(row.player_id) ?? 0) + Math.abs(Number(row.amount || 0))),
+                  )
+                }
+              }
+            }
+            const entryById = new Map(divEntries.map(e => [e.id, e]))
 
             return (
           <div className="grid-2">
@@ -3067,7 +3140,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                       <th className="c">18 Thru</th>
                       <th className="c">Final 9</th>
                       <th className="c bl" style={{ width: 70 }}>Total</th>
-                      <th className="r bl" style={{ width: 85 }}>Payout</th>
+                      <th className="r bl" style={{ width: 105 }}>Payout</th>
                       <th className="c bl" style={{ width: 60 }}>Points</th>
                       <th className="c bl" style={{ width: 95 }}>Tag In → Out</th>
                       {showPlayoffCol && <th className="r bl" style={{ width: 108 }}>Playoff</th>}
@@ -3079,7 +3152,11 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                       const ent = r.entry
                       const p = playerById.get(ent.player_id)
                       const t = r.totals
-                      const payoutAmt = isDivisionClosed ? Number(ent.payout || 0) : (result.payouts.get(ent.id) ?? 0)
+                      const placeAmt = isDivisionClosed ? Number(ent.payout || 0) : (result.payouts.get(ent.id) ?? 0)
+                      const bonusAmt = isDivisionClosed
+                        ? (postedBonusByPlayer.get(ent.player_id) ?? 0)
+                        : (previewBonusByEntry.get(ent.id) ?? 0)
+                      const totalCash = cents(placeAmt + bonusAmt)
                       const pts = isDivisionClosed ? Number(ent.points || 0) : (result.points.get(ent.id) ?? 0)
                       const tagOut = isDivisionClosed ? ent.tag_out : result.tagsOut.get(ent.id)
                       const displayPlace = isDivisionClosed ? (ent.place ?? 0) : r.place
@@ -3098,8 +3175,19 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                           <td className="c">{t.t18 ?? '—'}</td>
                           <td className="c">{ent.made_final ? t.f ?? '—' : '—'}</td>
                           <td className="c bl big">{t.total ?? '—'}</td>
-                          <td className="r bl num strong" style={{ color: payoutAmt > 0 ? 'var(--teal)' : 'var(--text-3)' }}>
-                            {payoutAmt > 0 ? money(payoutAmt) : '—'}
+                          <td className="r bl num strong" style={{ color: totalCash > 0 ? 'var(--teal)' : 'var(--text-3)' }}>
+                            {totalCash > 0 ? (
+                              <div>
+                                <div>{money(totalCash)}</div>
+                                {bonusAmt > 0 && (
+                                  <div className="muted" style={{ fontSize: 10, fontWeight: 500, lineHeight: 1.2 }}>
+                                    {placeAmt > 0
+                                      ? `${money(placeAmt)} + ${money(bonusAmt)} bonus`
+                                      : `${money(bonusAmt)} bonus`}
+                                  </div>
+                                )}
+                              </div>
+                            ) : '—'}
                           </td>
                           <td className="c bl num" style={{ color: pts > 0 ? 'var(--orange)' : 'var(--text-3)' }}>
                             {pts > 0 ? `+${pts}` : '—'}
@@ -3320,9 +3408,22 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                   const detail = setsBar
                     ? `Sets the bar${b.entryIds.length > 1 ? ` (${b.entryIds.length} tied)` : ''}`
                     : `${money(each)}${b.type === 'perfect_round' || b.type === 'perfect5' || b.type === 'perfect4' ? ' from the pot' : ''}${splitCount > 1 ? ` (${splitCount} split)` : ''}`
+                  const winnerNames = b.entryIds
+                    .map(eid => {
+                      const ent = entryById.get(eid)
+                      return ent ? (playerById.get(ent.player_id)?.name ?? 'Unknown') : null
+                    })
+                    .filter((n): n is string => Boolean(n))
                   return (
                   <div key={b.type} className="kv">
-                    <dt>{AWARD_LABEL[b.type]}</dt>
+                    <dt>
+                      {AWARD_LABEL[b.type]}
+                      {winnerNames.length > 0 && (
+                        <span className="muted" style={{ display: 'block', fontSize: 11, fontWeight: 400 }}>
+                          {winnerNames.join(', ')}
+                        </span>
+                      )}
+                    </dt>
                     <dd style={{ color: 'var(--orange)' }}>{detail}</dd>
                   </div>
                   )

@@ -399,6 +399,18 @@ export interface BonusWin {
   splitAmong?: number
 }
 
+/** Sum of all bonus cash won by each entry id in a divisionResult. */
+export function bonusPayoutsByEntry(bonuses: readonly BonusWin[]): Map<string, number> {
+  const out = new Map<string, number>()
+  for (const b of bonuses) {
+    b.entryIds.forEach((id, idx) => {
+      const amt = b.amounts[idx] ?? b.each ?? 0
+      if (amt > 0) out.set(id, cents((out.get(id) ?? 0) + amt))
+    })
+  }
+  return out
+}
+
 export interface DivisionResult {
   ranked: Ranked[]
   payouts: Map<string, number>
