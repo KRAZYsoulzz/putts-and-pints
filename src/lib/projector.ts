@@ -55,11 +55,6 @@ export function autoScrollNextStep(
     }
   }
 
-  let currentScrollTop = metrics.currentScrollTop
-  if (Math.abs(currentScrollTop - state.scrollTop) > 50) {
-    currentScrollTop = state.scrollTop
-  }
-
   if (state.phase === 'top_pause') {
     const remaining = state.pauseRemainingMs - deltaMs
     if (remaining <= 0) {
@@ -78,7 +73,8 @@ export function autoScrollNextStep(
 
   if (state.phase === 'scrolling') {
     const advance = (speed * deltaMs) / 1000
-    const targetScroll = currentScrollTop + advance
+    const baseScroll = Math.max(0, Math.min(maxScroll, state.scrollTop))
+    const targetScroll = baseScroll + advance
     if (targetScroll >= maxScroll - 1) {
       return {
         nextState: { phase: 'bottom_pause', scrollTop: maxScroll, pauseRemainingMs: pauseBottom },
@@ -235,7 +231,7 @@ export function useAutoScroll<T extends HTMLElement>(
 
       const res = autoScrollNextStep(state, metrics, delta)
       state = res.nextState
-      if (res.shouldScroll && Math.abs(el.scrollTop - res.nextScrollTop) >= 0.5) {
+      if (res.shouldScroll) {
         el.scrollTop = res.nextScrollTop
       }
 

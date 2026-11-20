@@ -135,7 +135,17 @@
   background: var(--bg);
   border: 1px solid var(--line-strong);
   border-radius: var(--r);
+  line-height: 1.25;
   transition: border-color var(--t), background var(--t);
+}
+.select-sm {
+  height: 30px;
+  width: auto;
+  min-width: 108px;
+  max-width: 100%;
+  padding: 0 26px 0 8px;
+  font-size: 12px;
+  background: var(--surface-2);
 }
 .input:hover, .select:hover { border-color: rgba(242, 234, 211, 0.22); }
 .input:focus, .select:focus { outline: none; border-color: var(--orange); }
@@ -331,23 +341,27 @@ input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
   align-items: start;
 }
 .leaderboard-division { gap: 6px; min-width: 0; }
+.leaderboard-table {
+  table-layout: fixed;
+  width: 100%;
+}
 .leaderboard-table th {
   height: 24px;
-  padding: 0 6px;
+  padding: 0 4px;
   font-size: 9.5px;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
 }
 .leaderboard-table td {
-  height: 21px;
-  padding: 0 6px;
-  font-size: 12.5px;
+  height: 22px;
+  padding: 0 4px;
+  font-size: 12px;
   line-height: 1.15;
 }
-.leaderboard-table .col-plc { width: 34px; }
-.leaderboard-table .col-thru { width: 38px; }
+.leaderboard-table .col-plc { width: 32px; }
+.leaderboard-table .col-thru { width: 34px; }
+.leaderboard-table .col-score { width: 38px; }
 .leaderboard-table .col-player {
-  width: 1%;
-  max-width: 150px;
+  width: auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -360,8 +374,24 @@ input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
   vertical-align: bottom;
 }
 .leaderboard-table .place { font-size: 13px; }
-.leaderboard-table .big { font-size: 14px; }
+.leaderboard-table .big { font-size: 13.5px; }
 .leaderboard-table tr.cut-line td { height: 18px; }
+
+.checkin-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.65fr) minmax(270px, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+.table-compact th,
+.table-compact td {
+  padding: 0 6px;
+  font-size: 12.5px;
+}
+.table-compact th {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+}
 
 /* Standings table sortable headers & phone responsiveness */
 .standings-table th.sortable {
@@ -392,6 +422,9 @@ input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
    ========================================================================== */
 @media (max-width: 1100px) {
   .grid-2 { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+}
+@media (max-width: 1100px) {
+  .checkin-grid { grid-template-columns: minmax(0, 1fr); gap: 20px; }
 }
 
 @media (max-width: 860px) {
@@ -509,6 +542,8 @@ input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
   min-height: 0;
   display: grid;
   grid-template-columns: 1fr 1fr !important;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
   gap: 20px;
   align-items: stretch;
 }
@@ -517,6 +552,7 @@ input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  overflow: hidden;
   gap: 6px;
 }
 .projector-page .leaderboard-division h3 {
@@ -532,6 +568,7 @@ input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
 .projector-page .leaderboard-division .table-wrap {
   flex: 1;
   min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
   scrollbar-width: thin;
 }
@@ -542,13 +579,13 @@ input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
   background: var(--surface-1);
   font-size: 13px;
   height: 34px;
-  padding: 0 10px;
-  letter-spacing: 0.05em;
+  padding: 0 6px;
+  letter-spacing: 0.04em;
 }
 .projector-page .leaderboard-table td {
   font-size: 16px;
   height: 36px;
-  padding: 0 10px;
+  padding: 0 6px;
 }
 .projector-page .leaderboard-table .col-plc {
   width: 44px;
@@ -556,8 +593,12 @@ input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
 .projector-page .leaderboard-table .col-thru {
   width: 48px;
 }
+.projector-page .leaderboard-table .col-score {
+  width: 52px;
+}
 .projector-page .leaderboard-table .col-player {
-  max-width: 220px;
+  width: auto;
+  max-width: none;
 }
 .projector-page .leaderboard-table .player-name {
   font-size: 16px;
@@ -759,6 +800,11 @@ input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
   .dialog-head { padding: 14px 16px 10px; }
   .dialog-body { padding: 14px 16px; }
   .dialog-foot { padding: 10px 16px 14px; }
+  .leaderboard-table th,
+  .leaderboard-table td { padding: 0 3px; font-size: 11px; }
+  .leaderboard-table .col-plc { width: 28px; }
+  .leaderboard-table .col-thru { width: 30px; }
+  .leaderboard-table .col-score { width: 32px; }
 }
 
 .special-banner {

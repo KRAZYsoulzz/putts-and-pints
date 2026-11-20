@@ -117,7 +117,7 @@ function LeaderboardDivisionColumn({
   cardNumberByPlayer?: Map<string, number>
   eventStatus?: EventStatus
 }) {
-  const scrollRef = useAutoScroll<HTMLDivElement>(isProjector, dEntries)
+  const scrollRef = useAutoScroll<HTMLDivElement>(isProjector)
 
   const renderRow = (row: typeof board.completed[number]) => {
     const ent = entryMap.get(row.id)
@@ -131,7 +131,7 @@ function LeaderboardDivisionColumn({
         <td className="strong col-player" title={playerName}>
           <span className="player-name">{playerName}</span>
           {cardNum != null && (
-            <span className="chip" style={{ marginLeft: 6 }}>C{cardNum}</span>
+            <span className="chip" style={{ marginLeft: 5 }}>C{cardNum}</span>
           )}
           {ent?.awards && ent.awards.length > 0 && (
             <span className="chips">
@@ -169,11 +169,11 @@ function LeaderboardDivisionColumn({
                 <th className="col-plc">Plc</th>
                 <th className="col-player">Player</th>
                 <th className="c col-thru" title="Holes completed in current round">Thru</th>
-                <th className="c col-score">Front 9</th>
-                <th className="c col-score">Back 9</th>
-                <th className="c bl col-score">18 Total</th>
-                <th className="c bl col-score">Final 9</th>
-                <th className="c bl col-score">Night Total</th>
+                <th className="c col-score" title="Front 9">F9</th>
+                <th className="c col-score" title="Back 9">B9</th>
+                <th className="c bl col-score" title="18-Hole Total">18</th>
+                <th className="c bl col-score" title="Final 9">Fin 9</th>
+                <th className="c bl col-score" title="Night Total">Tot</th>
               </tr>
             </thead>
             <tbody>
@@ -1681,7 +1681,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
             </div>
           </div>
 
-          <div className="grid-2">
+          <div className="checkin-grid">
             {checkinViewMode === 'card' ? (
               <div className="panel panel-pad stack" style={{ gap: 14 }}>
                 <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
@@ -1800,15 +1800,15 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                             </div>
                           </div>
                           <div className="table-wrap">
-                            <table className="table" style={{ margin: 0 }}>
+                            <table className="table table-compact" style={{ margin: 0 }}>
                               <thead>
                                 <tr>
-                                  <th style={{ width: 35 }}>#</th>
-                                  <th>Player Name</th>
-                                  <th className="c" style={{ width: 85 }}>Tag In</th>
-                                  <th className="c" style={{ width: 75 }}>Paid</th>
-                                  <th className="c" style={{ width: 130 }}>Move Card</th>
-                                  <th className="r" style={{ width: 70 }}>Action</th>
+                                  <th style={{ width: 28 }}>#</th>
+                                  <th>Player</th>
+                                  <th className="c">Tag</th>
+                                  <th className="c">Paid</th>
+                                  <th className="c">Card</th>
+                                  <th className="r"></th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -1854,15 +1854,6 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                                         <td className="c">
                                           <select
                                             className="select select-sm"
-                                            style={{
-                                              fontSize: 12,
-                                              padding: '2px 6px',
-                                              borderRadius: 4,
-                                              background: 'var(--surface-2)',
-                                              border: '1px solid var(--line)',
-                                              color: 'var(--text)',
-                                              maxWidth: 125,
-                                            }}
                                             value={c.id}
                                             disabled={isSeason9Week1(event)}
                                             onChange={e => handleMovePlayer(ent.player_id, e.target.value)}
@@ -1870,7 +1861,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                                           >
                                             {divCards.map(targetC => (
                                               <option key={targetC.id} value={targetC.id}>
-                                                {targetC.name} ({targetC.playerIds.length})
+                                                Card {targetC.cardNumber} ({targetC.playerIds.length})
                                               </option>
                                             ))}
                                             <option value="new">+ New Card</option>
@@ -1953,7 +1944,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                           </button>
                         </div>
                         <div className="table-wrap">
-                          <table className="table" style={{ margin: 0 }}>
+                          <table className="table table-compact" style={{ margin: 0 }}>
                             <tbody>
                               {orderedEntries
                                 .filter(ent => !divCardPlayerIds.has(ent.player_id))
@@ -1961,29 +1952,20 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                                   const p = playerById.get(ent.player_id)
                                   return (
                                     <tr key={ent.id}>
-                                      <td className="faint" style={{ width: 35 }}>{idx + 1}</td>
+                                      <td className="faint" style={{ width: 28 }}>{idx + 1}</td>
                                       <td className="strong">{p?.name ?? 'Unknown Player'}</td>
-                                      <td className="c" style={{ width: 130 }}>
+                                      <td className="c">
                                         <select
                                           className="select select-sm"
-                                          style={{
-                                            fontSize: 12,
-                                            padding: '2px 6px',
-                                            borderRadius: 4,
-                                            background: 'var(--surface-2)',
-                                            border: '1px solid var(--line)',
-                                            color: 'var(--text)',
-                                            maxWidth: 125,
-                                          }}
                                           value=""
                                           disabled={isSeason9Week1(event)}
                                           onChange={e => handleMovePlayer(ent.player_id, e.target.value)}
                                           aria-label={`Card for ${p?.name ?? 'player'}`}
                                         >
-                                          <option value="" disabled>Assign to card…</option>
+                                          <option value="" disabled>Assign card…</option>
                                           {divCards.map(targetC => (
                                             <option key={targetC.id} value={targetC.id}>
-                                              {targetC.name} ({targetC.playerIds.length})
+                                              Card {targetC.cardNumber} ({targetC.playerIds.length})
                                             </option>
                                           ))}
                                           <option value="new">+ New Card</option>
@@ -2044,15 +2026,15 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                 </div>
                 <div className="panel">
                   <div className="table-wrap">
-                    <table className="table">
+                    <table className="table table-compact">
                       <thead>
                         <tr>
-                          <th style={{ width: 40 }}>#</th>
-                          <th>Player Name</th>
-                          <th className="c" style={{ width: 110 }}>Tag In</th>
-                          <th className="c" style={{ width: 80 }}>Paid ($10)</th>
-                          {anyCardsMade && <th className="c" style={{ width: 130 }}>Card</th>}
-                          <th className="r" style={{ width: 80 }}>Action</th>
+                          <th style={{ width: 28 }}>#</th>
+                          <th>Player</th>
+                          <th className="c">Tag</th>
+                          <th className="c">Paid</th>
+                          {anyCardsMade && <th className="c">Card</th>}
+                          <th className="r"></th>
                         </tr>
                       </thead>
                       <tbody>
@@ -2113,15 +2095,6 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                                   {rowDivCards.length > 0 ? (
                                     <select
                                       className="select select-sm"
-                                      style={{
-                                        fontSize: 12,
-                                        padding: '2px 6px',
-                                        borderRadius: 4,
-                                        background: 'var(--surface-2)',
-                                        border: '1px solid var(--line)',
-                                        color: 'var(--text)',
-                                        maxWidth: 125,
-                                      }}
                                       value={playerCard?.id ?? ''}
                                       disabled={isSeason9Week1(event)}
                                       onChange={e => handleMovePlayer(ent.player_id, e.target.value, ent.division)}
@@ -2130,7 +2103,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                                       {!playerCard && <option value="">Unassigned</option>}
                                       {rowDivCards.map(targetC => (
                                         <option key={targetC.id} value={targetC.id}>
-                                          {targetC.name}
+                                          Card {targetC.cardNumber}
                                         </option>
                                       ))}
                                       <option value="new">+ New Card</option>
@@ -2826,8 +2799,8 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                             <td className="r bl">
                               {isPlayoffEligible ? (
                                 <select
-                                  className="select"
-                                  style={{ width: 98, height: 28, fontSize: 11 }}
+                                  className="select select-sm"
+                                  style={{ minWidth: 112, height: 28, fontSize: 11 }}
                                   aria-label={`Playoff finish for ${p?.name ?? 'player'}`}
                                   value={ent.tiebreak ?? ''}
                                   onChange={e => {

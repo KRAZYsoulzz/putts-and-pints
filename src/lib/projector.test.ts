@@ -39,7 +39,7 @@ import {
   assert.equal(step.nextScrollTop, 0)
 }
 
-// 3. Smooth scrolling advances based on speed
+// 3. Smooth scrolling advances based on speed (including sub-pixel 120Hz/144Hz frames)
 {
   const state = { phase: 'scrolling' as const, scrollTop: 0, pauseRemainingMs: 0 }
   const metrics = { clientHeight: 400, scrollHeight: 1000, currentScrollTop: 0 }
@@ -47,6 +47,19 @@ import {
   const step = autoScrollNextStep(state, metrics, 500, { speedPxPerSec: 30 })
   assert.equal(step.nextState.phase, 'scrolling')
   assert.equal(step.nextScrollTop, 15)
+
+  // High-refresh frames (8ms = 0.24px/frame) must accumulate even if browser reports rounded 0 scrollTop
+  let fastState = { phase: 'scrolling' as const, scrollTop: 0, pauseRemainingMs: 0 }
+  for (let i = 0; i < 20; i++) {
+    const next = autoScrollNextStep(
+      fastState,
+      { clientHeight: 400, scrollHeight: 1000, currentScrollTop: Math.floor(fastState.scrollTop) },
+      8,
+      { speedPxPerSec: 30 },
+    )
+    fastState = next.nextState
+  }
+  assert.ok(fastState.scrollTop > 4.5, 'sub-pixel frames accumulate without stalling at 0')
 }
 
 // 4. Reaching bottom triggers bottom pause

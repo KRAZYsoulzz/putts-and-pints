@@ -381,19 +381,49 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => { void reload() }, [reload])
 
-  // Live updates (debounced) so the public view follows along -----------------
+  // Live updates (Realtime + polling/visibility fallback) so leaderboards stay current
+  const hasLiveEvent = useMemo(
+    () => events.some(e => e.status !== 'complete' && e.status !== 'scheduled'),
+    [events],
+  )
   const timer = useRef<number | undefined>(undefined)
   useEffect(() => {
+    const scheduleReload = () => {
+      window.clearTimeout(timer.current)
+      timer.current = window.setTimeout(() => { void reload() }, 350)
+    }
+
     const ch = supabase.channel('pp-live')
     for (const table of ['pp_events', 'pp_entries', 'pp_ledger', 'pp_players', 'pp_tags']) {
-      ch.on('postgres_changes', { event: '*', schema: 'public', table }, () => {
-        window.clearTimeout(timer.current)
-        timer.current = window.setTimeout(() => { void reload() }, 500)
-      })
+      ch.on('postgres_changes', { event: '*', schema: 'public', table }, scheduleReload)
     }
     ch.subscribe()
-    return () => { supabase.removeChannel(ch) }
+
+    const onWake = () => {
+      if (document.visibilityState === 'visible') void reload()
+    }
+    document.addEventListener('visibilitychange', onWake)
+    window.addEventListener('focus', onWake)
+    window.addEventListener('online', onWake)
+
+    return () => {
+      window.clearTimeout(timer.current)
+      document.removeEventListener('visibilitychange', onWake)
+      window.removeEventListener('focus', onWake)
+      window.removeEventListener('online', onWake)
+      supabase.removeChannel(ch)
+    }
   }, [reload])
+
+  useEffect(() => {
+    if (!hasLiveEvent) return
+    const poll = window.setInterval(() => {
+      if (document.visibilityState === 'visible' && writes.current === 0) {
+        void reload()
+      }
+    }, 5000)
+    return () => window.clearInterval(poll)
+  }, [hasLiveEvent, reload])
 
   const fetchServerEventPins = useCallback(
     async (eventId: string, force = false): Promise<Record<string, string> | null> => {
