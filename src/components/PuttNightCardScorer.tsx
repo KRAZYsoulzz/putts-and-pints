@@ -1,4 +1,4 @@
-import { Fragment, useState } from 'react'
+import { Fragment, useRef, useState } from 'react'
 import { Check, ChevronLeft, ChevronRight, Lock, Unlock } from 'lucide-react'
 import { Dialog } from './ui'
 import type { PPCard } from '../lib/cards'
@@ -65,6 +65,13 @@ export default function PuttNightCardScorer({
     return nextStationIndexForCard(round, entriesForCard(initialCard, entries, round))
   })
   const [showSummaryTable, setShowSummaryTable] = useState(false)
+  const headerRef = useRef<HTMLDivElement | null>(null)
+
+  const goToStation = (idx: number) => {
+    setActiveStation(idx)
+    const body = headerRef.current?.closest('.dialog-body')
+    if (body) body.scrollTo({ top: 0, behavior: 'smooth' })
+  }
 
   const card = cards.find(c => c.id === selectedCardId) ?? initialCard
   if (!card) return null
@@ -216,11 +223,16 @@ export default function PuttNightCardScorer({
 
           {/* Station Navigation Header */}
           <div
+            ref={headerRef}
             style={{
+              position: 'sticky',
+              top: 0,
+              zIndex: 4,
               padding: '10px 12px',
               borderRadius: 'var(--r)',
               background: 'var(--surface-2)',
-              border: '1px solid var(--line)',
+              border: '1px solid var(--line-strong)',
+              boxShadow: '0 6px 18px rgba(0, 0, 0, 0.35)',
             }}
             className="stack"
           >
@@ -228,7 +240,7 @@ export default function PuttNightCardScorer({
               <button
                 type="button"
                 className="btn btn-sm"
-                onClick={() => setActiveStation(prevIdx)}
+                onClick={() => goToStation(prevIdx)}
                 aria-label="Previous station"
               >
                 <ChevronLeft size={16} /> S{prevIdx + 1}
@@ -244,7 +256,7 @@ export default function PuttNightCardScorer({
               <button
                 type="button"
                 className="btn btn-sm"
-                onClick={() => setActiveStation(nextIdx)}
+                onClick={() => goToStation(nextIdx)}
                 aria-label="Next station"
               >
                 S{nextIdx + 1} <ChevronRight size={16} />
@@ -375,7 +387,7 @@ export default function PuttNightCardScorer({
                   if (allComplete) {
                     onClose()
                   } else {
-                    setActiveStation(ctaTarget)
+                    goToStation(ctaTarget)
                   }
                 }}
               >
@@ -425,7 +437,7 @@ export default function PuttNightCardScorer({
                     type="button"
                     className={cls}
                     title={`Station ${idx + 1}: ${PUTT_STATIONS_9[inner].label} (${enteredCount}/${cardEntries.length} scored)`}
-                    onClick={() => setActiveStation(idx)}
+                    onClick={() => goToStation(idx)}
                   >
                     <span>{idx + 1}</span>
                   </button>
