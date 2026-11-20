@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   calculateCardSizes,
   cardLabel,
+  cardSizeForDivision,
   splitPlayersIntoCards,
   generateEventCards,
   shuffleDivisionCards,
@@ -404,5 +405,30 @@ const labelMap = playerCardLabelMap(normalized, 'M')
 assert.equal(labelMap.get('pA'), 2)
 assert.equal(labelMap.get('pB'), 2)
 assert.equal(playerCardLabelMap(normalized, 'W').size, 0)
+
+// Per-division custom card sizes (Men's vs Women's)
+{
+  const mixedDiv = [
+    ...Array.from({ length: 10 }, (_, i) => makeEntry({ event_id: 'ev-split', player_id: `pm-${i}`, division: 'M' })),
+    ...Array.from({ length: 6 }, (_, i) => makeEntry({ event_id: 'ev-split', player_id: `pw-${i}`, division: 'W' })),
+  ]
+  const split = generateEventCards({
+    eventId: 'ev-split',
+    entries: mixedDiv,
+    cardSize: 5,
+    cardSizes: { M: 5, W: 3 },
+    sortMode: 'checkin',
+  })
+  assert.deepEqual(split.cards.M.map(c => c.playerIds.length), [5, 5], 'Men use size 5')
+  assert.deepEqual(split.cards.W.map(c => c.playerIds.length), [3, 3], 'Women use size 3')
+  assert.equal(cardSizeForDivision(split, 'M'), 5)
+  assert.equal(cardSizeForDivision(split, 'W'), 3)
+
+  const roundTripped = normalizeEventCards(split)
+  assert.ok(roundTripped)
+  assert.equal(cardSizeForDivision(roundTripped, 'M'), 5)
+  assert.equal(cardSizeForDivision(roundTripped, 'W'), 3)
+  assert.equal(cardSizeForDivision(normalized, 'W'), 5, 'legacy cards without targetCardSizes fall back to targetCardSize')
+}
 
 console.log('cards tests defined ✔')

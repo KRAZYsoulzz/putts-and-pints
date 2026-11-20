@@ -61,6 +61,7 @@ import CorrectionDraftPanel from '../components/CorrectionDraftPanel'
 import { Dialog, DivisionSeg, Menu, MoneyInput, PageHead, ScoreInput, Seg, Stat, Toggle, money, ordinal } from '../components/ui'
 import {
   assignPlayerToSmallestCard,
+  cardSizeForDivision,
   clearEventCards,
   generateEventCards,
   generateFinal9Cards,
@@ -302,7 +303,8 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
   })
   const prevRemoteCardsRef = useRef<Record<string, string | null | undefined>>({})
   const [makeCardsOpen, setMakeCardsOpen] = useState(false)
-  const [cardSizeInput, setCardSizeInput] = useState(4)
+  const [cardSizeMenInput, setCardSizeMenInput] = useState(4)
+  const [cardSizeWomenInput, setCardSizeWomenInput] = useState(4)
   const [cardSortInput, setCardSortInput] = useState<CardSortMode>('checkin')
   const [scoreViewMode, setScoreViewMode] = useState<'list' | 'card'>(loadScoreViewMode)
   const [checkinViewMode, setCheckinViewMode] = useState<'list' | 'card'>(loadCheckinViewMode)
@@ -318,7 +320,8 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
       setEventCards(loaded)
       if (loaded) {
         if (!isSeason9Week1(event)) saveEventCards(event.id, loaded, event)
-        if (loaded.targetCardSize) setCardSizeInput(loaded.targetCardSize)
+        setCardSizeMenInput(cardSizeForDivision(loaded, 'M'))
+        setCardSizeWomenInput(cardSizeForDivision(loaded, 'W'))
         if (loaded.sortMode) setCardSortInput(loaded.sortMode)
       }
       prevRemoteCardsRef.current[event.id] = loaded?.updatedAt ?? null
@@ -332,8 +335,11 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
     }
     const loaded = loadEventCards(event.id)
     setEventCards(loaded)
-    if (loaded?.targetCardSize) setCardSizeInput(loaded.targetCardSize)
-    if (loaded?.sortMode) setCardSortInput(loaded.sortMode)
+    if (loaded) {
+      setCardSizeMenInput(cardSizeForDivision(loaded, 'M'))
+      setCardSizeWomenInput(cardSizeForDivision(loaded, 'W'))
+      if (loaded.sortMode) setCardSortInput(loaded.sortMode)
+    }
   }, [event?.id, event?.cards])
 
   const checkingIn = useRef(new Set<string>())
@@ -839,13 +845,18 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
     saveCheckinViewMode(mode)
   }
 
-  const handleGenerateCards = (size = cardSizeInput, sort = cardSortInput) => {
+  const handleGenerateCards = (
+    menSize = cardSizeMenInput,
+    womenSize = cardSizeWomenInput,
+    sort = cardSortInput,
+  ) => {
     if (!event || isWeek1Locked) return
     const nightEvEntries = entries.filter(e => e.event_id === event.id)
     const generated = generateEventCards({
       eventId: event.id,
       entries: nightEvEntries,
-      cardSize: size,
+      cardSize: menSize,
+      cardSizes: { M: menSize, W: womenSize },
       sortMode: sort,
       allEntries: entries,
       events,
@@ -853,7 +864,11 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
     persistEventCards(generated)
     setMakeCardsOpen(false)
     setCheckinViewMode('card')
-    reportInfo(`Cards generated for tonight (${size} players per card).`)
+    reportInfo(
+      menSize === womenSize
+        ? `Cards generated for tonight (${menSize} players per card).`
+        : `Cards generated for tonight (Men's: ${menSize}/card, Women's: ${womenSize}/card).`,
+    )
   }
 
   const handleShuffleDivision = () => {
@@ -864,7 +879,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
     const shuffledCards = shuffleDivisionCards({
       cards: curCards,
       division,
-      targetCardSize: eventCards.targetCardSize,
+      targetCardSize: cardSizeForDivision(eventCards, division),
       entries: nightEvEntries,
     })
     const updated: PPEvtCards = {
@@ -920,7 +935,10 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
       eventId: event.id,
       entries: evEntries,
       existingCards: eventCards,
-      cardSize: eventCards?.targetCardSize ?? cardSizeInput,
+      cardSizes: {
+        M: cardSizeForDivision(eventCards, 'M', cardSizeMenInput),
+        W: cardSizeForDivision(eventCards, 'W', cardSizeWomenInput),
+      },
       settings,
     })
     persistEventCards(updated)
@@ -967,7 +985,10 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
       eventId: event.id,
       entries: updatedEvEntries,
       existingCards: eventCards,
-      cardSize: eventCards.targetCardSize,
+      cardSizes: {
+        M: cardSizeForDivision(eventCards, 'M'),
+        W: cardSizeForDivision(eventCards, 'W'),
+      },
       settings,
     })
     persistEventCards(updated)
@@ -1670,7 +1691,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                     </h3>
                     <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
                       {divCards.length > 0
-                        ? `${divCards.length} ${divCards.length === 1 ? 'card' : 'cards'} · Target size ${eventCards?.targetCardSize ?? 4} · ${eventCards?.sortMode === 'standings' ? 'Standings sort' : eventCards?.sortMode === 'random' ? 'Random sort' : 'Check-in sort'}`
+                        ? `${divCards.length} ${divCards.length === 1 ? 'card' : 'cards'} · Target size ${cardSizeForDivision(eventCards, division)} · ${eventCards?.sortMode === 'standings' ? 'Standings sort' : eventCards?.sortMode === 'random' ? 'Random sort' : 'Check-in sort'}`
                         : 'No cards made yet for this division.'}
                     </div>
                   </div>
@@ -3217,21 +3238,43 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
               Split tonight's checked-in players into playing groups. Men's and Women's divisions are always grouped separately.
             </p>
 
-            <div className="field">
-              <span>Card size (players per group)</span>
-              <input
-                className="input"
-                type="number"
-                min={2}
-                max={12}
-                value={cardSizeInput}
-                onChange={e => {
-                  const val = parseInt(e.target.value, 10)
-                  if (!Number.isNaN(val) && val >= 1) {
-                    setCardSizeInput(val)
-                  }
-                }}
-              />
+            <div className="stack" style={{ gap: 8 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
+                <div className="field">
+                  <span>Men's card size ({counts.M})</span>
+                  <input
+                    className="input"
+                    type="number"
+                    min={2}
+                    max={12}
+                    aria-label="Men's card size"
+                    value={cardSizeMenInput}
+                    onChange={e => {
+                      const val = parseInt(e.target.value, 10)
+                      if (!Number.isNaN(val) && val >= 1) {
+                        setCardSizeMenInput(val)
+                      }
+                    }}
+                  />
+                </div>
+                <div className="field">
+                  <span>Women's card size ({counts.W})</span>
+                  <input
+                    className="input"
+                    type="number"
+                    min={2}
+                    max={12}
+                    aria-label="Women's card size"
+                    value={cardSizeWomenInput}
+                    onChange={e => {
+                      const val = parseInt(e.target.value, 10)
+                      if (!Number.isNaN(val) && val >= 1) {
+                        setCardSizeWomenInput(val)
+                      }
+                    }}
+                  />
+                </div>
+              </div>
               <span className="muted" style={{ fontSize: 11 }}>
                 Recommended: 4. When player counts don't divide evenly, group sizes differ by at most 1 (e.g. 14 players = 4, 4, 3, 3).
               </span>
@@ -3318,8 +3361,8 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                 <button
                   type="button"
                   className="btn btn-primary"
-                  disabled={orderedEntries.length === 0 || isSeason9Week1(event)}
-                  onClick={() => handleGenerateCards(cardSizeInput, cardSortInput)}
+                  disabled={nightEntries.length === 0 || isSeason9Week1(event)}
+                  onClick={() => handleGenerateCards(cardSizeMenInput, cardSizeWomenInput, cardSortInput)}
                 >
                   {divCards.length > 0 ? 'Regenerate Cards' : 'Generate Cards'}
                 </button>

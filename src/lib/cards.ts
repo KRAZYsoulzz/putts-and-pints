@@ -14,6 +14,10 @@ export interface PPCard {
 export interface PPEvtCards {
   eventId: string
   targetCardSize: number
+  targetCardSizes?: {
+    M: number
+    W: number
+  }
   sortMode: CardSortMode
   cards: {
     M: PPCard[]
@@ -31,6 +35,26 @@ export const PP_CARDS_STORAGE_PREFIX = 'pp_cards_'
 export const PP_SCORE_VIEW_MODE_KEY = 'pp_score_view_mode'
 export const PP_CHECKIN_VIEW_MODE_KEY = 'pp_checkin_view_mode'
 export const WEEK1_EVENT_ID = 'e1ff57b8-9569-485d-aaa2-d538470bf9f4'
+
+/**
+ * Returns the configured target card size for a specific division,
+ * falling back to the legacy shared targetCardSize when per-division sizes aren't set.
+ */
+export function cardSizeForDivision(
+  cards: PPEvtCards | null | undefined,
+  division: Division,
+  fallback = DEFAULT_CARD_SIZE,
+): number {
+  const specific = cards?.targetCardSizes?.[division]
+  if (typeof specific === 'number' && Number.isFinite(specific) && specific >= 1) {
+    return Math.trunc(specific)
+  }
+  const shared = cards?.targetCardSize
+  if (typeof shared === 'number' && Number.isFinite(shared) && shared >= 1) {
+    return Math.trunc(shared)
+  }
+  return fallback
+}
 
 /**
  * Returns a human-friendly label for a card, e.g. "Men's Card 1" or "Women's Card 2".
@@ -210,18 +234,27 @@ export function generateEventCards(params: {
   eventId: string
   entries: readonly Entry[]
   cardSize: number
+  cardSizes?: Partial<Record<Division, number>>
   sortMode: CardSortMode
   allEntries?: readonly Entry[]
   events?: readonly PPEvent[]
   randomFn?: () => number
 }): PPEvtCards {
-  const { eventId, entries, cardSize, sortMode, allEntries, events, randomFn } = params
+  const { eventId, entries, cardSize, cardSizes, sortMode, allEntries, events, randomFn } = params
   const eventEntries = entries.filter((e) => e.event_id === eventId)
+  const sizeM =
+    typeof cardSizes?.M === 'number' && Number.isFinite(cardSizes.M) && cardSizes.M >= 1
+      ? Math.trunc(cardSizes.M)
+      : cardSize
+  const sizeW =
+    typeof cardSizes?.W === 'number' && Number.isFinite(cardSizes.W) && cardSizes.W >= 1
+      ? Math.trunc(cardSizes.W)
+      : cardSize
 
   const cardsM = splitPlayersIntoCards({
     entries: eventEntries,
     division: 'M',
-    cardSize,
+    cardSize: sizeM,
     sortMode,
     allEntries,
     events,
@@ -231,7 +264,7 @@ export function generateEventCards(params: {
   const cardsW = splitPlayersIntoCards({
     entries: eventEntries,
     division: 'W',
-    cardSize,
+    cardSize: sizeW,
     sortMode,
     allEntries,
     events,
@@ -240,7 +273,8 @@ export function generateEventCards(params: {
 
   return {
     eventId,
-    targetCardSize: cardSize,
+    targetCardSize: sizeM,
+    targetCardSizes: { M: sizeM, W: sizeW },
     sortMode,
     cards: {
       M: cardsM,
@@ -415,6 +449,20 @@ export function normalizeEventCards(raw: unknown): PPEvtCards | null {
       : []
 
   const sizeNum = Number(r.targetCardSize)
+  const fallbackSize = Number.isFinite(sizeNum) && sizeNum >= 1 ? Math.trunc(sizeNum) : DEFAULT_CARD_SIZE
+  const rawSizes =
+    r.targetCardSizes && typeof r.targetCardSizes === 'object'
+      ? (r.targetCardSizes as Record<string, unknown>)
+      : null
+  const mSizeNum = rawSizes ? Number(rawSizes.M) : NaN
+  const wSizeNum = rawSizes ? Number(rawSizes.W) : NaN
+  const targetCardSizes = rawSizes
+    ? {
+        M: Number.isFinite(mSizeNum) && mSizeNum >= 1 ? Math.trunc(mSizeNum) : fallbackSize,
+        W: Number.isFinite(wSizeNum) && wSizeNum >= 1 ? Math.trunc(wSizeNum) : fallbackSize,
+      }
+    : undefined
+
   const sortMode: CardSortMode =
     r.sortMode === 'standings' || r.sortMode === 'random' || r.sortMode === 'checkin'
       ? r.sortMode
@@ -427,7 +475,8 @@ export function normalizeEventCards(raw: unknown): PPEvtCards | null {
 
   return {
     eventId: r.eventId,
-    targetCardSize: Number.isFinite(sizeNum) && sizeNum >= 1 ? Math.trunc(sizeNum) : DEFAULT_CARD_SIZE,
+    targetCardSize: fallbackSize,
+    ...(targetCardSizes ? { targetCardSizes } : {}),
     sortMode,
     cards: {
       M: normalizeList(cardMap.M, 'M'),
@@ -495,18 +544,30 @@ export function generateFinal9Cards(params: {
   entries: readonly Entry[]
   existingCards: PPEvtCards | null
   cardSize?: number
+  cardSizes?: Partial<Record<Division, number>>
   settings: Settings
 }): PPEvtCards {
-  const { eventId, entries, existingCards, cardSize, settings } = params
+  const { eventId, entries, existingCards, cardSize, cardSizes, settings } = params
   const eventEntries = entries.filter(e => e.event_id === eventId)
+  const sizeM =
+    cardSizes?.M ??
+    (existingCards ? cardSizeForDivision(existingCards, 'M', cardSize ?? DEFAULT_CARD_SIZE) : cardSize)
+  const sizeW =
+    cardSizes?.W ??
+    (existingCards ? cardSizeForDivision(existingCards, 'W', cardSize ?? DEFAULT_CARD_SIZE) : cardSize)
   return {
     eventId,
-    targetCardSize: existingCards?.targetCardSize ?? DEFAULT_CARD_SIZE,
+    targetCardSize: existingCards?.targetCardSize ?? sizeM ?? DEFAULT_CARD_SIZE,
+    ...(existingCards?.targetCardSizes
+      ? { targetCardSizes: existingCards.targetCardSizes }
+      : sizeM != null && sizeW != null
+        ? { targetCardSizes: { M: sizeM, W: sizeW } }
+        : {}),
     sortMode: existingCards?.sortMode ?? 'checkin',
     cards: existingCards?.cards ?? { M: [], W: [] },
     final9Cards: {
-      M: generateFinal9CardsForDivision({ entries: eventEntries, division: 'M', cardSize, settings }),
-      W: generateFinal9CardsForDivision({ entries: eventEntries, division: 'W', cardSize, settings }),
+      M: generateFinal9CardsForDivision({ entries: eventEntries, division: 'M', cardSize: sizeM, settings }),
+      W: generateFinal9CardsForDivision({ entries: eventEntries, division: 'W', cardSize: sizeW, settings }),
     },
     updatedAt: new Date().toISOString(),
   }
