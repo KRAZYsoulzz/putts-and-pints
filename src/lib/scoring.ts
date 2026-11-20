@@ -608,6 +608,31 @@ export function initialTagAssignment(ranked: Ranked[], inTags: (playerId: string
   return new Map(buyers.map((r, i) => [r.entry.id, i + 1]))
 }
 
+/**
+ * Final tag numbers for players who missed the Final 9 cut.
+ * Because every finalist finishes ahead of every non-finalist, non-cut tags are
+ * 100% determined as soon as the cut is set and do not depend on Final 9 play.
+ */
+export function nonCutTagAssignments(
+  entries: Entry[],
+  settings: Settings,
+  inTags: (playerId: string) => boolean,
+  openingTagNight: boolean,
+): Map<string, number> {
+  if (!entries.some(e => e.made_final)) return new Map()
+  const ranked = rankFinal(entries, settings)
+  const fullMap = openingTagNight
+    ? initialTagAssignment(ranked, inTags)
+    : redistributeTags(ranked, inTags)
+  const out = new Map<string, number>()
+  for (const r of ranked) {
+    if (r.entry.made_final) continue
+    const tag = fullMap.get(r.entry.id)
+    if (tag != null) out.set(r.entry.id, tag)
+  }
+  return out
+}
+
 /** The earliest event in the season is the one that deals tags. */
 export function isOpeningTagNight(
   events: { id: string; event_date: string; created_at?: string | null }[],

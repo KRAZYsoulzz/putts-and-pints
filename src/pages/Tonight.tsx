@@ -38,7 +38,7 @@ import {
   type Player,
   type PPEvent,
 } from '../lib/types'
-import { applyScoreDirty, byEntryOrder, canAdvanceToStatus, canConfirmCut, cents, computeNineCommit, cutConfirmationReady, displayedBack, displayedFront, effectiveCut, eighteenGridRows, final9EntryOrder, isOpeningTagNight, isSeason9Week1, liveNightTotal, MAX_FINAL, MAX_NINE, mergeNinePatch, qualifiers, suggestedCut, tonightBoard, totals, week1AllowsScorePatch, type Ranked } from '../lib/scoring'
+import { applyScoreDirty, byEntryOrder, canAdvanceToStatus, canConfirmCut, cents, computeNineCommit, cutConfirmationReady, displayedBack, displayedFront, effectiveCut, eighteenGridRows, final9EntryOrder, isOpeningTagNight, isSeason9Week1, liveNightTotal, MAX_FINAL, MAX_NINE, mergeNinePatch, nonCutTagAssignments, qualifiers, suggestedCut, tonightBoard, totals, week1AllowsScorePatch, type Ranked } from '../lib/scoring'
 import { completeRefresh, requestRefresh, type ScoreBoard } from '../lib/score-refresh'
 import { balances, clampPaidPlaces, displayedPerfectRound, displayedSharedPot, divisionResult, eventLedgerPosted, effectiveBar, eventMoney, nightBonusCost, otherDivisionNights, paidPlaceCount, payoutPool, payoutsForPlaceCount, PLACE_REMAINDER_BACKUP_NOTE, placeBudget, placeRemainder, postedBonusCost, postedPlaceRemainder, postedRemainderBackup, suggestedPaidPlaces } from '../lib/money'
 import { duplicateName, friendlyError, normalizeName, parseTag, payoutIssue, payoutRejectMessage, tagTakenTonight } from '../lib/validation'
@@ -1074,6 +1074,37 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
     await patchEvent(event.id, { status })
   }
 
+  const finalizeNonCutTags = async (field: Entry[]): Promise<Entry[]> => {
+    if (isWeek1Locked || !field.some(e => e.made_final)) return field
+    const opening = isOpeningTagNight(events, event.id)
+    const assigned = nonCutTagAssignments(field, settingsRef.current, inTags, opening)
+    const nextField: Entry[] = []
+    for (const ent of field) {
+      const nextTagOut = ent.made_final ? null : (assigned.get(ent.id) ?? null)
+      if (ent.tag_out !== nextTagOut) {
+        await patchEntry(ent.id, { tag_out: nextTagOut })
+      }
+      if (season && !ent.made_final && nextTagOut != null) {
+        await must(supabase.from('pp_tags').upsert(
+          { season_id: season.id, player_id: ent.player_id, tag_number: nextTagOut },
+          { onConflict: 'season_id,player_id' },
+        ))
+      }
+      nextField.push(ent.tag_out === nextTagOut ? ent : { ...ent, tag_out: nextTagOut })
+    }
+    return nextField
+  }
+
+  const handleToggleFinal = async (entry: Entry) => {
+    if (isWeek1Locked) return
+    const nextMade = !entry.made_final
+    await patchEntry(entry.id, { made_final: nextMade })
+    const field = entriesRef.current
+      .filter(e => e.event_id === event.id && e.division === entry.division)
+      .map(e => (e.id === entry.id ? { ...e, made_final: nextMade } : e))
+    await finalizeNonCutTags(field)
+  }
+
   const applyCut = async (cut: number, field: Entry[]): Promise<Entry[]> => {
     if (isWeek1Locked) return field
     const ids = qualifiers(field, cut, settingsRef.current)
@@ -1083,7 +1114,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
       if (ent.made_final !== should) await patchEntry(ent.id, { made_final: should })
       nextField.push(ent.made_final === should ? ent : { ...ent, made_final: should })
     }
-    return nextField
+    return await finalizeNonCutTags(nextField)
   }
 
   const canProceedToCut = cutConfirmationReady(
@@ -1547,6 +1578,71 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
   const divInEarlyFinal9 = (d: Division) =>
     event.status === 'scoring' &&
     entries.some(e => e.event_id === event.id && e.division === d && e.made_final)
+
+  const nonCutTagsPanel = (() => {
+    if (!divHasFinalists) return null
+    const opening = isOpeningTagNight(events, event.id)
+    const assigned = nonCutTagAssignments(divEntries, settings, inTags, opening)
+    const rows = result.ranked.filter(r => !r.entry.made_final && assigned.has(r.entry.id))
+    if (rows.length === 0) return null
+    const allSaved = rows.every(r => r.entry.tag_out === assigned.get(r.entry.id))
+    return (
+      <div className="panel panel-pad stack" style={{ gap: 10, marginTop: 14 }}>
+        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+          <div>
+            <div className="strong" style={{ fontSize: 15 }}>Outside the Cut — Tags Ready</div>
+            <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
+              Finalist play cannot change these tags — players outside the cut can take their new tag now.
+            </div>
+          </div>
+          {allSaved ? (
+            <span className="chip chip-teal">Tags finalized</span>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              disabled={isSeason9Week1(event)}
+              onClick={async () => {
+                await finalizeNonCutTags(divEntries)
+                reportInfo(`${division === 'M' ? "Men's" : "Women's"} outside-the-cut tags finalized.`)
+              }}
+            >
+              Finalize Cut Tags
+            </button>
+          )}
+        </div>
+        <div className="table-wrap">
+          <table className="table table-compact">
+            <thead>
+              <tr>
+                <th className="c" style={{ width: 44 }}>#</th>
+                <th>Player</th>
+                <th className="c" style={{ width: 58 }}>18</th>
+                <th className="c" style={{ width: 72 }}>Tag In</th>
+                <th className="c" style={{ width: 84 }}>Tag Out</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(r => {
+                const ent = r.entry
+                const nextTag = assigned.get(ent.id)!
+                const pName = playerById.get(ent.player_id)?.name ?? 'Unknown'
+                return (
+                  <tr key={ent.id}>
+                    <td className="c num muted">{r.place || '—'}</td>
+                    <td className="strong">{pName}</td>
+                    <td className="c num">{r.totals.t18 ?? '—'}</td>
+                    <td className="c num muted">{ent.tag_in != null ? `#${ent.tag_in}` : '—'}</td>
+                    <td className="c num strong" style={{ color: 'var(--orange)' }}>#{nextTag}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )
+  })()
 
   const publicScorerCards: { card: PPCard; round: PuttCardRound }[] = (() => {
     if (event.status === 'final9') {
@@ -2480,10 +2576,11 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                 onScore={saveScore}
                 onToggleFinal={entry => {
                   if (isSeason9Week1(event)) return
-                  void patchEntry(entry.id, { made_final: !entry.made_final })
+                  void handleToggleFinal(entry)
                 }}
                 onDirty={markScoreDirty}
               />
+              {nonCutTagsPanel}
             </div>
           )}
           {scoreViewMode === 'card' && divCards.length === 0 ? (
@@ -2728,7 +2825,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                 onScore={saveScore}
                 onToggleFinal={entry => {
                   if (isSeason9Week1(event)) return
-                  void patchEntry(entry.id, { made_final: !entry.made_final })
+                  void handleToggleFinal(entry)
                 }}
                 onDirty={markScoreDirty}
               />
@@ -2793,7 +2890,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                       onScore={saveScore}
                       onToggleFinal={entry => {
                         if (isSeason9Week1(event)) return
-                        void patchEntry(entry.id, { made_final: !entry.made_final })
+                        void handleToggleFinal(entry)
                       }}
                       onDirty={markScoreDirty}
                     />
@@ -2823,7 +2920,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                       onScore={saveScore}
                       onToggleFinal={entry => {
                         if (isSeason9Week1(event)) return
-                        void patchEntry(entry.id, { made_final: !entry.made_final })
+                        void handleToggleFinal(entry)
                       }}
                       onDirty={markScoreDirty}
                     />
@@ -2844,11 +2941,12 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
               onScore={saveScore}
               onToggleFinal={entry => {
                 if (isSeason9Week1(event)) return
-                void patchEntry(entry.id, { made_final: !entry.made_final })
+                void handleToggleFinal(entry)
               }}
               onDirty={markScoreDirty}
             />
           )}
+          {nonCutTagsPanel}
         </div>
       )}
 

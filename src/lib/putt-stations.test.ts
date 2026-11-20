@@ -1,7 +1,7 @@
 // Run: npx tsx src/lib/putt-stations.test.ts
 import assert from 'node:assert/strict'
 import { DEFAULT_SETTINGS } from './settings'
-import { canConfirmCut, computeNineCommit, tonightBoard, totals } from './scoring'
+import { canConfirmCut, computeNineCommit, nonCutTagAssignments, rankFinal, redistributeTags, tonightBoard, totals } from './scoring'
 import {
   allCardIdsFromEventCards,
   generateEventCards,
@@ -546,6 +546,43 @@ const fullMakes = (val: 0 | 1 | 2 = 2): StationMake[] =>
   assert.deepEqual(liveFinalBoard.completed.map(r => r.night), [82, null, 64, 58])
   assert.deepEqual(liveFinalBoard.completed.map(r => r.place), [1, 2, 3, 4])
   assert.equal(liveFinalBoard.cutAfterId, 'fin-c')
+}
+
+// ---------------------------------------------------------------------------
+// 11. Outside-the-cut tag finalization on Final 9 entry
+// ---------------------------------------------------------------------------
+{
+  const f1 = makeEntry({ id: 't-f1', player_id: 'p-f1', score_front: 35, score_back: 35, score_18: 70, made_final: true, tag_in: 12 })
+  const f2 = makeEntry({ id: 't-f2', player_id: 'p-f2', score_front: 32, score_back: 33, score_18: 65, made_final: true, tag_in: 3 })
+  const c1 = makeEntry({ id: 't-c1', player_id: 'p-c1', score_front: 30, score_back: 30, score_18: 60, made_final: false, tag_in: 7 })
+  const c2 = makeEntry({ id: 't-c2', player_id: 'p-c2', score_front: 28, score_back: 28, score_18: 56, made_final: false, tag_in: null }) // forgot tag
+  const c3 = makeEntry({ id: 't-c3', player_id: 'p-c3', score_front: 25, score_back: 25, score_18: 50, made_final: false, tag_in: 1 })
+  const all = [f1, f2, c1, c2, c3]
+  const inTags = (pid: string) => pid !== 'p-no-tag'
+
+  // Tags in play: [1, 3, 7, 12]. Finalists take [1, 3], non-cut players take [7, 12]
+  const cutTags = nonCutTagAssignments(all, DEFAULT_SETTINGS, inTags, false)
+  assert.equal(cutTags.has('t-f1'), false, 'finalists are not finalized early')
+  assert.equal(cutTags.has('t-f2'), false, 'finalists are not finalized early')
+  assert.equal(cutTags.get('t-c1'), 7, 'highest non-finalist gets first non-cut tag')
+  assert.equal(cutTags.has('t-c2'), false, 'forgot-tag player gets no tag')
+  assert.equal(cutTags.get('t-c3'), 12, 'lowest non-finalist gets highest tag')
+
+  // Invariant: no matter how finalists score in Final 9, non-cut tags match full finalize 1-to-1
+  const afterFinal9 = [
+    { ...f1, score_final: 10 },
+    { ...f2, score_final: 45 },
+    c1,
+    c2,
+    c3,
+  ]
+  const fullEndTags = redistributeTags(rankFinal(afterFinal9, DEFAULT_SETTINGS), inTags)
+  assert.equal(cutTags.get('t-c1'), fullEndTags.get('t-c1'))
+  assert.equal(cutTags.get('t-c3'), fullEndTags.get('t-c3'))
+
+  // Returns empty if no cut has been set yet
+  const preCut = all.map(e => ({ ...e, made_final: false }))
+  assert.equal(nonCutTagAssignments(preCut, DEFAULT_SETTINGS, inTags, false).size, 0)
 }
 
 console.log('Putt Night station scoring tests passed ✔')
