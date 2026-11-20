@@ -324,3 +324,32 @@ export function nextStationIndexForCard(
   }
   return 0
 }
+
+/**
+ * Formats the dedicated leaderboard "Thru" column for a player entry in the current round.
+ * Returns `'—'` when unstarted, `'1'..'17'` (or `'1'..'8'` in Final 9) while in progress,
+ * `'F'` when finished, and `'Cut'` for non-finalists after the cut.
+ */
+export function leaderboardThruLabel(entry: Entry, status: string): string {
+  if (status === 'final9' || status === 'results' || status === 'complete') {
+    if (!entry.made_final) return 'Cut'
+    if (entry.station_scores?.final) {
+      const fin = summarizeStationRound(entry.station_scores.final).enteredCount
+      return fin >= 9 ? 'F' : fin > 0 ? String(fin) : '—'
+    }
+    const hasFinal = typeof entry.score_final === 'number' || (entry.f_b1 != null && entry.f_b2 != null)
+    return hasFinal ? 'F' : '—'
+  }
+
+  const fCount = entry.station_scores?.front ? summarizeStationRound(entry.station_scores.front).enteredCount : 0
+  const bCount = entry.station_scores?.back ? summarizeStationRound(entry.station_scores.back).enteredCount : 0
+  const hasFront = entry.score_front != null || (entry.r1_b1 != null && entry.r1_b2 != null)
+  const hasBack = entry.score_back != null || (entry.r2_b1 != null && entry.r2_b2 != null)
+  const hasFull18 = (entry.score_18 != null || (hasFront && hasBack)) && !hasPartialStation18(entry.station_scores)
+  if (hasFull18) return 'F'
+
+  const effF = entry.station_scores?.front ? fCount : hasFront ? 9 : 0
+  const effB = entry.station_scores?.back ? bCount : hasBack ? 9 : 0
+  const total = effF + effB
+  return total >= 18 ? 'F' : total > 0 ? String(total) : '—'
+}

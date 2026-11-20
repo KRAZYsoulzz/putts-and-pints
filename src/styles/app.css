@@ -344,6 +344,7 @@ input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
   line-height: 1.15;
 }
 .leaderboard-table .col-plc { width: 34px; }
+.leaderboard-table .col-thru { width: 38px; }
 .leaderboard-table .col-player {
   width: 1%;
   max-width: 150px;
@@ -551,6 +552,9 @@ input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
 }
 .projector-page .leaderboard-table .col-plc {
   width: 44px;
+}
+.projector-page .leaderboard-table .col-thru {
+  width: 48px;
 }
 .projector-page .leaderboard-table .col-player {
   max-width: 220px;

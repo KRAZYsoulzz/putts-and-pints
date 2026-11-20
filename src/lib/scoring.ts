@@ -443,6 +443,16 @@ export function tonightBoard(
   storedCut?: number | null,
 ): TonightBoard {
   const provisional = status === 'scheduled' || status === 'checkin' || status === 'scoring'
+  const liveStationMode = entries.some(e => e.station_scores != null)
+
+  const liveRaw18 = (e: Entry): number | null => {
+    const t18 = totals(e).t18
+    if (t18 != null) return t18
+    const f = displayedFront(e)
+    const b = displayedBack(e)
+    if (f == null && b == null) return null
+    return (f ?? 0) + (b ?? 0)
+  }
 
   const r18 = rank18(entries, settings)
   const completedEntries = r18.filter(r => r.totals.t18 != null)
@@ -457,10 +467,46 @@ export function tonightBoard(
     night: liveNightTotal(r.entry),
   })
 
+  const toUnfinishedRow = (e: Entry): TonightBoardRow => ({
+    id: e.id,
+    place: null,
+    front: displayedFront(e),
+    back: displayedBack(e),
+    t18: null,
+    finalNine: e.made_final && typeof e.score_final === 'number' ? e.score_final : null,
+    night: liveNightTotal(e),
+  })
+
   let completed: TonightBoardRow[]
   let cutAfterId: string | null = null
 
   if (provisional) {
+    if (liveStationMode) {
+      const cutMode: Record<CutTieMode, TieMode> = { include: 'split', playoff: 'playoff', countback: 'countback' }
+      const rankedLive = rank(
+        entries.filter(e => liveRaw18(e) != null),
+        {
+          score: liveRaw18,
+          mode: cutMode[settings.ties.cut],
+          countback: settings.ties.countback.filter(k => k !== 'final9' && k !== 'f_b1'),
+        },
+      )
+      completed = rankedLive.map(r => ({ ...toRow(r), t18: liveRaw18(r.entry) }))
+      const cut = effectiveCut(storedCut ?? null, entries.length, settings)
+      for (let i = completed.length - 1; i >= 0; i--) {
+        const p = completed[i].place
+        if (p != null && p > 0 && p <= cut) {
+          cutAfterId = completed[i].id
+          break
+        }
+      }
+      const unscored = entries
+        .filter(e => liveRaw18(e) == null)
+        .sort(byEntryOrder)
+        .map(toUnfinishedRow)
+      return { completed, partial: [], unscored, provisional, cutAfterId }
+    }
+
     completed = completedEntries.map(toRow)
     const qualIds = qualifiers(entries, effectiveCut(storedCut ?? null, entries.length, settings), settings)
     for (let i = completed.length - 1; i >= 0; i--) {
@@ -473,7 +519,14 @@ export function tonightBoard(
     const completed18 = entries.filter(e => totals(e).t18 != null)
     const rankedFinal = rank(completed18, {
       score: e => (e.made_final && liveNightTotal(e) != null ? liveNightTotal(e) : totals(e).t18),
-      group: e => (!e.made_final ? 2 : liveNightTotal(e) != null ? 0 : 1),
+      group: e =>
+        !e.made_final
+          ? 2
+          : status === 'final9'
+            ? 0
+            : liveNightTotal(e) != null
+              ? 0
+              : 1,
       mode: settings.ties.placement,
       countback: settings.ties.countback,
     })
@@ -502,18 +555,12 @@ export function tonightBoard(
     }
   }
 
-  partialEntries.sort(byEntryOrder)
-  unscoredEntries.sort(byEntryOrder)
-
-  const toUnfinishedRow = (e: Entry): TonightBoardRow => ({
-    id: e.id,
-    place: null,
-    front: displayedFront(e),
-    back: displayedBack(e),
-    t18: null,
-    finalNine: e.made_final && typeof e.score_final === 'number' ? e.score_final : null,
-    night: liveNightTotal(e),
+  partialEntries.sort((a, b) => {
+    const sa = (displayedFront(a) ?? 0) + (displayedBack(a) ?? 0)
+    const sb = (displayedFront(b) ?? 0) + (displayedBack(b) ?? 0)
+    return sb - sa || byEntryOrder(a, b)
   })
+  unscoredEntries.sort(byEntryOrder)
 
   const partial = partialEntries.map(toUnfinishedRow)
   const unscored = unscoredEntries.map(toUnfinishedRow)

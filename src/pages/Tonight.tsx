@@ -81,6 +81,7 @@ import {
 } from '../lib/cards'
 import {
   clearStationRound,
+  leaderboardThruLabel,
   stationProgressLabel,
   type PuttCardRound,
 } from '../lib/putt-stations'
@@ -122,7 +123,7 @@ function LeaderboardDivisionColumn({
     const p = ent ? playerById.get(ent.player_id) : null
     const playerName = p?.name ?? 'Unknown Player'
     const cardNum = ent ? cardNumberByPlayer?.get(ent.player_id) : undefined
-    const stationProg = ent && eventStatus ? stationProgressLabel(ent.station_scores, eventStatus, ent.made_final) : null
+    const thru = ent ? leaderboardThruLabel(ent, eventStatus ?? 'scoring') : '—'
     return (
       <tr key={row.id} className={row.place === 1 ? 'leader' : ''}>
         <td className="place col-plc">{row.place != null && row.place > 0 ? ordinal(row.place) : '—'}</td>
@@ -131,15 +132,13 @@ function LeaderboardDivisionColumn({
           {cardNum != null && (
             <span className="chip" style={{ marginLeft: 6 }}>C{cardNum}</span>
           )}
-          {stationProg && (
-            <span className="chip" style={{ marginLeft: 4 }} title="Stations scored">{stationProg}</span>
-          )}
           {ent?.awards && ent.awards.length > 0 && (
             <span className="chips">
               {ent.awards.map(a => <span key={a} className="chip chip-teal">{AWARD_SHORT[a]}</span>)}
             </span>
           )}
         </td>
+        <td className={`c num col-thru${thru === '—' || thru === 'Cut' ? ' faint' : thru === 'F' ? ' strong' : ''}`}>{thru}</td>
         <td className="c col-score">{row.front != null ? row.front : '—'}</td>
         <td className="c col-score">{row.back != null ? row.back : '—'}</td>
         <td className="c bl strong col-score">{row.t18 != null ? row.t18 : '—'}</td>
@@ -168,6 +167,7 @@ function LeaderboardDivisionColumn({
               <tr>
                 <th className="col-plc">Plc</th>
                 <th className="col-player">Player</th>
+                <th className="c col-thru" title="Holes completed in current round">Thru</th>
                 <th className="c col-score">Front 9</th>
                 <th className="c col-score">Back 9</th>
                 <th className="c bl col-score">18 Total</th>
@@ -178,7 +178,7 @@ function LeaderboardDivisionColumn({
             <tbody>
               {allEmpty ? (
                 <tr>
-                  <td colSpan={7} style={{ textAlign: 'center', padding: '24px 0' }} className="muted">
+                  <td colSpan={8} style={{ textAlign: 'center', padding: '24px 0' }} className="muted">
                     No players checked into this division yet.
                   </td>
                 </tr>
@@ -190,7 +190,7 @@ function LeaderboardDivisionColumn({
                       {row.id === board.cutAfterId && (
                         <tr className="cut-line">
                           <td
-                            colSpan={7}
+                            colSpan={8}
                             style={{
                               textAlign: 'center',
                               background: 'var(--surface-2)',
@@ -2634,7 +2634,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
           <div>
             <h2 className="display section-title">Tonight's Leaderboard</h2>
             <p className="muted" style={{ fontSize: 13, marginTop: 4 }}>
-              Live scoring and cut standings. Completed rounds are ranked, followed by partial rounds and players on the course.
+              Live scoring and cut standings organized by raw score, with live Thru progress.
             </p>
           </div>
           {!isProjector && !isWeek1Locked && (event.status === 'scoring' || event.status === 'final9') && activeCardsForRound.length > 0 && activeRoundForEvent && (

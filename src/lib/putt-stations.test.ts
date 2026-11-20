@@ -1,7 +1,7 @@
 // Run: npx tsx src/lib/putt-stations.test.ts
 import assert from 'node:assert/strict'
 import { DEFAULT_SETTINGS } from './settings'
-import { canConfirmCut, computeNineCommit, totals } from './scoring'
+import { canConfirmCut, computeNineCommit, tonightBoard, totals } from './scoring'
 import {
   allCardIdsFromEventCards,
   generateEventCards,
@@ -14,6 +14,7 @@ import {
   clearStationRound,
   emptyNineStations,
   hasPartialStation18,
+  leaderboardThruLabel,
   nextStationIndexForCard,
   stationProgressLabel,
   summarizeStationRound,
@@ -369,6 +370,175 @@ const fullMakes = (val: 0 | 1 | 2 = 2): StationMake[] =>
   threeFinal[2] = 0
   assert.equal(stationProgressLabel({ final: threeFinal }, 'final9', true), '3/9')
   assert.equal(stationProgressLabel({ final: threeFinal }, 'final9', false), null)
+}
+
+// ---------------------------------------------------------------------------
+// 7. leaderboardThruLabel & raw-score tonightBoard ordering
+// ---------------------------------------------------------------------------
+{
+  const four = emptyNineStations()
+  four[0] = 2
+  four[1] = 1
+  four[2] = 2
+  four[3] = 0
+
+  const three = emptyNineStations()
+  three[0] = 1
+  three[1] = 2
+  three[2] = 1
+
+  const unscored = makeEntry({ id: 'thru-0' })
+  const p4 = makeEntry({ id: 'thru-4', station_scores: { front: four } })
+  const fOnly = makeEntry({ id: 'thru-9', station_scores: { front: fullMakes(1) } })
+  const thru12 = makeEntry({
+    id: 'thru-12',
+    station_scores: { front: fullMakes(1), back: three },
+  })
+  const finished18 = makeEntry({
+    id: 'thru-f',
+    score_front: 36,
+    score_back: 38,
+    score_18: 74,
+    station_scores: { front: fullMakes(1), back: fullMakes(1) },
+  })
+  const paperFront = makeEntry({ id: 'paper-9', score_front: 40 })
+  const paperFull = makeEntry({ id: 'paper-f', score_18: 78 })
+
+  assert.equal(leaderboardThruLabel(unscored, 'scoring'), '—')
+  assert.equal(leaderboardThruLabel(p4, 'scoring'), '4')
+  assert.equal(leaderboardThruLabel(fOnly, 'scoring'), '9')
+  assert.equal(leaderboardThruLabel(thru12, 'scoring'), '12')
+  assert.equal(leaderboardThruLabel(finished18, 'scoring'), 'F')
+  assert.equal(leaderboardThruLabel(paperFront, 'scoring'), '9')
+  assert.equal(leaderboardThruLabel(paperFull, 'scoring'), 'F')
+
+  const finUnstarted = makeEntry({ id: 'fin-u', made_final: true })
+  const finPartial = makeEntry({
+    id: 'fin-p',
+    made_final: true,
+    score_final: 8,
+    station_scores: { final: four },
+  })
+  const finDone = makeEntry({
+    id: 'fin-f',
+    made_final: true,
+    score_final: 25,
+    station_scores: { final: fullMakes(1) },
+  })
+  const cutRow = makeEntry({ id: 'fin-cut', made_final: false })
+
+  assert.equal(leaderboardThruLabel(finUnstarted, 'final9'), '—')
+  assert.equal(leaderboardThruLabel(finPartial, 'final9'), '4')
+  assert.equal(leaderboardThruLabel(finDone, 'final9'), 'F')
+  assert.equal(leaderboardThruLabel(cutRow, 'final9'), 'Cut')
+
+  // Live station mode during 18 Holes orders all scored rows strictly by raw score desc
+  const p74 = makeEntry({
+    id: 'p74',
+    created_at: '2026-11-19T00:00:01Z',
+    score_front: 37,
+    score_back: 37,
+    score_18: 74,
+    station_scores: { front: fullMakes(1), back: fullMakes(1) },
+  })
+  const p42 = applyStationScoresToEntry(
+    makeEntry({ id: 'p42', created_at: '2026-11-19T00:00:02Z' }),
+    '18',
+    { front: [2, 2, 2, 2, 2, 2, 2, 2, 0] }, // 30 + 12 = 42, Thru 9
+  )
+  const bOne = emptyNineStations()
+  bOne[0] = 1
+  const p26 = applyStationScoresToEntry(
+    makeEntry({ id: 'p26', created_at: '2026-11-19T00:00:03Z' }),
+    '18',
+    { front: fullMakes(1), back: bOne }, // 25 + 1 = 26, Thru 10
+  )
+  const fFive = emptyNineStations()
+  fFive[0] = 2
+  fFive[1] = 1
+  fFive[2] = 2
+  fFive[3] = 2
+  fFive[4] = 0
+  const p18 = applyStationScoresToEntry(
+    makeEntry({ id: 'p18', created_at: '2026-11-19T00:00:04Z' }),
+    '18',
+    { front: fFive }, // 2*1 + 1*2 + 2*3 + 2*4 + 0*5 = 18, Thru 5
+  )
+  const p0 = makeEntry({ id: 'p0', created_at: '2026-11-19T00:00:05Z' })
+
+  assert.equal(leaderboardThruLabel(p42, 'scoring'), '9')
+  assert.equal(leaderboardThruLabel(p26, 'scoring'), '10')
+  assert.equal(leaderboardThruLabel(p18, 'scoring'), '5')
+
+  const liveBoard = tonightBoard([p0, p18, p26, p42, p74], DEFAULT_SETTINGS, 'scoring', 2)
+  assert.deepEqual(liveBoard.completed.map(r => r.id), ['p74', 'p42', 'p26', 'p18'])
+  assert.deepEqual(liveBoard.completed.map(r => r.t18), [74, 42, 26, 18])
+  assert.deepEqual(liveBoard.completed.map(r => r.place), [1, 2, 3, 4])
+  assert.deepEqual(liveBoard.partial, [])
+  assert.deepEqual(liveBoard.unscored.map(r => r.id), ['p0'])
+  assert.equal(liveBoard.cutAfterId, 'p42')
+
+  // Paper-card partial rows sort by raw partial score desc
+  const paperLow = makeEntry({ id: 'paper-30', created_at: '2026-11-19T00:00:01Z', score_front: 30 })
+  const paperHigh = makeEntry({ id: 'paper-44', created_at: '2026-11-19T00:00:02Z', score_front: 44 })
+  const paperBoard = tonightBoard([paperLow, paperHigh], DEFAULT_SETTINGS, 'scoring')
+  assert.deepEqual(paperBoard.partial.map(r => r.id), ['paper-44', 'paper-30'])
+
+  // Live Final 9 keeps finalists ranked strictly by raw score (18 + live Final 9 vs unstarted 18)
+  const fin3 = emptyNineStations()
+  fin3[0] = 2 // 2
+  fin3[1] = 0 // 0
+  fin3[2] = 2 // 6 => +8
+  const finB = applyStationScoresToEntry(
+    makeEntry({
+      id: 'fin-b',
+      score_front: 37,
+      score_back: 37,
+      score_18: 74,
+      made_final: true,
+    }),
+    'final',
+    { final: fin3 },
+  )
+  const finA = makeEntry({
+    id: 'fin-a',
+    score_front: 39,
+    score_back: 39,
+    score_18: 78,
+    made_final: true,
+  })
+  const fin2 = emptyNineStations()
+  fin2[0] = 2 // 2
+  fin2[1] = 1 // 2 => +4
+  const finC = applyStationScoresToEntry(
+    makeEntry({
+      id: 'fin-c',
+      score_front: 30,
+      score_back: 30,
+      score_18: 60,
+      made_final: true,
+    }),
+    'final',
+    { final: fin2 },
+  )
+  const nonFin = makeEntry({
+    id: 'cut-1',
+    score_front: 29,
+    score_back: 29,
+    score_18: 58,
+    made_final: false,
+  })
+
+  assert.equal(leaderboardThruLabel(finB, 'final9'), '3')
+  assert.equal(leaderboardThruLabel(finA, 'final9'), '—')
+  assert.equal(leaderboardThruLabel(finC, 'final9'), '2')
+  assert.equal(leaderboardThruLabel(nonFin, 'final9'), 'Cut')
+
+  const liveFinalBoard = tonightBoard([finC, finA, nonFin, finB], DEFAULT_SETTINGS, 'final9')
+  assert.deepEqual(liveFinalBoard.completed.map(r => r.id), ['fin-b', 'fin-a', 'fin-c', 'cut-1'])
+  assert.deepEqual(liveFinalBoard.completed.map(r => r.night), [82, null, 64, 58])
+  assert.deepEqual(liveFinalBoard.completed.map(r => r.place), [1, 2, 3, 4])
+  assert.equal(liveFinalBoard.cutAfterId, 'fin-c')
 }
 
 console.log('Putt Night station scoring tests passed ✔')
