@@ -1372,11 +1372,15 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
     )
   }
 
-  const handleCloseDivision = async (targetDiv: Division = division) => {
+  const handleCloseDivision = async (
+    targetDiv: Division = division,
+    options?: { overrideOverPool?: boolean },
+  ) => {
     if (isWeek1Locked) {
       reportError('Week 1 is locked and cannot be modified.')
       return
     }
+    const overrideOverPool = Boolean(options?.overrideOverPool)
     const group = entries.filter(e => e.event_id === event.id && e.division === targetDiv)
     const list = divisionPayouts(event, targetDiv)
     const net = payoutPool(group.length, barOf(event, targetDiv), settings, nightBonusCost(group, settings, {
@@ -1384,9 +1388,10 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
       division: targetDiv,
       cohort: otherDivisionNights(targetDiv, event.id, entries, ledger),
     }))
-    if (payoutIssue(list, placeBudget(net))) {
+    const issue = payoutIssue(list, placeBudget(net))
+    if (issue && !(overrideOverPool && issue === 'over')) {
       const name = targetDiv === 'M' ? "Men's" : "Women's"
-      reportError(payoutIssue(list, placeBudget(net)) === 'increment'
+      reportError(issue === 'increment'
         ? `${name} place checks have to be multiples of $5.`
         : `${name} place checks are over the $5 payout budget or include a negative.`)
       return
@@ -1460,13 +1465,18 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
         payouts: { M: payoutsM, W: payoutsW },
         state: closeState,
         divisionAlreadyPosted: targetAlreadyPosted,
+        allowOverPoolOverride: overrideOverPool,
         onPreview: summary => {
           setClosePreviews(prev => ({ ...prev, [previewKey]: summary.text }))
         },
         confirmPreview: summary =>
           askConfirm(summary.text, {
-            title: `Close ${divLabel} Division?`,
-            confirmLabel: `Close ${divLabel} & post`,
+            title: overrideOverPool
+              ? `Override & Close ${divLabel} Division?`
+              : `Close ${divLabel} Division?`,
+            confirmLabel: overrideOverPool
+              ? `Override, adjust pots & close`
+              : `Close ${divLabel} & post`,
           }),
       })
 
@@ -3082,15 +3092,28 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
               </p>
             </div>
             {isAdmin && event.status !== 'complete' && !isWeek1Locked && (
-              <div style={{ display: 'flex', gap: 8 }}>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {!isDivisionClosed && (
-                  <button
-                    className="btn btn-primary"
-                    disabled={isFinalizing || overPool || divisionDeficit > 0}
-                    onClick={() => void handleCloseDivision(division)}
-                  >
-                    <Lock size={16} /> {isFinalizing ? `Closing ${division === 'M' ? "Men's" : "Women's"}...` : `Close ${division === 'M' ? "Men's" : "Women's"} Division`}
-                  </button>
+                  <>
+                    <button
+                      className="btn btn-primary"
+                      disabled={isFinalizing || overPool || divisionDeficit > 0}
+                      onClick={() => void handleCloseDivision(division)}
+                    >
+                      <Lock size={16} /> {isFinalizing ? `Closing ${division === 'M' ? "Men's" : "Women's"}...` : `Close ${division === 'M' ? "Men's" : "Women's"} Division`}
+                    </button>
+                    {payoutProblem === 'over' && divisionDeficit <= 0 && (
+                      <button
+                        type="button"
+                        className="btn"
+                        style={{ borderColor: 'var(--orange)', color: 'var(--orange)' }}
+                        disabled={isFinalizing}
+                        onClick={() => void handleCloseDivision(division, { overrideOverPool: true })}
+                      >
+                        Override & Close (Adjust Pots)
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
             )}
@@ -3326,9 +3349,22 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                     <small className="field-error">Place checks have to be multiples of $5.</small>
                   )}
                   {payoutProblem === 'over' && (
-                    <small className="field-error">
-                      Place checks add up to {money(allocated)}, which is more than the {money(placeBudget(pool))} that can be paid in $5 steps. {money(placeRemainder(pool))} goes to the Perfect Round pot.
-                    </small>
+                    <div className="stack" style={{ gap: 6 }}>
+                      <small className="field-error">
+                        Place checks add up to {money(allocated)}, which is {money(cents(allocated - pool))} over the {money(pool)} net pool.
+                      </small>
+                      {!isDivisionClosed && divisionDeficit <= 0 && (
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          style={{ borderColor: 'var(--orange)', color: 'var(--orange)', alignSelf: 'flex-start' }}
+                          disabled={isFinalizing}
+                          onClick={() => void handleCloseDivision(division, { overrideOverPool: true })}
+                        >
+                          Override & Close (Cover {money(cents(allocated - pool))} from Pot)
+                        </button>
+                      )}
+                    </div>
                   )}
                   {payoutProblem === 'negative' && (
                     <small className="field-error">Payouts can’t be negative.</small>

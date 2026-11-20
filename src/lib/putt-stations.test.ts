@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { DEFAULT_SETTINGS } from './settings'
 import { canConfirmCut, computeNineCommit, hasPerfectNineScore, highScoreWinnerIds, nonCutTagAssignments, rankFinal, redistributeTags, tonightBoard, totals } from './scoring'
 import { bonusPayoutsByEntry } from './money'
+import { buildDivisionClosePreview, planSplitClose } from './closeout'
 import {
   allCardIdsFromEventCards,
   generateEventCards,
@@ -615,6 +616,79 @@ const fullMakes = (val: 0 | 1 | 2 = 2): StationMake[] =>
   ])
   assert.equal(bonusTotals.get('hs-1'), 17.5)
   assert.equal(bonusTotals.get('hs-2'), 7.5)
+}
+
+// ---------------------------------------------------------------------------
+// 13. Over-pool closeout override pulls overage from Backup / Perfect Round pot
+// ---------------------------------------------------------------------------
+{
+  const zeroBal = {
+    perfect_round: 20,
+    backup: 0,
+    perfect5: 0,
+    perfect4: 0,
+    high_score: 0,
+    tag_fund: 0,
+    purse: 0,
+  }
+  const mEntries = Array.from({ length: 5 }, (_, i) => ({
+    id: `ov-m-${i}`,
+    player_id: `pm-${i}`,
+    division: 'M' as const,
+    created_at: `2026-11-19T18:0${i}:00Z`,
+    awards: i === 0 ? ['high_score'] : [],
+    place: i + 1,
+  }))
+  const wEntries = Array.from({ length: 5 }, (_, i) => ({
+    id: `ov-w-${i}`,
+    player_id: `pw-${i}`,
+    division: 'W' as const,
+    created_at: `2026-11-19T18:1${i}:00Z`,
+    awards: i === 0 ? ['high_score'] : [],
+    place: i + 1,
+  }))
+  // DEFAULT_SETTINGS: entryFee=$10 ($8 purse + $2 PR).
+  // 5 players * $8 = $40 gross, -$10 High Score = $30 net pool. Payouts [30, 10] = $40 ($10 over).
+  const blocked = planSplitClose({
+    settings: DEFAULT_SETTINGS,
+    entries: [...mEntries, ...wEntries],
+    balances: { M: zeroBal, W: zeroBal },
+    bar: { M: 0, W: 0 },
+    openingNight: false,
+    payouts: { M: [30, 10], W: [30, 10] },
+    firstDivision: 'M',
+  })
+  assert.equal(blocked.ok, false, 'without override, over-pool payouts fail solvency')
+
+  const overridden = planSplitClose({
+    settings: DEFAULT_SETTINGS,
+    entries: [...mEntries, ...wEntries],
+    balances: { M: zeroBal, W: zeroBal },
+    bar: { M: 0, W: 0 },
+    openingNight: false,
+    payouts: { M: [30, 10], W: [30, 10] },
+    firstDivision: 'M',
+    allowOverPoolOverride: true,
+  })
+  assert.equal(overridden.ok, true, 'with override, over-pool payouts are covered from Perfect Round pot')
+  if (overridden.ok) {
+    const prCover = overridden.firstLegs.find(
+      l => l.division === 'M' && l.fund === 'perfect_round' && l.amount === -10,
+    )
+    const purseCover = overridden.firstLegs.find(
+      l => l.division === 'M' && l.fund === 'purse' && l.amount === 10,
+    )
+    assert.ok(prCover, 'deducts $10 overage from Perfect Round pot')
+    assert.ok(purseCover, 'credits $10 overage into purse so purse stays balanced')
+    const preview = buildDivisionClosePreview({
+      division: 'M',
+      isSecondClose: false,
+      legs: overridden.firstLegs,
+      heldReserve: overridden.heldReserve.M,
+      releasedReserve: 0,
+    })
+    assert.match(preview.text, /OVERRIDE \(\$10 over payout pool\): adjusted Perfect Round pot -\$10/)
+  }
 }
 
 console.log('Putt Night station scoring tests passed ✔')

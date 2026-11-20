@@ -486,6 +486,9 @@ function byCheckIn(
   return 0
 }
 
+const OVER_POOL_BACKUP_NOTE = 'Over-pool payout override covered from Backup pot'
+const OVER_POOL_PR_NOTE = 'Over-pool payout override covered from Perfect Round pot'
+
 export function planSplitClose(input: {
   settings: Settings
   entries: ReadonlyArray<{
@@ -502,6 +505,7 @@ export function planSplitClose(input: {
   payouts?: { M?: readonly number[]; W?: readonly number[] }
   event?: { season_id: string; date?: string; event_date?: string; name?: string | null }
   firstDivision?: 'M' | 'W'
+  allowOverPoolOverride?: boolean
 }):
   | {
       ok: false
@@ -685,6 +689,7 @@ export function planSplitClose(input: {
     addLeg(target, div, 'backup', 'overflow', prOverflow, 'Over the cap')
     const potAfter = cents(input.balances[div].perfect_round + prFit)
     let laterPR = potAfter
+    let laterBackup = cents(input.balances[div].backup + prOverflow)
 
     const prWinners = divEntries
       .filter((e) => e.awards.includes('perfect_round'))
@@ -701,6 +706,7 @@ export function planSplitClose(input: {
         addLeg(target, div, 'perfect_round', 'rollover', roll, 'From backup pot')
       }
       laterPR = cents(roll)
+      laterBackup = cents(laterBackup - roll)
     }
 
     if (H[div] !== 0) {
@@ -730,6 +736,22 @@ export function planSplitClose(input: {
     }
 
     const allocated = cents(Array.from(payoutMap.values()).reduce((sum, v) => sum + (v > 0 ? v : 0), 0))
+    if (input.allowOverPoolOverride && allocated > placePool[div]) {
+      const overage = cents(allocated - placePool[div])
+      const fromBackup = Math.min(overage, Math.max(0, laterBackup))
+      const remainingOverage = cents(overage - fromBackup)
+      const fromPR = Math.min(remainingOverage, Math.max(0, laterPR))
+      if (fromBackup > 0) {
+        addLeg(target, div, 'backup', 'transfer', -fromBackup, OVER_POOL_BACKUP_NOTE)
+        addLeg(target, div, 'purse', 'transfer', fromBackup, OVER_POOL_BACKUP_NOTE)
+        laterBackup = cents(laterBackup - fromBackup)
+      }
+      if (fromPR > 0) {
+        addLeg(target, div, 'perfect_round', 'transfer', -fromPR, OVER_POOL_PR_NOTE)
+        addLeg(target, div, 'purse', 'transfer', fromPR, OVER_POOL_PR_NOTE)
+        laterPR = cents(laterPR - fromPR)
+      }
+    }
     const r = Math.max(0, Math.min(cents(placePool[div] - placeBudget(placePool[div])), cents(placePool[div] - allocated)))
     if (r !== 0) {
       addLeg(target, div, 'purse', 'transfer', -r, PLACE_REMAINDER_NOTE)
@@ -907,6 +929,7 @@ export function closeDivisionStep(input: {
   payouts?: { M?: readonly number[]; W?: readonly number[] }
   legacyPending?: boolean
   laterPosted?: boolean
+  allowOverPoolOverride?: boolean
 }):
   | {
       ok: false
@@ -983,6 +1006,7 @@ export function closeDivisionStep(input: {
     payouts: mergedPayouts,
     event: input.event,
     firstDivision,
+    allowOverPoolOverride: input.allowOverPoolOverride,
   })
   if (!plan.ok) {
     return {
@@ -1671,6 +1695,13 @@ export function buildDivisionClosePreview(params: {
   )
   const sharedP4PayoutTotal = sumAbs((l) => l.fund === 'perfect4' && l.kind === 'bonus_payout' && l.amount < 0)
   const sharedP5PayoutTotal = sumAbs((l) => l.fund === 'perfect5' && l.kind === 'bonus_payout' && l.amount < 0)
+  const overrideFromBackup = sumAbs(
+    (l) => l.division === division && l.fund === 'backup' && l.kind === 'transfer' && l.note === OVER_POOL_BACKUP_NOTE && l.amount < 0,
+  )
+  const overrideFromPR = sumAbs(
+    (l) => l.division === division && l.fund === 'perfect_round' && l.kind === 'transfer' && l.note === OVER_POOL_PR_NOTE && l.amount < 0,
+  )
+  const overrideTotal = cents(overrideFromBackup + overrideFromPR)
 
   const fmt = (n: number) => `$${cents(n).toFixed(2).replace(/\.00$/, '')}`
   const lines: string[] = [`${divisionLabel} division close preview:`]
@@ -1679,6 +1710,12 @@ export function buildDivisionClosePreview(params: {
   } else {
     lines.push(`• Purse funding: ${fmt(entryPurse)} entry share + ${fmt(barMatch)} bar match`)
     lines.push(`• Place payouts (${placePayoutLegs.length}): ${fmt(placePayoutTotal)}`)
+    if (overrideTotal > 0) {
+      const parts: string[] = []
+      if (overrideFromBackup > 0) parts.push(`Backup pot -${fmt(overrideFromBackup)}`)
+      if (overrideFromPR > 0) parts.push(`Perfect Round pot -${fmt(overrideFromPR)}`)
+      lines.push(`• OVERRIDE (${fmt(overrideTotal)} over payout pool): adjusted ${parts.join(', ')} to cover purse`)
+    }
     const remTotal = cents(placeRemainderToPot + placeRemainderToBackup)
     lines.push(
       `• Perfect Round pot: +${fmt(perfectRoundContribution)} entry ($2/player)` +
@@ -1772,6 +1809,7 @@ export async function executeDivisionCloseFlow(params: {
   payouts: { M: readonly number[]; W: readonly number[] }
   state?: DivisionCloseState
   divisionAlreadyPosted?: boolean
+  allowOverPoolOverride?: boolean
   requestNonce?: string | number
   onPreview?: (summary: DivisionClosePreviewSummary) => void
   confirmPreview?: (summary: DivisionClosePreviewSummary) => Promise<boolean> | boolean
@@ -1857,6 +1895,7 @@ export async function executeDivisionCloseFlow(params: {
     payouts: params.payouts[params.division],
     bar: params.bar,
     reclose: Boolean(params.divisionAlreadyPosted),
+    override: Boolean(params.allowOverPoolOverride),
     nonce: params.requestNonce ?? 0,
   }
   const payloadHash = closeoutPayloadHash(payloadObj)
@@ -1877,6 +1916,7 @@ export async function executeDivisionCloseFlow(params: {
     openingNight: params.openingNight,
     payouts: params.payouts,
     laterPosted: Boolean(serverPreview.later_posted),
+    allowOverPoolOverride: Boolean(params.allowOverPoolOverride),
   })
 
   if (!step.ok) {
