@@ -65,6 +65,7 @@ import {
   clearEventCards,
   generateEventCards,
   generateFinal9Cards,
+  generateFinal9CardsForDivision,
   loadCheckinViewMode,
   loadEventCards,
   loadScoreViewMode,
@@ -979,19 +980,67 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
 
   const maybeCreateFinal9CardsOnCut = (updatedEvEntries: Entry[]) => {
     const has18 = Boolean(eventCards && ((eventCards.cards.M?.length ?? 0) + (eventCards.cards.W?.length ?? 0) > 0))
-    const hasFinal9 = Boolean(eventCards?.final9Cards && ((eventCards.final9Cards.M?.length ?? 0) + (eventCards.final9Cards.W?.length ?? 0) > 0))
-    if (!has18 || hasFinal9 || !eventCards) return
-    const updated = generateFinal9Cards({
-      eventId: event.id,
-      entries: updatedEvEntries,
-      existingCards: eventCards,
-      cardSizes: {
-        M: cardSizeForDivision(eventCards, 'M'),
-        W: cardSizeForDivision(eventCards, 'W'),
-      },
-      settings,
+    if (!has18 || !eventCards) return
+    const existingM = eventCards.final9Cards?.M ?? []
+    const existingW = eventCards.final9Cards?.W ?? []
+    const nextM = existingM.length > 0
+      ? existingM
+      : generateFinal9CardsForDivision({
+          entries: updatedEvEntries,
+          division: 'M',
+          cardSize: cardSizeForDivision(eventCards, 'M'),
+          settings,
+        })
+    const nextW = existingW.length > 0
+      ? existingW
+      : generateFinal9CardsForDivision({
+          entries: updatedEvEntries,
+          division: 'W',
+          cardSize: cardSizeForDivision(eventCards, 'W'),
+          settings,
+        })
+    if (existingM.length === nextM.length && existingW.length === nextW.length && existingM.length + existingW.length > 0) {
+      return
+    }
+    persistEventCards({
+      ...eventCards,
+      final9Cards: { M: nextM, W: nextW },
+      updatedAt: new Date().toISOString(),
     })
-    persistEventCards(updated)
+  }
+
+  const startDivisionFinal9 = async (targetDiv: Division) => {
+    if (!event || isWeek1Locked) return
+    const field = entriesRef.current.filter(e => e.event_id === event.id && e.division === targetDiv)
+    const pending = { dirty: dirtyScores.current.size, saves: scoreSaves.current, refreshing: refreshLock.current }
+    if (field.length === 0 || !cutConfirmationReady(field, pending)) return
+    const stored = targetDiv === 'M' ? event.final_cut_men : event.final_cut_women
+    const cut = effectiveCut(stored, field.length, settings)
+    if (stored !== cut) {
+      await patchEvent(event.id, targetDiv === 'M' ? { final_cut_men: cut } : { final_cut_women: cut })
+    }
+    const updatedField = await applyCut(cut, field)
+    const has18 = Boolean(eventCards && ((eventCards.cards.M?.length ?? 0) + (eventCards.cards.W?.length ?? 0) > 0))
+    if (has18 && eventCards) {
+      const divFinalCards = generateFinal9CardsForDivision({
+        entries: updatedField,
+        division: targetDiv,
+        cardSize: cardSizeForDivision(eventCards, targetDiv, targetDiv === 'M' ? cardSizeMenInput : cardSizeWomenInput),
+        settings,
+      })
+      persistEventCards({
+        ...eventCards,
+        final9Cards: {
+          M: eventCards.final9Cards?.M ?? [],
+          W: eventCards.final9Cards?.W ?? [],
+          [targetDiv]: divFinalCards,
+        },
+        updatedAt: new Date().toISOString(),
+      })
+    }
+    const divLabel = targetDiv === 'M' ? "Men's" : "Women's"
+    const otherLabel = targetDiv === 'M' ? "Women's" : "Men's"
+    reportInfo(`${divLabel} cut set and Final 9 started (${otherLabel} can keep finishing 18 holes).`)
   }
 
   const setStatus = async (status: EventStatus) => {
@@ -1005,6 +1054,10 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
         const updatedEvEntries: Entry[] = []
         for (const d of DIVS) {
           const field = evEntries.filter(e => e.division === d)
+          if (field.some(e => e.made_final)) {
+            updatedEvEntries.push(...field)
+            continue
+          }
           const stored = d === 'M' ? event.final_cut_men : event.final_cut_women
           const cut = effectiveCut(stored, field.length, settings)
           if (field.length > 0 && stored !== cut) {
@@ -1037,6 +1090,14 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
     entries.filter(e => e.event_id === event.id),
     { dirty: scoreDirtyCount, saves: scoreSaveCount, refreshing: isRefreshing },
   )
+  const canStartDivFinal9 =
+    divEntries.length > 0 &&
+    cutConfirmationReady(divEntries, {
+      dirty: scoreDirtyCount,
+      saves: scoreSaveCount,
+      refreshing: isRefreshing,
+    })
+  const divHasFinalists = divEntries.some(e => e.made_final)
 
   const applyCutAndProceed = async () => {
     if (isWeek1Locked) return
@@ -1047,6 +1108,10 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
     const updatedEvEntries: Entry[] = []
     for (const d of DIVS) {
       const field = evEntries.filter(e => e.division === d)
+      if (field.some(e => e.made_final)) {
+        updatedEvEntries.push(...field)
+        continue
+      }
       const stored = d === 'M' ? event.final_cut_men : event.final_cut_women
       const cut = effectiveCut(stored, field.length, settings)
       // Don't store 0 for an empty division. That 0 stuck after players checked in.
@@ -1479,12 +1544,40 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
   const eventLabel = event.name?.trim() || 'Tonight’s Tournament'
   const isPublicLeaderboard = !isAdmin && event.status !== 'complete'
 
+  const divInEarlyFinal9 = (d: Division) =>
+    event.status === 'scoring' &&
+    entries.some(e => e.event_id === event.id && e.division === d && e.made_final)
+
+  const publicScorerCards: { card: PPCard; round: PuttCardRound }[] = (() => {
+    if (event.status === 'final9') {
+      return allFinal9Cards.map(card => ({ card, round: 'final' as const }))
+    }
+    if (event.status === 'scoring') {
+      const list: { card: PPCard; round: PuttCardRound }[] = []
+      for (const d of DIVS) {
+        if (divInEarlyFinal9(d) && (eventCards?.final9Cards?.[d]?.length ?? 0) > 0) {
+          for (const card of eventCards?.final9Cards?.[d] ?? []) {
+            list.push({ card, round: 'final' })
+          }
+        } else {
+          for (const card of eventCards?.cards?.[d] ?? []) {
+            list.push({ card, round: '18' })
+          }
+        }
+      }
+      return list
+    }
+    return []
+  })()
+
   const activeRoundForEvent: PuttCardRound | null =
     event.status === 'final9' && allFinal9Cards.length > 0
       ? 'final'
-      : (event.status === 'scoring' || event.status === 'checkin') && all18Cards.length > 0
-        ? '18'
-        : null
+      : event.status === 'scoring' && divInEarlyFinal9(division) && divFinal9Cards.length > 0
+        ? 'final'
+        : (event.status === 'scoring' || event.status === 'checkin') && all18Cards.length > 0
+          ? '18'
+          : null
   const activeCardsForRound = activeRoundForEvent === 'final'
     ? allFinal9Cards
     : activeRoundForEvent === '18'
@@ -1496,11 +1589,11 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
     const divMatch = roundCards.find(c => c.division === division)
     return divMatch?.id ?? roundCards[0]?.id ?? ''
   }
-  const cardLabelsForDiv = (d: Division): Map<string, number> | undefined => {
-    if (event.status === 'checkin' || event.status === 'scoring') {
+  const cardLabelsForDiv = (d: Division, effectiveStatus: EventStatus = event.status): Map<string, number> | undefined => {
+    if (effectiveStatus === 'checkin' || effectiveStatus === 'scoring') {
       return playerCardLabelMap(eventCards, d)
     }
-    if (event.status === 'final9' && eventCards?.final9Cards?.[d]?.length) {
+    if (effectiveStatus === 'final9' && eventCards?.final9Cards?.[d]?.length) {
       const m = new Map<string, number>()
       eventCards.final9Cards[d].forEach((c, idx) => {
         const n = c.cardNumber ?? idx + 1
@@ -2248,13 +2341,24 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                 onRefresh={refreshScores}
               />
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
-                <button
-                  className="btn btn-primary"
-                  disabled={!canProceedToCut || isSeason9Week1(event)}
-                  onClick={applyCutAndProceed}
-                >
-                  Go to The Cut & Final 9 <ChevronRight size={16} />
-                </button>
+                <div className="row" style={{ gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                  {canStartDivFinal9 && !canProceedToCut && !divHasFinalists && !isSeason9Week1(event) && (
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={() => void startDivisionFinal9(division)}
+                    >
+                      Start {division === 'M' ? "Men's" : "Women's"} Final 9 <ChevronRight size={16} />
+                    </button>
+                  )}
+                  <button
+                    className={`btn ${canStartDivFinal9 && !canProceedToCut && !divHasFinalists ? 'btn-ghost' : 'btn-primary'}`}
+                    disabled={!canProceedToCut || isSeason9Week1(event)}
+                    onClick={applyCutAndProceed}
+                  >
+                    Go to The Cut & Final 9 <ChevronRight size={16} />
+                  </button>
+                </div>
                 {isSeason9Week1(event) ? (
                   <span className="muted" style={{ fontSize: 12 }}>
                     Week 1 scores stay as played.
@@ -2262,13 +2366,126 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                 ) : !canProceedToCut ? (
                   <span className="muted" style={{ fontSize: 12 }}>
                     {!canConfirmCut(nightEntries)
-                      ? 'Checked-in players still need a completed 18.'
+                      ? divHasFinalists
+                        ? `${division === 'M' ? "Men's" : "Women's"} Final 9 is active below while ${division === 'M' ? "Women's" : "Men's"} finishes 18.`
+                        : canStartDivFinal9
+                          ? `${division === 'M' ? "Men's" : "Women's"} finished 18 — start its Final 9 now while ${division === 'M' ? "Women's" : "Men's"} finishes.`
+                          : 'Checked-in players still need a completed 18.'
                       : 'Waiting for score edits to finish saving…'}
                   </span>
                 ) : null}
               </div>
             </div>
           </div>
+
+          {divHasFinalists && (
+            <div className="panel panel-pad stack" style={{ gap: 12, marginBottom: 18 }}>
+              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                <div>
+                  <h3 className="display" style={{ fontSize: 18, margin: 0 }}>
+                    {division === 'M' ? "Men's" : "Women's"} Final 9 (In Progress)
+                  </h3>
+                  <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
+                    {division === 'M' ? "Women's" : "Men's"} can keep scoring 18 holes while {division === 'M' ? "Men's" : "Women's"} plays Final 9.
+                  </div>
+                </div>
+                <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <div className="row" role="group" aria-label="Division qualifiers cut" style={{ background: 'var(--surface-2)', padding: '3px 8px', borderRadius: 6, border: '1px solid var(--line)' }}>
+                    <span className="eyebrow" style={{ marginRight: 6 }}>Cut</span>
+                    <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Fewer qualifiers" onClick={() => stepCut(-1)} disabled={isSeason9Week1(event) || shownCut <= 1}>
+                      <Minus size={14} />
+                    </button>
+                    <span className="num strong" style={{ margin: '0 8px', fontSize: 15, minWidth: 16, textAlign: 'center' }}>
+                      {shownCut}
+                    </span>
+                    <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="More qualifiers" onClick={() => stepCut(1)} disabled={isSeason9Week1(event) || shownCut >= Math.max(1, divEntries.length)}>
+                      <Plus size={14} />
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    disabled={isSeason9Week1(event)}
+                    onClick={() => handleGenerateFinal9Cards(divFinal9Cards.length > 0)}
+                  >
+                    <Users size={13} style={{ marginRight: 4 }} />
+                    {divFinal9Cards.length > 0 ? 'Regenerate Final 9 Cards' : 'Make Final 9 Cards'}
+                  </button>
+                  {divFinal9Cards.length > 0 && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => void handleCopyPuttPins('final')}
+                    >
+                      <Copy size={13} style={{ marginRight: 4 }} /> Copy Final 9 PINs
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {divFinal9Cards.length > 0 && (
+                <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                  {divFinal9Cards.map(c => {
+                    const pin = activeCardPins[c.id]
+                    return (
+                      <div
+                        key={c.id}
+                        className="row"
+                        style={{
+                          gap: 8,
+                          padding: '6px 10px',
+                          borderRadius: 6,
+                          background: 'var(--surface-2)',
+                          border: '1px solid var(--line)',
+                          alignItems: 'center',
+                        }}
+                      >
+                        <span className="strong" style={{ fontSize: 13 }}>{c.name}</span>
+                        {pin && <span className="chip num">PIN: {pin}</span>}
+                        {!isSeason9Week1(event) && (
+                          <>
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-sm"
+                              onClick={() => void handleRegenerateCardPin(c.id, c.name)}
+                              title={`Generate a new PIN for ${c.name}`}
+                              aria-label={`Regenerate PIN for ${c.name}`}
+                            >
+                              <RefreshCw size={12} />
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-primary btn-sm"
+                              onClick={() => setScorerModal({ eventId: event.id, round: 'final', cardId: c.id })}
+                            >
+                              <KeyRound size={12} /> Open Final 9 Card
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+
+              <ScoreTable
+                rows={final9Entries}
+                allRows={final9Entries}
+                rankedById={rankedById}
+                playerById={playerById}
+                settings={settings}
+                mode="final"
+                disabledScores={isSeason9Week1(event)}
+                onContextMenu={handleContextMenu}
+                onScore={saveScore}
+                onToggleFinal={entry => {
+                  if (isSeason9Week1(event)) return
+                  void patchEntry(entry.id, { made_final: !entry.made_final })
+                }}
+                onDirty={markScoreDirty}
+              />
+            </div>
+          )}
           {scoreViewMode === 'card' && divCards.length === 0 ? (
             <div className="stack" style={{ gap: 12 }}>
               <div className="banner" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
@@ -2643,25 +2860,25 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
               Live scoring and cut standings organized by raw score, with live Thru progress.
             </p>
           </div>
-          {!isProjector && !isWeek1Locked && (event.status === 'scoring' || event.status === 'final9') && activeCardsForRound.length > 0 && activeRoundForEvent && (
+          {!isProjector && !isWeek1Locked && (event.status === 'scoring' || event.status === 'final9') && publicScorerCards.length > 0 && (
             <div className="panel panel-pad row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
               <div>
                 <div className="strong" style={{ fontSize: 14 }}>
-                  Player Mobile Scorecard · {activeRoundForEvent === 'final' ? 'Final 9 (New PINs)' : '18 Holes'}
+                  Player Mobile Scorecard · {event.status === 'final9' ? 'Final 9 (New PINs)' : publicScorerCards.some(item => item.round === 'final') ? '18 Holes & Final 9' : '18 Holes'}
                 </div>
                 <div className="muted" style={{ fontSize: 12 }}>
                   Tap your group card and enter the 4-digit PIN from the director to score station by station.
                 </div>
               </div>
               <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-                {activeCardsForRound.map(c => {
+                {publicScorerCards.map(({ card: c, round: r }) => {
                   const unlocked = isEventCardUnlocked(event.id, c.id)
                   return (
                     <button
                       key={c.id}
                       type="button"
                       className={`btn btn-sm ${unlocked ? 'btn-primary' : 'btn-ghost'}`}
-                      onClick={() => setScorerModal({ eventId: event.id, round: activeRoundForEvent, cardId: c.id })}
+                      onClick={() => setScorerModal({ eventId: event.id, round: r, cardId: c.id })}
                     >
                       {unlocked ? <Unlock size={12} /> : <Lock size={12} />}
                       {c.name}
@@ -2675,7 +2892,8 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
             {DIVS.map(d => {
               const dEntries = entries.filter(e => e.event_id === event.id && e.division === d)
               const savedCut = d === 'M' ? event.final_cut_men : event.final_cut_women
-              const board = tonightBoard(dEntries, settings, event.status, savedCut)
+              const dEffectiveStatus: EventStatus = divInEarlyFinal9(d) ? 'final9' : event.status
+              const board = tonightBoard(dEntries, settings, dEffectiveStatus, savedCut)
               const entryMap = new Map(dEntries.map(ent => [ent.id, ent]))
               return (
                 <LeaderboardDivisionColumn
@@ -2686,8 +2904,8 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                   entryMap={entryMap}
                   playerById={playerById}
                   isProjector={isProjector}
-                  eventStatus={event.status}
-                  cardNumberByPlayer={cardLabelsForDiv(d)}
+                  eventStatus={dEffectiveStatus}
+                  cardNumberByPlayer={cardLabelsForDiv(d, dEffectiveStatus)}
                 />
               )
             })}
