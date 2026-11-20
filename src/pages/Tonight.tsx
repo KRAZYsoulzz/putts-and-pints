@@ -736,7 +736,12 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
     setContextMenu(null)
   }
 
-  const handleCheckinPlayer = async (pId: string, pDiv: Division, known?: { name?: string; in_tags?: boolean }) => {
+  const handleCheckinPlayer = async (
+    pId: string,
+    pDiv: Division,
+    known?: { name?: string; in_tags?: boolean },
+    options?: { forgotTag?: boolean },
+  ) => {
     if (isWeek1Locked) return false
     if (checkingIn.current.has(pId)) return false
     if (entries.some(e => e.event_id === event.id && e.player_id === pId)) return false
@@ -746,12 +751,13 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
       const playerName = known?.name ?? player?.name ?? 'Player'
       const held = tags.find(t => t.player_id === pId)?.tag_number ?? null
       const inTags = (known?.in_tags ?? player?.in_tags) === true
+      const forgotTag = options?.forgotTag === true
       const { error } = await supabase.from('pp_entries').upsert({
         event_id: event.id,
         player_id: pId,
         division: pDiv,
         paid: true,
-        tag_in: checkinTagIn(inTags, held),
+        tag_in: checkinTagIn(inTags, held, forgotTag),
         awards: [],
       }, { onConflict: 'event_id,player_id', ignoreDuplicates: true })
       if (error) {
@@ -763,7 +769,11 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
       }
       setSearchName('')
       setCreateError('')
-      setLastCheckedIn(`${playerName} checked into ${pDiv === 'M' ? "Men's" : "Women's"}.`)
+      setLastCheckedIn(
+        forgotTag && inTags && held != null
+          ? `${playerName} checked into ${pDiv === 'M' ? "Men's" : "Women's"} (tag #${held} out of play tonight).`
+          : `${playerName} checked into ${pDiv === 'M' ? "Men's" : "Women's"}.`,
+      )
       setBuyingTag(current => buyingTagAfter(current, 'success'))
       if (eventCards) {
         const curCards = eventCards.cards[pDiv] ?? []
@@ -1800,6 +1810,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                                             name={p?.name ?? 'player'}
                                             siblings={nightEntries}
                                             inTags={p?.in_tags === true}
+                                            heldTag={tags.find(t => t.player_id === ent.player_id)?.tag_number ?? null}
                                             disabled={isSeason9Week1(event)}
                                             onCommit={tag => {
                                               if (isSeason9Week1(event)) return
@@ -2056,6 +2067,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                                   name={p?.name ?? 'player'}
                                   siblings={nightEntries}
                                   inTags={p?.in_tags === true}
+                                  heldTag={tags.find(t => t.player_id === ent.player_id)?.tag_number ?? null}
                                   disabled={isSeason9Week1(event)}
                                   onCommit={tag => {
                                     if (isSeason9Week1(event)) return
@@ -2784,7 +2796,7 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                           </td>
                           <td className="c bl faint">
                             {tagOut == null
-                              ? 'No tag'
+                              ? (p?.in_tags && ent.tag_in == null && tags.some(t => t.player_id === ent.player_id) ? 'Out of play' : 'No tag')
                               : ent.tag_in != null
                                 ? <span>#{ent.tag_in} → <strong style={{ color: 'var(--text)' }}>#{tagOut}</strong></span>
                                 : <strong style={{ color: 'var(--text)' }}>#{tagOut}</strong>}
@@ -3117,25 +3129,37 @@ export default function Tonight({ projectorMode }: TonightProps = {}) {
                   const already = nightEntries.some(e => e.player_id === p.id)
                   const heldTag = tags.find(t => t.player_id === p.id)?.tag_number
                   return (
-                    <button
-                      key={p.id}
-                      type="button"
-                      disabled={already}
-                      className="btn btn-ghost"
-                      style={{ justifyContent: 'space-between', flexShrink: 0 }}
-                      onClick={() => void handleCheckinPlayer(p.id, p.division)}
-                    >
-                      <span className="row" style={{ gap: 8, minWidth: 0 }}>
-                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}</span>
-                        <span className={`chip ${p.division === 'M' ? 'chip-orange' : 'chip-teal'}`}>
-                          {p.division === 'M' ? "Men's" : "Women's"}
+                    <div key={p.id} className="row" style={{ gap: 6, flexShrink: 0 }}>
+                      <button
+                        type="button"
+                        disabled={already}
+                        className="btn btn-ghost"
+                        style={{ flex: 1, justifyContent: 'space-between', minWidth: 0 }}
+                        onClick={() => void handleCheckinPlayer(p.id, p.division)}
+                      >
+                        <span className="row" style={{ gap: 8, minWidth: 0 }}>
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}</span>
+                          <span className={`chip ${p.division === 'M' ? 'chip-orange' : 'chip-teal'}`}>
+                            {p.division === 'M' ? "Men's" : "Women's"}
+                          </span>
+                          {heldTag != null && (
+                            <span className="faint num" style={{ fontSize: 11 }}>#{heldTag}</span>
+                          )}
                         </span>
-                        {heldTag != null && (
-                          <span className="faint num" style={{ fontSize: 11 }}>#{heldTag}</span>
-                        )}
-                      </span>
-                      <span className="faint">{already ? 'Already in' : 'Add →'}</span>
-                    </button>
+                        <span className="faint">{already ? 'Already in' : 'Add →'}</span>
+                      </button>
+                      {!already && p.in_tags && heldTag != null && (
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-sm"
+                          style={{ flexShrink: 0, fontSize: 11, whiteSpace: 'nowrap' }}
+                          title={`Check in without tag #${heldTag} (forgot tag — keeps tag, not in play tonight)`}
+                          onClick={() => void handleCheckinPlayer(p.id, p.division, undefined, { forgotTag: true })}
+                        >
+                          Forgot tag
+                        </button>
+                      )}
+                    </div>
                   )
                 })}
                 {matchingActive.length === 0 && !cleanQuery && (
@@ -3359,11 +3383,12 @@ function StartEventDialog({ name, date, onName, onDate, onClose, onCreate }: {
   )
 }
 
-function TagInCell({ entry, name, siblings, inTags, disabled, onCommit }: {
+function TagInCell({ entry, name, siblings, inTags, heldTag, disabled, onCommit }: {
   entry: Entry
   name: string
   siblings: Entry[]
   inTags: boolean
+  heldTag?: number | null
   disabled?: boolean
   onCommit: (tag: number | null) => void
 }) {
@@ -3378,34 +3403,67 @@ function TagInCell({ entry, name, siblings, inTags, disabled, onCommit }: {
         disabled
         readOnly
         aria-label={`Tag in for ${name}`}
-        value={!inTags ? 'No tag' : (entry.tag_in ? `#${entry.tag_in}` : 'None')}
+        value={!inTags ? 'No tag' : (entry.tag_in ? `#${entry.tag_in}` : 'Out')}
       />
     )
   }
   return (
     <div>
-      <input
-        className="score"
-        style={{ width: 60 }}
-        inputMode="numeric"
-        aria-label={`Tag in for ${name}`}
-        placeholder="None"
-        value={shown}
-        onFocus={() => { setDraft(entry.tag_in == null ? '' : String(entry.tag_in)); setError(null) }}
-        onChange={e => { setError(null); setDraft(e.target.value) }}
-        onBlur={() => {
-          const raw = draft ?? ''
-          setDraft(null)
-          const parsed = parseTag(raw)
-          if (!parsed.ok) { setError(parsed.error); return }
-          if (parsed.value != null && tagTakenTonight(parsed.value, siblings, entry.id, entry.division)) {
-            setError(`Tag #${parsed.value} is already used in this division.`)
-            return
-          }
-          setError(null)
-          if (parsed.value !== entry.tag_in) onCommit(parsed.value)
-        }}
-      />
+      <div className="row" style={{ gap: 4, justifyContent: 'center', alignItems: 'center' }}>
+        <input
+          className="score"
+          style={{ width: 54 }}
+          inputMode="numeric"
+          aria-label={`Tag in for ${name}`}
+          placeholder={heldTag != null ? 'Out' : 'None'}
+          value={shown}
+          onFocus={() => { setDraft(entry.tag_in == null ? '' : String(entry.tag_in)); setError(null) }}
+          onChange={e => { setError(null); setDraft(e.target.value) }}
+          onBlur={() => {
+            const raw = draft ?? ''
+            setDraft(null)
+            const parsed = parseTag(raw)
+            if (!parsed.ok) { setError(parsed.error); return }
+            if (parsed.value != null && tagTakenTonight(parsed.value, siblings, entry.id, entry.division)) {
+              setError(`Tag #${parsed.value} is already used in this division.`)
+              return
+            }
+            setError(null)
+            if (parsed.value !== entry.tag_in) onCommit(parsed.value)
+          }}
+        />
+        {heldTag != null && (
+          entry.tag_in != null ? (
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              style={{ padding: '0 6px', height: 24, fontSize: 11 }}
+              title={`Forgot tag #${heldTag} tonight — take tag out of play`}
+              onClick={() => { setDraft(null); setError(null); onCommit(null) }}
+            >
+              Forgot
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              style={{ padding: '0 6px', height: 24, fontSize: 11 }}
+              title={`Put tag #${heldTag} back in play tonight`}
+              onClick={() => {
+                if (tagTakenTonight(heldTag, siblings, entry.id, entry.division)) {
+                  setError(`Tag #${heldTag} is already used in this division.`)
+                  return
+                }
+                setDraft(null)
+                setError(null)
+                onCommit(heldTag)
+              }}
+            >
+              +#{heldTag}
+            </button>
+          )
+        )}
+      </div>
       {error && <small className="field-error">{error}</small>}
     </div>
   )

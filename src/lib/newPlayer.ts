@@ -29,7 +29,7 @@ export function newPlayerInsert(name: string, division: Division, buyingTag: boo
   }
 }
 
-/** A held number is copied onto tonight's entry only when this player bought a tag. */
-export function checkinTagIn(inTags: boolean, held: number | null): number | null {
-  return inTags ? held : null
+/** A held number is copied onto tonight's entry only when this player bought a tag and brought it. */
+export function checkinTagIn(inTags: boolean, held: number | null, forgotTag = false): number | null {
+  return inTags && !forgotTag ? held : null
 }

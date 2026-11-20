@@ -502,8 +502,21 @@ assert.deepEqual(newPlayerInsert('Alan Turing', 'M', true), {
 assert.deepEqual(Object.keys(newPlayerInsert('Ada Lovelace', 'M', true)), ['name', 'division', 'active', 'in_tags'])
 assert.equal(checkinTagIn(false, 4), null, 'opted out: a held number is not eligible tonight')
 assert.equal(checkinTagIn(true, 4), 4, 'opted in: the held tag comes in with them')
+assert.equal(checkinTagIn(true, 4, true), null, 'forgot tag tonight: held tag stays out of play')
 assert.equal(checkinTagIn(true, null), null, 'opted in with no number yet can still be in tags')
 assert.equal(checkinTagIn(false, null), null)
+
+// Forgot-tag player wins the night: neither they nor their held tag enter tonight's tag pool
+{
+  const forgotWinner = e({ id: 'ft-win', player_id: 'p-ft-win', score_18: 90, tag_in: null })
+  const tagSecond = e({ id: 'ft-2nd', player_id: 'p-ft-2nd', score_18: 80, tag_in: 8 })
+  const tagThird = e({ id: 'ft-3rd', player_id: 'p-ft-3rd', score_18: 70, tag_in: 2 })
+  const rankedForgot = rankFinal([forgotWinner, tagSecond, tagThird], S)
+  const forgotTagsOut = redistributeTags(rankedForgot, () => true)
+  assert.equal(forgotTagsOut.has('ft-win'), false, 'player who forgot tag is not in play for tags tonight')
+  assert.equal(forgotTagsOut.get('ft-2nd'), 2, 'highest finisher with a tag in play takes lowest active tag')
+  assert.equal(forgotTagsOut.get('ft-3rd'), 8)
+}
 
 let buying = freshBuyingTag()
 buying = true
